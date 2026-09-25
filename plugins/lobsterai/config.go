@@ -96,12 +96,6 @@ const (
 	// port 0 with no lower bound (lobsterai-oauth.ts:345-358), so 1 keeps the
 	// same "any free port" behaviour.
 	MinCallbackPort = 1
-	// MaxRotate caps how many accounts one request may try, mirroring the
-	// reference Go bridge's MaxRotate (lobsterai-adapter.ts:90).
-	MaxRotate = 3
-	// maxCredentialPageAccounts bounds how many accounts the status page lists
-	// in detail; the rest are summarised.
-	maxCredentialPageAccounts = 20
 )
 
 // Config is the per-instance plugin configuration decoded from the config_yaml

@@ -60,8 +60,6 @@ type creditPackage struct {
 	Total       float64
 	Used        float64
 	Active      bool
-	CycleStart  string
-	CycleEnd    string
 	ExpiredTime string
 }
 
