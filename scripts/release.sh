@@ -77,21 +77,17 @@ RELEASE_DIR="release/${GOOS}/${GOARCH}"
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
 
-declare -A ID_VERSION=()
-for plugin in "${PLUGINS[@]}"; do
-	ID_VERSION["$plugin"]="$(plugin_version "plugins/$plugin")"
-done
-
 # A release tag carries one version, so every plugin shipped in it must agree.
 if [[ -n "${VERSION:-}" ]]; then
 	expected="${VERSION#v}"
 else
 	expected=""
 	for plugin in "${PLUGINS[@]}"; do
+		this_version="$(plugin_version "plugins/$plugin")"
 		if [[ -z "$expected" ]]; then
-			expected="${ID_VERSION[$plugin]}"
-		elif [[ "$expected" != "${ID_VERSION[$plugin]}" ]]; then
-			echo "release.sh: plugin versions disagree ('$expected' vs '${ID_VERSION[$plugin]}' for $plugin); set VERSION explicitly" >&2
+			expected="$this_version"
+		elif [[ "$expected" != "$this_version" ]]; then
+			echo "release.sh: plugin versions disagree ('$expected' vs '$this_version' for $plugin); set VERSION explicitly" >&2
 			exit 1
 		fi
 	done
@@ -104,7 +100,7 @@ fi
 ARTIFACT_DIR="dist/${GOOS}/${GOARCH}"
 packaged=0
 for plugin in "${PLUGINS[@]}"; do
-	source_lib="${ARTIFACT_DIR}/${plugin}-v${ID_VERSION[$plugin]}.${EXT}"
+	source_lib="${ARTIFACT_DIR}/${plugin}-v$(plugin_version "plugins/$plugin").${EXT}"
 	if [[ ! -f "$source_lib" ]]; then
 		echo "==> $plugin: SKIP (no ${source_lib})"
 		continue
