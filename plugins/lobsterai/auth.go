@@ -345,8 +345,15 @@ func authDataFor(credential *Credential, fileName string) (pluginapi.AuthData, e
 			"uid":            credential.UID,
 			"latest_keyfrom": credential.LatestKeyfrom,
 		},
+		// NOTE: do NOT use the attribute name `api_key` here. The host treats a
+		// non-empty `api_key` attribute as proof that the credential is an API
+		// key (see sdk/cliproxy/auth/classification.go AuthKind), which makes
+		// OAuthModelAliasChannel return "" and oauthExcludedModels return nil.
+		// Model aliases and `oauth-excluded-models` would then be silently
+		// ignored for every LobsterAI account. The UID is an account identity,
+		// not an API key, so it is published under a neutral name.
 		Attributes: map[string]string{
-			"api_key":     credential.UID,
+			"uid":         credential.UID,
 			"account":     label,
 			"credential":  ProviderKey,
 			"refreshable": boolString(credential.Refreshable()),

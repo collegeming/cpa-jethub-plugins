@@ -46,9 +46,14 @@ func authDataFor(credential *Credential, fileName string) (pluginapi.AuthData, e
 			"expires_at": credential.ExpiresAt,
 			"flow":       flowOf(credential),
 		},
+		// NOTE: do not use the name "api_key" here. It is a reserved host
+		// attribute: the host reads it in Auth.AuthKind() and classifies the
+		// credential as an API key, which makes OAuthModelAliasChannel() return
+		// "" so the manager's model aliases and excluded-model rules are
+		// SILENTLY ignored for this provider.
 		Attributes: map[string]string{
-			"api_key":     credential.AccessKeyID,
-			"account":     label,
+			"access_key_id": credential.AccessKeyID,
+			"account":       label,
 			"credential":  ProviderKey,
 			"refreshable": boolString(credential.Refreshable()),
 		},
