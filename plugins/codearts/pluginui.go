@@ -239,39 +239,23 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 	return jsonManagementResponse(http.StatusOK, body)
 }
 
-// checkinResponse serves the check-in route in both representations.
-func checkinResponse(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+// checkinJSON serves the script/API check-in route.
+//
+// This route is deliberately JSON-only: the interactive check-in lives on the
+// status page as `GET /status?action=checkin`, and a machine caller should not
+// have to guess a representation.
+func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	entry, found := selectAccount(h, request)
 	if !found {
-		if wantsJSON(request) {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "指定的 auth_index 不存在"})
-		}
-		return plugui.HTML("CodeArts 签到",
-			plugui.Card("签到失败", plugui.Notice("danger", "指定的账号不存在"),
-				plugui.Action{Label: "返回状态", Path: "status"}))
+		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "指定的 auth_index 不存在"})
 	}
 	credential, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
-		if wantsJSON(request) {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": errCredential.Error()})
-		}
-		return plugui.HTML("CodeArts 签到",
-			plugui.Card("签到失败", plugui.Notice("danger", errCredential.Error()),
-				plugui.Action{Label: "返回状态", Path: "status"}))
+		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": errCredential.Error()})
 	}
 	outcome, errClaim := claimDaily(h, credential)
 	if errClaim != nil {
-		if wantsJSON(request) {
-			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": errClaim.Error()})
-		}
-		return plugui.HTML("CodeArts 签到",
-			plugui.Card("签到失败", plugui.Notice("danger", errClaim.Error()),
-				plugui.Action{Label: "返回状态", Path: "status"}))
-	}
-	if !wantsJSON(request) {
-		return plugui.HTML("CodeArts 签到",
-			plugui.Card("签到结果", checkinNotice(outcome),
-				plugui.Action{Label: "返回状态", Path: "status", Kind: "primary"}))
+		return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": errClaim.Error()})
 	}
 	body := map[string]any{
 		"status":  outcome.Status,

@@ -220,7 +220,7 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: "/status", Menu: "CodeArts", Description: "账号、额度与签到状态"},
 			{Method: http.MethodGet, Path: "/login", Menu: "CodeArts", Description: "浏览器登录 CodeArts 账号"},
-			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用）"},
+			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用，返回 JSON）"},
 		},
 	}, nil
 }
@@ -254,7 +254,7 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		return renderLoginPage(h, request), nil
 
 	case "/checkin":
-		return checkinResponse(h, request), nil
+		return checkinJSON(h, request), nil
 	}
 
 	return jsonManagementResponse(http.StatusNotFound, map[string]any{"error": "unknown CodeArts management route"}), nil
