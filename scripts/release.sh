@@ -27,7 +27,7 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-GO="${GO:-/home/colle/.local/go/bin/go}"
+GO="${GO:-$(command -v go 2>/dev/null || echo /home/colle/.local/go/bin/go)}"
 PLUGINS=(codearts codebuddy qoder trae lobsterai)
 
 SKIP_BUILD=0

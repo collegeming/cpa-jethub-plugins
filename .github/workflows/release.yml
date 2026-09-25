@@ -24,6 +24,7 @@ permissions:
 env:
   GOFLAGS: -mod=mod
   CGO_ENABLED: "1"
+  GOTOOLCHAIN: local
 
 jobs:
   build:

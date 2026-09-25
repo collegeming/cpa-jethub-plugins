@@ -28,7 +28,7 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-GO="${GO:-/home/colle/.local/go/bin/go}"
+GO="${GO:-$(command -v go 2>/dev/null || echo /home/colle/.local/go/bin/go)}"
 if [[ ! -x "$GO" ]]; then
 	echo "build.sh: go binary not found at '$GO' (override with GO=/path/to/go)" >&2
 	exit 127
