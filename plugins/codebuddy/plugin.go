@@ -1,71 +1,92 @@
-// Package main is the CPA native plugin adapter for CodeBuddy.
+// Package main is the CPA native plugin adapter for the Tencent CodeBuddy /
+// WorkBuddy product family.
 //
-// SCOPE: this is a compiling scaffold. Registration and the full method surface
-// are wired so the host can load and inspect the plugin, but every method other
-// than auth.identifier is a stub that returns a not_implemented error. See
-// docs/PORTING.md for the Jet-Hub source mapping this will be ported from.
+// One CPA plugin key (`codebuddy`) serves four Jet-Hub products, selected by the
+// `product` setting; see config.go for the product table and the endpoints each
+// one uses. The method surface mirrors plugins/codearts (the reference
+// implementation): auth, model, executor, translate, quota and management.
 package main
 
 import (
-	"encoding/json"
+	"sync/atomic"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const (
-	// ProviderKey is the stable provider identifier written into CPA auth files.
-	ProviderKey = "codebuddy"
-	// DisplayName is the human-readable name shown by management clients.
-	DisplayName = "CodeBuddy"
-	// Version is the plugin release version.
-	Version = "0.1.0"
-	// Author identifies the plugin author organization.
-	Author = "cpa-jethub"
-	// Repository is the public source location of this plugin.
-	Repository = "https://github.com/collegeming/cpa-jethub-plugins"
+// plugin implements the abiboot.Plugin contract for the CodeBuddy family.
+type plugin struct {
+	mux *abiboot.Mux
+}
+
+var (
+	instance     *plugin
+	settingsSlot atomic.Value // holds Config
 )
 
-// plugin is the package-level abiboot.Plugin implementation.
-type plugin struct {
-	routes map[string]abiboot.Handler
+func init() {
+	settingsSlot.Store(DefaultConfig())
 }
 
-// singleton is returned by Plugin; CPA loads the library once per process.
-var singleton = newPlugin()
+// settings returns the live instance configuration.
+func settings() Config {
+	if value, ok := settingsSlot.Load().(Config); ok {
+		return value
+	}
+	return DefaultConfig()
+}
+
+func setSettings(cfg Config) { settingsSlot.Store(cfg) }
 
 // Plugin returns the process-wide plugin singleton.
-func Plugin() abiboot.Plugin { return singleton }
-
-func newPlugin() *plugin {
-	mux := abiboot.NewMux().
-		On(pluginabi.MethodAuthIdentifier, authIdentifier).
-		On(pluginabi.MethodAuthParse, stubHandler(pluginabi.MethodAuthParse)).
-		On(pluginabi.MethodAuthLoginStart, stubHandler(pluginabi.MethodAuthLoginStart)).
-		On(pluginabi.MethodAuthLoginPoll, stubHandler(pluginabi.MethodAuthLoginPoll)).
-		On(pluginabi.MethodAuthRefresh, stubHandler(pluginabi.MethodAuthRefresh)).
-		On(pluginabi.MethodModelRegister, stubHandler(pluginabi.MethodModelRegister)).
-		On(pluginabi.MethodModelForAuth, stubHandler(pluginabi.MethodModelForAuth)).
-		On(pluginabi.MethodExecutorIdentifier, stubHandler(pluginabi.MethodExecutorIdentifier)).
-		On(pluginabi.MethodExecutorExecute, stubHandler(pluginabi.MethodExecutorExecute)).
-		On(pluginabi.MethodExecutorExecuteStream, stubHandler(pluginabi.MethodExecutorExecuteStream)).
-		On(pluginabi.MethodRequestTranslate, stubHandler(pluginabi.MethodRequestTranslate)).
-		On(pluginabi.MethodResponseTranslate, stubHandler(pluginabi.MethodResponseTranslate))
-	return &plugin{routes: mux.Routes()}
+func Plugin() abiboot.Plugin {
+	if instance == nil {
+		instance = newPlugin()
+	}
+	return instance
 }
 
-// Registration declares the scaffold's identity and the capabilities it will
-// satisfy once the adapter is ported. The capability block is already the final
-// shape so the host wires the plugin into every relevant extension point.
-func (p *plugin) Registration() abiboot.Registration {
+// newPlugin wires every method this provider implements.
+func newPlugin() *plugin {
+	p := &plugin{mux: abiboot.NewMux()}
+	p.mux.
+		On(pluginabi.MethodAuthIdentifier, handleAuthIdentifier).
+		On(pluginabi.MethodAuthParse, handleAuthParse).
+		On(pluginabi.MethodAuthLoginStart, handleAuthLoginStart).
+		On(pluginabi.MethodAuthLoginPoll, handleAuthLoginPoll).
+		On(pluginabi.MethodAuthRefresh, handleAuthRefresh).
+		On(pluginabi.MethodModelRegister, handleModelRegister).
+		On(pluginabi.MethodModelStatic, handleModelStatic).
+		On(pluginabi.MethodModelForAuth, handleModelForAuth).
+		On(pluginabi.MethodExecutorIdentifier, handleExecutorIdentifier).
+		On(pluginabi.MethodExecutorExecute, handleExecutorExecute).
+		On(pluginabi.MethodExecutorExecuteStream, handleExecutorExecuteStream).
+		On(pluginabi.MethodExecutorCountTokens, handleExecutorCountTokens).
+		On(pluginabi.MethodRequestTranslate, handleRequestTranslate).
+		On(pluginabi.MethodResponseTranslate, handleResponseTranslate).
+		On(pluginabi.MethodQuotaIdentifier, handleQuotaIdentifier).
+		On(pluginabi.MethodQuotaDescribe, handleQuotaDescribe).
+		On(pluginabi.MethodQuotaFetch, handleQuotaFetch).
+		On(pluginabi.MethodQuotaReset, handleQuotaReset).
+		On(pluginabi.MethodManagementRegister, handleManagementRegister).
+		On(pluginabi.MethodManagementHandle, handleManagementHandle)
+	return p
+}
+
+// Routes exposes the method table to the ABI bootstrap.
+func (p *plugin) Routes() map[string]abiboot.Handler { return p.mux.Routes() }
+
+// Registration declares identity, settings and capabilities.
+func Registration() abiboot.Registration {
 	return abiboot.NewRegistration(pluginapi.Metadata{
 		Name:             DisplayName,
 		Version:          Version,
 		Author:           Author,
 		GitHubRepository: Repository,
-		Logo:             "",
-		ConfigFields:     []pluginapi.ConfigField{},
+		// Website home of the default product (buddy.ts:26).
+		Logo:         WebsiteHome + "/favicon.ico",
+		ConfigFields: configFieldsForHost(),
 	}, abiboot.Capabilities{
 		ModelRegistrar:        true,
 		ModelProvider:         true,
@@ -74,24 +95,43 @@ func (p *plugin) Registration() abiboot.Registration {
 		ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
 		ExecutorInputFormats:  []string{"chat-completions"},
 		ExecutorOutputFormats: []string{"chat-completions"},
-		ManagementAPI:         true,
+		RequestTranslator:     true,
+		ResponseTranslator:    true,
 		QuotaProvider:         true,
+		ManagementAPI:         true,
 	})
 }
 
-// Routes exposes the method table to abiboot.Dispatch.
-func (p *plugin) Routes() map[string]abiboot.Handler { return p.routes }
+// Registration implements abiboot.Plugin.
+func (p *plugin) Registration() abiboot.Registration { return Registration() }
 
-// authIdentifier answers auth.identifier. The provider key is the identity the
-// host uses to bind stored auth files to this plugin.
-func authIdentifier(_ *abiboot.Host, _ json.RawMessage) (any, error) {
-	return abiboot.IdentifierReply(ProviderKey), nil
+// Configure applies the instance settings delivered by the host. The discovered
+// model cache is dropped so a product switch never serves another product's
+// model pool.
+func (p *plugin) Configure(configYAML []byte) error {
+	setSettings(ConfigFromYAML(configYAML))
+	discoveredModels.reset()
+	return nil
 }
 
-// stubHandler builds a clearly-marked placeholder for a method that is part of
-// the declared capability surface but has not been ported yet.
-func stubHandler(method string) abiboot.Handler {
-	return func(_ *abiboot.Host, _ json.RawMessage) (any, error) {
-		return nil, abiboot.Errorf("not_implemented", "%s is not implemented by the %s scaffold plugin", method, ProviderKey)
+// Quiesce is a no-op: the adapter holds no background workers (upstream polling
+// is driven by CPA through auth.login.poll).
+func (p *plugin) Quiesce() {}
+
+// Shutdown releases the in-flight login sessions.
+func (p *plugin) Shutdown() { shutdownLoginSessions() }
+
+// configFieldsForHost converts the settings description into the host type.
+func configFieldsForHost() []pluginapi.ConfigField {
+	fields := ConfigFields()
+	out := make([]pluginapi.ConfigField, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, pluginapi.ConfigField{
+			Name:        field.Name,
+			Type:        pluginapi.ConfigFieldType(field.Type),
+			EnumValues:  field.EnumValues,
+			Description: field.Description,
+		})
 	}
+	return out
 }
