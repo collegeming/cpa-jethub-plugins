@@ -16,9 +16,16 @@ Two rules were applied throughout:
 1. **No endpoint is listed that I did not see in the TypeScript.** Every URL or path below carries a `file:line`.
 2. **Nothing is claimed about an algorithm, key, or header that I did not read.** Where the source is silent, the row says so.
 
-The four plugins currently in this repository are **scaffolds**: registration and the method
-surface are wired, and every method except `auth.identifier` returns `not_implemented`.
-This document describes the work that remains.
+> **Status update.** The scaffolding phase this document was written for is over: all five
+> adapters (`codearts`, `codebuddy`, `qoder`, `trae`, `lobsterai`) are now implemented and
+> register the full method surface. The maps below remain the record of *what* was ported and
+> *where each fact came from*; where an implementation diverged from the plan, the plugin's own
+> code comments say so. See the README's "验证状态" section for what has and has not been
+> exercised against a live server.
+>
+> The four-per-provider file split suggested in §1 was followed, with additions: every plugin
+> also carries `management.go`/`pluginui.go` (the HTML management pages) and its own focused
+> `*_test.go` files.
 
 ## 1. Target file convention
 

@@ -1,4 +1,4 @@
-# cpa-jethub-plugins-plugins
+# cpa-jethub-plugins
 
 CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个平台适配器移植为 `-buildmode=c-shared` 动态库，经 CPA 的插件 ABI 以 JSON envelope 提供登录、凭据续期、模型目录、执行器与配额能力。
 
@@ -8,24 +8,44 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | --- | --- | --- |
 | 共享 ABI 层 | `internal/abiboot` | envelope 编解码、能力注册、方法分发、宿主回调（`host.http.*`、`host.auth.*`、`host.log`） |
 | 插件实现 | `plugins/<provider>/` | `main.go` 导出 4 个 C 符号；`plugin.go` 返回 `Registration` 与方法表 |
-| 分发清单 | `registry.json` | CPA 插件商店 manifest（schema v2，`direct` 安装） |
-| 构建 | `scripts/build.sh` | 逐插件产出 c-shared 动态库 |
+| 分发清单 | `registry.json` | CPA 插件商店清单（官方 `schema_version: 1`，产物走本仓库的 GitHub Release） |
+| 管理界面 | `internal/jethub/plugui` | 渲染管理路由的 HTML 页面，只消费宿主主题变量，无前端构建 |
+| 构建 | `scripts/build.sh` | 逐插件产出 c-shared 动态库，文件名可直接安装 |
+| 打包 | `scripts/release.sh` | 产出插件商店要求的 zip 与 `checksums.txt` |
 
 每个插件目录是**单一 Go 包 `package main`**：`main.go` 承载 cgo 胶水并导出 `cliproxy_plugin_init`、`cliproxyPluginCall`、`cliproxyPluginFree`、`cliproxyPluginShutdown`，其余 `.go` 文件承载业务逻辑。这样 `go build -buildmode=c-shared ./plugins/<provider>` 可以从该目录直接产出动态库。
 
-依赖约束：只使用标准库与 `github.com/router-for-me/CLIProxyAPI/v7/sdk/{pluginabi,pluginapi}`。
+依赖约束：标准库、CPA SDK（`github.com/router-for-me/CLIProxyAPI/v7/sdk/{pluginabi,pluginapi}`），以及 `gopkg.in/yaml.v3`（配置解析）与 `github.com/tetratelabs/wazero`（可选，用于 Qoder 的签名 WASM）。插件自身不建立网络连接——HTTP 一律经 `host.http.*` 由宿主执行。
 
 ## 插件状态
 
-| 插件 ID | 显示名 | 状态 | 说明 |
-| --- | --- | --- | --- |
-| `codearts` | CodeArts Agent | 已实现 | 登录、凭据、模型目录、执行器、配额 |
-| `codebuddy` | CodeBuddy | 脚手架 | 仅注册与 `auth.identifier`，其余方法返回 `not_implemented` |
-| `qoder` | Qoder | 脚手架 | 同上 |
-| `trae` | TRAE | 脚手架 | 同上 |
-| `lobsterai` | LobsterAI | 脚手架 | 同上 |
+| 插件 ID | 显示名 | 管理页面 | 配置项 | 说明 |
+| --- | --- | --- | --- | --- |
+| `codearts` | CodeArts Agent | 状态、登录 | 9 | 华为云 CodeArts，`SDK-HMAC-SHA256` 签名，DSML 工具调用 |
+| `codebuddy` | CodeBuddy | 状态、登录、签到 | 9 | 腾讯 CodeBuddy／WorkBuddy，四个产品共用一套适配器 |
+| `qoder` | Qoder | 状态、登录、签到 | 12 | 阿里 Qoder，设备码登录；加密推理需可选 WASM |
+| `trae` | TRAE | 状态、登录、签到 | 13 | 字节 TRAE，OpenAI↔SOLO 双向载荷转换 |
+| `lobsterai` | LobsterAI（有道） | 状态、登录、签到 | 5 | 有道 LobsterAI，本地回环回调 + authCode 换取 |
 
-四个脚手架的 `Registration` 已按最终能力集声明（模型注册、模型提供、认证提供、执行器、管理 API、配额提供），方法表已注册 `auth.identifier`／`auth.parse`／`auth.login.start`／`auth.login.poll`／`auth.refresh`／`model.register`／`model.for_auth`／`executor.identifier`／`executor.execute`／`executor.execute_stream`／`request.translate`／`response.translate`，上游协议实现尚未迁移。除 `auth.identifier` 外，这些方法当前一律返回 `not_implemented`。
+五个适配器都实现了完整方法面：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器统一声明 `chat-completions` 入出格式且 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
+
+### 选择平台／区域
+
+同一厂商的区域版本互不相通，凭据也各自独立，用配置项选择：
+
+| 插件 | 配置项 | 取值 |
+| --- | --- | --- |
+| `codebuddy` | `product` | `codebuddy`（国内，默认）、`codebuddy-intl`（国际）、`workbuddy-cn`、`workbuddy` |
+| `qoder` | `region` | `qoder`（国际，默认）、`qoder-cn` |
+| `trae` | `region` | `trae`（国内，默认）、`trae-intl` |
+| `codearts` | `flow` | `oauth`（浏览器 PKCE，默认）、`ticket`（旧版票据轮询） |
+
+其余字段（模型发现开关、超时、Max 模式、签到开关、通道选择等）在管理面板里都有中文说明，或见各插件的 `ConfigFields()`。
+
+### 两个需要知情的实现取舍
+
+- **Qoder 加密推理**：加密请求的签名头由 Jet-Hub 的 `qoder-auth-wasm.wasm`（约 292 KB 第三方编译产物）生成。本仓库**不包含**该二进制——再分发属于仓库所有者的授权决定。把 `wasm_path` 指向你本地的副本即启用加密路径；留空则只走公开的 OpenAI 兼容端点。
+- **配置解析**：用 `gopkg.in/yaml.v3` 解析为映射后逐键宽松取值，因此 block 与 flow 两种 YAML 风格都生效，`no`／`off`／`yes`／`on` 等写法也可用，且单个坏值只损失它自己的默认值，不会让整份配置回退。
 
 ## 构建
 
@@ -198,6 +218,18 @@ CPAMP 页面  /plugins/<id>/<menuIndex>
 ## 依赖的宿主能力
 
 插件通过 `host.call` 使用宿主能力。HTTP 请求一律由宿主执行，代理、TLS 与请求日志仍归宿主控制；因此插件本身不建立网络连接。
+
+## 验证状态
+
+在真实 CPA 宿主中验证过的部分（用 `docker.io/eceasy/cli-proxy-api` 起临时容器装入本仓库产物）：
+
+- **5 个插件可同时加载并注册**：宿主日志逐条输出 `pluginhost: plugin registered plugin_id=<id>`，管理 API 返回 `registered=true`、`effective_enabled=true`、`supports_oauth=true`、`supports_quota=true`；
+- **13 个管理路由全部返回 `200` + `Content-Type: text/html`**，页面内均带宿主主题变量（`var(--bg-primary)` 等），即都能在 CPA-Manager-Plus 的 iframe 中正常渲染；
+- **`codearts` 走通凭据解析到模型目录的全链路**：注入测试凭据后宿主日志出现 `processing auth file` 与 `Registered new model ... from provider codearts`，`/v1/models` 返回 16 个模型；
+- **方法面**逐个经 C `dlopen` 探针调用：`plugin.register`、`auth.identifier`、`model.register`、`model.static`、`quota.identifier`、`quota.describe`、`request.translate`、`response.translate`、`management.register` 在 5 个插件上全部返回成功 envelope；
+- **插件商店清单**用 CPA 真实解析器（`ParseRegistry` + `ValidateRegistry`）校验通过；发布产物按商店要求打包并校验 sha256。
+
+**尚未验证的部分**：五个平台的上游协议都**没有对真实服务端跑通过**——这里没有它们的账号。签名算法、载荷转换、SSE 解析、登录状态机、错误分类由单元测试覆盖（`go test ./...`），但**真实登录授权、模型调用与每日签到需要你用真实账号各试一次**。已知的取舍与未移植项记录在 [docs/PORTING.md](docs/PORTING.md)。
 
 ## 移植说明
 

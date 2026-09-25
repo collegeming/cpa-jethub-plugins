@@ -21,7 +21,7 @@
     {
       "id": "codebuddy",
       "name": "CodeBuddy",
-      "description": "腾讯 CodeBuddy / WorkBuddy 接入：同一 CLI 内核与认证协议，差异由 endpoint 决定。上游协议移植中。",
+      "description": "腾讯 CodeBuddy / WorkBuddy 接入：一套适配器覆盖国内与国际四个产品（codebuddy、codebuddy-intl、workbuddy-cn、workbuddy），含积分查询与每日签到。",
       "author": "collegeming",
       "repository": "https://github.com/collegeming/cpa-jethub-plugins",
       "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
@@ -36,7 +36,7 @@
     {
       "id": "qoder",
       "name": "Qoder",
-      "description": "阿里 Qoder 接入：PKCE 设备码登录与加密推理端点。上游协议移植中。",
+      "description": "阿里 Qoder 接入：设备码登录、积分领取；加密推理可选启用本机签名 WASM，留空则走公开 OpenAI 兼容端点。",
       "author": "collegeming",
       "repository": "https://github.com/collegeming/cpa-jethub-plugins",
       "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
@@ -50,7 +50,7 @@
     {
       "id": "trae",
       "name": "TRAE",
-      "description": "字节 TRAE 接入：ExchangeToken 轮换与 OpenAI↔SOLO 双向载荷转换。上游协议移植中。",
+      "description": "字节 TRAE 接入：OpenAI 与 SOLO 双向载荷转换、通道选择、Max 模式，含每日签到。",
       "author": "collegeming",
       "repository": "https://github.com/collegeming/cpa-jethub-plugins",
       "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
@@ -64,7 +64,7 @@
     {
       "id": "lobsterai",
       "name": "LobsterAI",
-      "description": "有道 LobsterAI 接入：本地回环回调 + authCode 换取令牌，三步式登录。上游协议移植中。",
+      "description": "有道 LobsterAI 接入：本地回环回调 + authCode 换取令牌，含积分与每日签到。",
       "author": "collegeming",
       "repository": "https://github.com/collegeming/cpa-jethub-plugins",
       "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
