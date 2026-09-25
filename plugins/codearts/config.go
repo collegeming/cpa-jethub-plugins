@@ -3,6 +3,8 @@ package main
 import (
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Provider identity and every upstream endpoint used by the adapter. All hosts
@@ -59,7 +61,7 @@ const (
 // `config_yaml` subtree the host passes in plugin.register / plugin.reconfigure.
 type Config struct {
 	Enabled  bool
-	Priority int
+	Priority int `yaml:"priority"`
 
 	// Flow selects the sign-in method: "oauth" (default) or "ticket".
 	Flow string
@@ -103,34 +105,112 @@ func DefaultConfig() Config {
 	}
 }
 
-// ConfigFromYAML decodes the flat scalar settings the host supplies. Nested
-// mappings are ignored because every CodeArts setting is a top-level scalar.
+// ConfigFromYAML decodes the settings the host supplies for this instance.
+//
+// The document is first decoded into a generic mapping and each key is then
+// coerced individually. Three properties follow, all of which matter in
+// practice:
+//
+//   - block and flow style are both accepted, because the host hands the
+//     instance subtree back in whichever style the user wrote it;
+//   - values that a YAML 1.2 decoder sees as strings but a user reasonably
+//     writes as booleans (`yes`/`no`/`on`/`off`, or a quoted number) still work;
+//   - one unusable value costs only its own default instead of discarding the
+//     whole document, which is what a typed decode would do.
 func ConfigFromYAML(document []byte) Config {
 	cfg := DefaultConfig()
-	values := parseFlatYAML(document)
+	if len(document) == 0 {
+		return cfg
+	}
+	var raw map[string]any
+	if errUnmarshal := yaml.Unmarshal(document, &raw); errUnmarshal != nil {
+		return DefaultConfig()
+	}
 
-	if v, ok := values["enabled"]; ok {
-		cfg.Enabled = parseBool(v, cfg.Enabled)
+	cfg.Enabled = coerceBool(raw["enabled"], cfg.Enabled)
+	cfg.Priority = coerceInt(raw["priority"], cfg.Priority)
+	cfg.Flow = coerceFlow(raw["flow"], cfg.Flow)
+	cfg.DiscoverModels = coerceBool(raw["discover_models"], cfg.DiscoverModels)
+	cfg.BenefitModels = coerceBool(raw["benefit_models"], cfg.BenefitModels)
+	cfg.ToolStream = coerceBool(raw["tool_stream"], cfg.ToolStream)
+	cfg.PromptCacheKey = coerceBool(raw["prompt_cache_key"], cfg.PromptCacheKey)
+	cfg.DefaultMaxTokens = coerceInt(raw["max_tokens"], cfg.DefaultMaxTokens)
+	cfg.FirstTokenTimeoutMS = coerceInt(raw["first_token_timeout_ms"], cfg.FirstTokenTimeoutMS)
+	cfg.ChunkTimeoutMS = coerceInt(raw["chunk_timeout_ms"], cfg.ChunkTimeoutMS)
+	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.MaxAccountsPerAuth = coerceInt(raw["max_accounts_per_auth"], cfg.MaxAccountsPerAuth)
+	return cfg
+}
+
+// coerceFlow accepts only the two known sign-in flows.
+func coerceFlow(value any, fallback string) string {
+	switch strings.ToLower(coerceString(value, "")) {
+	case LoginFlowOAuth:
+		return LoginFlowOAuth
+	case LoginFlowTicket:
+		return LoginFlowTicket
+	default:
+		return fallback
 	}
-	if v, ok := values["priority"]; ok {
-		cfg.Priority = parseInt(v, cfg.Priority)
+}
+
+// coerceBool accepts a real boolean, a number, or the string spellings users
+// write in configuration files.
+func coerceBool(value any, fallback bool) bool {
+	switch typed := value.(type) {
+	case nil:
+		return fallback
+	case bool:
+		return typed
+	case int:
+		return typed != 0
+	case int64:
+		return typed != 0
+	case float64:
+		return typed != 0
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "yes", "on", "1":
+			return true
+		case "false", "no", "off", "0":
+			return false
+		}
+		return fallback
+	default:
+		return fallback
 	}
-	if v, ok := values["flow"]; ok && v != "" {
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case LoginFlowOAuth, LoginFlowTicket:
-			cfg.Flow = strings.ToLower(strings.TrimSpace(v))
+}
+
+// coerceInt accepts a number or a numeric string, including a quoted one.
+func coerceInt(value any, fallback int) int {
+	switch typed := value.(type) {
+	case nil:
+		return fallback
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, errParse := strconv.Atoi(strings.TrimSpace(typed))
+		if errParse != nil {
+			return fallback
+		}
+		return parsed
+	default:
+		return fallback
+	}
+}
+
+// coerceString returns a non-empty trimmed string, else the fallback.
+func coerceString(value any, fallback string) string {
+	if text, ok := value.(string); ok {
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			return trimmed
 		}
 	}
-	cfg.DiscoverModels = parseBool(values["discover_models"], cfg.DiscoverModels)
-	cfg.BenefitModels = parseBool(values["benefit_models"], cfg.BenefitModels)
-	cfg.ToolStream = parseBool(values["tool_stream"], cfg.ToolStream)
-	cfg.PromptCacheKey = parseBool(values["prompt_cache_key"], cfg.PromptCacheKey)
-	cfg.DefaultMaxTokens = parseInt(values["max_tokens"], cfg.DefaultMaxTokens)
-	cfg.FirstTokenTimeoutMS = parseInt(values["first_token_timeout_ms"], cfg.FirstTokenTimeoutMS)
-	cfg.ChunkTimeoutMS = parseInt(values["chunk_timeout_ms"], cfg.ChunkTimeoutMS)
-	cfg.ModelCacheTTLMS = parseInt(values["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
-	cfg.MaxAccountsPerAuth = parseInt(values["max_accounts_per_auth"], cfg.MaxAccountsPerAuth)
-	return cfg
+	return fallback
 }
 
 // ConfigFields describes the settings the CPA management UI renders for this
@@ -156,68 +236,4 @@ type configField struct {
 	Type        string
 	EnumValues  []string
 	Description string
-}
-
-// parseFlatYAML reads `key: value` scalar pairs. Indented lines (nested
-// mappings and block sequences) are skipped, as are comments and blank lines.
-func parseFlatYAML(document []byte) map[string]string {
-	out := map[string]string{}
-	for _, rawLine := range strings.Split(string(document), "\n") {
-		line := strings.TrimRight(rawLine, "\r")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		// Only top-level, non-sequence entries are part of the flat setting set.
-		if line != trimmed || strings.HasPrefix(trimmed, "- ") {
-			continue
-		}
-		key, value, found := strings.Cut(trimmed, ":")
-		if !found {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if key == "" || value == "" || value == "|" || value == ">" {
-			continue
-		}
-		out[key] = unquoteYAML(value)
-	}
-	return out
-}
-
-func unquoteYAML(value string) string {
-	value = strings.TrimSpace(value)
-	// A quoted scalar ends at its closing quote; anything after it is a comment.
-	if len(value) >= 2 {
-		quote := value[0]
-		if quote == '"' || quote == '\'' {
-			if end := strings.IndexByte(value[1:], quote); end >= 0 {
-				return value[1 : 1+end]
-			}
-		}
-	}
-	if idx := strings.Index(value, " #"); idx >= 0 {
-		value = strings.TrimSpace(value[:idx])
-	}
-	return value
-}
-
-func parseBool(value string, fallback bool) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "true", "yes", "on", "1":
-		return true
-	case "false", "no", "off", "0":
-		return false
-	default:
-		return fallback
-	}
-}
-
-func parseInt(value string, fallback int) int {
-	parsed, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }

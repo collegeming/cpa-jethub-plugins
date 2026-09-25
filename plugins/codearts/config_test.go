@@ -89,21 +89,57 @@ func TestConfigRejectsUnknownFlowValue(t *testing.T) {
 	}
 }
 
-func TestParseFlatYAMLHandlesCommentsAndQuotes(t *testing.T) {
-	values := parseFlatYAML([]byte(`
-flow: "oauth"   # inline comment after a quoted value
-priority: 3 # unquoted trailing comment
-# whole-line comment
-empty:
-`))
-	if values["flow"] != "oauth" {
-		t.Errorf("flow = %q, want oauth", values["flow"])
+// TestConfigFromYAMLHandlesFlowStyle is the regression guard for a silent
+// failure: the host hands the instance subtree back in the style the user wrote
+// it, and a block-only line scanner ignored flow style entirely, leaving every
+// key at its default with no error.
+func TestConfigFromYAMLHandlesFlowStyle(t *testing.T) {
+	cfg := ConfigFromYAML([]byte("{enabled: true, discover_models: false, flow: ticket, max_tokens: 4096}"))
+	if !cfg.Enabled {
+		t.Error("Enabled = false, want true")
 	}
-	if values["priority"] != "3" {
-		t.Errorf("priority = %q, want 3", values["priority"])
+	if cfg.DiscoverModels {
+		t.Error("DiscoverModels = true, want false (flow style must be honoured)")
 	}
-	if _, present := values["empty"]; present {
-		t.Error("a key with no scalar value must be skipped (nested block header)")
+	if cfg.Flow != LoginFlowTicket {
+		t.Errorf("Flow = %q, want %q", cfg.Flow, LoginFlowTicket)
+	}
+	if cfg.DefaultMaxTokens != 4096 {
+		t.Errorf("DefaultMaxTokens = %d, want 4096", cfg.DefaultMaxTokens)
+	}
+}
+
+// TestConfigFromYAMLFlowAndBlockAgree pins that the two styles are equivalent.
+func TestConfigFromYAMLFlowAndBlockAgree(t *testing.T) {
+	flow := ConfigFromYAML([]byte("{flow: ticket, discover_models: false, max_tokens: 8192, tool_stream: false}"))
+	block := ConfigFromYAML([]byte("flow: ticket\ndiscover_models: false\nmax_tokens: 8192\ntool_stream: false\n"))
+	if flow.Flow != block.Flow || flow.DiscoverModels != block.DiscoverModels ||
+		flow.DefaultMaxTokens != block.DefaultMaxTokens || flow.ToolStream != block.ToolStream {
+		t.Fatalf("flow and block documents disagree:\n flow  = %#v\n block = %#v", flow, block)
+	}
+}
+
+// TestConfigFromYAMLQuotedAndCommentedValues covers scalars that a naive
+// comma/comment split would mangle.
+func TestConfigFromYAMLQuotedAndCommentedValues(t *testing.T) {
+	cfg := ConfigFromYAML([]byte("flow: \"oauth\"   # inline comment\nmax_tokens: 2048 # trailing\n"))
+	if cfg.Flow != LoginFlowOAuth {
+		t.Errorf("Flow = %q, want %q", cfg.Flow, LoginFlowOAuth)
+	}
+	if cfg.DefaultMaxTokens != 2048 {
+		t.Errorf("DefaultMaxTokens = %d, want 2048", cfg.DefaultMaxTokens)
+	}
+}
+
+// TestConfigFromYAMLMalformedKeepsDefaults ensures a broken document does not
+// half-apply on top of values that did parse.
+func TestConfigFromYAMLMalformedKeepsDefaults(t *testing.T) {
+	cfg := ConfigFromYAML([]byte("flow: ticket\n  bad indent: [unclosed\n"))
+	if cfg.Flow != LoginFlowOAuth {
+		t.Fatalf("Flow = %q, want the default after a malformed document", cfg.Flow)
+	}
+	if cfg.DefaultMaxTokens != 65536 {
+		t.Fatalf("DefaultMaxTokens = %d, want the default 65536", cfg.DefaultMaxTokens)
 	}
 }
 
