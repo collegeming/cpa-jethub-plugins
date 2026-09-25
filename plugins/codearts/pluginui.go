@@ -209,6 +209,9 @@ func checkinNotice(outcome *checkinOutcome) template.HTML {
 // statusJSON is the machine-readable form of the status page, served when the
 // caller asks for `?format=json` or does not accept HTML.
 func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	if len(codeartsAccounts(h)) == 0 {
+		return jsonManagementResponse(http.StatusOK, map[string]any{"account": nil, "accounts": 0})
+	}
 	entry, found := selectAccount(h, request)
 	if !found {
 		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "指定的 auth_index 不存在"})
