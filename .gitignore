@@ -1,0 +1,15 @@
+# c-shared build outputs
+dist/
+*.so
+*.h
+
+# Go
+*.test
+*.out
+
+# stray binaries from ad-hoc `go build -o <name>`
+/codearts
+/codebuddy
+/qoder
+/trae
+/lobsterai

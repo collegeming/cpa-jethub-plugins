@@ -1,0 +1,160 @@
+{
+  "schema_version": 2,
+  "plugins": [
+    {
+      "id": "codearts",
+      "name": "CodeArts Agent",
+      "description": "华为云 CodeArts Agent 原生 Go 插件：SDK-HMAC-SHA256 签名、STS 凭据换发与 OAuth 登录均已实现。",
+      "author": "cpa-jethub",
+      "version": "0.1.0",
+      "repository": "https://github.com/cpa-jethub/plugins",
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codearts_linux_amd64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codearts_linux_arm64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codearts_darwin_arm64.dylib",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      }
+    },
+    {
+      "id": "codebuddy",
+      "name": "CodeBuddy",
+      "description": "腾讯 CodeBuddy 适配器插件（脚手架，尚未实现）。Scaffold only — not implemented.",
+      "author": "cpa-jethub",
+      "version": "0.1.0",
+      "repository": "https://github.com/cpa-jethub/plugins",
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codebuddy_linux_amd64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codebuddy_linux_arm64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codebuddy_darwin_arm64.dylib",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qoder",
+      "name": "Qoder",
+      "description": "阿里 Qoder 适配器插件（脚手架，尚未实现）。Scaffold only — not implemented.",
+      "author": "cpa-jethub",
+      "version": "0.1.0",
+      "repository": "https://github.com/cpa-jethub/plugins",
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/qoder_linux_amd64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/qoder_linux_arm64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/qoder_darwin_arm64.dylib",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      }
+    },
+    {
+      "id": "trae",
+      "name": "TRAE",
+      "description": "字节 TRAE 适配器插件（脚手架，尚未实现）。Scaffold only — not implemented.",
+      "author": "cpa-jethub",
+      "version": "0.1.0",
+      "repository": "https://github.com/cpa-jethub/plugins",
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/trae_linux_amd64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/trae_linux_arm64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/trae_darwin_arm64.dylib",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      }
+    },
+    {
+      "id": "lobsterai",
+      "name": "LobsterAI",
+      "description": "网易有道 LobsterAI 适配器插件（脚手架，尚未实现）。Scaffold only — not implemented.",
+      "author": "cpa-jethub",
+      "version": "0.1.0",
+      "repository": "https://github.com/cpa-jethub/plugins",
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/lobsterai_linux_amd64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/lobsterai_linux_arm64.so",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/lobsterai_darwin_arm64.dylib",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      }
+    }
+  ]
+}
