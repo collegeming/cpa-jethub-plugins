@@ -1,2 +1,6 @@
 github.com/router-for-me/CLIProxyAPI/v7 v7.3.17 h1:jOQdDjJEq8ldakeuKMSJc29TN3V4tDBU3niPa+JYKto=
 github.com/router-for-me/CLIProxyAPI/v7 v7.3.17/go.mod h1:GGRX8CS3050BThOf8ZCs6DjSUyp/JwEupBnI2jRPVcY=
+github.com/tetratelabs/wazero v1.12.0 h1:DuWcpNu/FzgEXgGBDp8J1Spc+CWOvvtvVyjKlaZopYU=
+github.com/tetratelabs/wazero v1.12.0/go.mod h1:LvKtzl2RqO4gyF27BiXU+nKAjcV8f38U+kP/q2vgxh0=
+golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
+golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
