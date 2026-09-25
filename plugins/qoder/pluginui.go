@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"net/http"
 	"strings"
 	"time"
 
@@ -227,6 +228,10 @@ func pollLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugina
 	}
 	response, errPoll := pollLoginForManagement(h, state)
 	if errPoll != nil {
+		if wantsJSON(request) {
+			return jsonManagementResponse(statusOf(errPoll, http.StatusBadGateway),
+				map[string]any{"error": errPoll.Error()})
+		}
 		return pluguiPage("Qoder 登录",
 			plugui.Card("检查失败", plugui.Notice("danger", errPoll.Error()),
 				plugui.Action{Label: "重新登录", Query: "action=start", Kind: "primary"}))
@@ -266,11 +271,11 @@ func pollLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugina
 func pollLoginForManagement(h *abiboot.Host, state string) (pluginapi.AuthLoginPollResponse, error) {
 	var empty pluginapi.AuthLoginPollResponse
 	if state == "" {
-		return empty, abiboot.Errorf("missing_state", "缺少 state 参数，请重新发起登录")
+		return empty, statusError(false, "missing_state", http.StatusBadRequest, "缺少 state 参数，请重新发起登录")
 	}
 	raw, errMarshal := json.Marshal(pluginapi.AuthLoginPollRequest{State: state})
 	if errMarshal != nil {
-		return empty, abiboot.Errorf("encode_poll", "encode poll request: %v", errMarshal)
+		return empty, statusError(false, "encode_poll", http.StatusInternalServerError, "encode poll request: %v", errMarshal)
 	}
 	value, errPoll := handleAuthLoginPoll(h, raw)
 	if errPoll != nil {
@@ -278,7 +283,7 @@ func pollLoginForManagement(h *abiboot.Host, state string) (pluginapi.AuthLoginP
 	}
 	response, ok := value.(pluginapi.AuthLoginPollResponse)
 	if !ok {
-		return empty, abiboot.Errorf("unexpected_poll", "poll handler returned %T", value)
+		return empty, statusError(false, "unexpected_poll", http.StatusInternalServerError, "poll handler returned %T", value)
 	}
 	if response.Status != pluginapi.AuthLoginStatusSuccess || len(response.Auth.StorageJSON) == 0 {
 		return response, nil
@@ -293,7 +298,7 @@ func pollLoginForManagement(h *abiboot.Host, state string) (pluginapi.AuthLoginP
 		}
 	}
 	if _, errSave := h.SaveAuth(name, response.Auth.StorageJSON); errSave != nil {
-		return empty, abiboot.Errorf("save_auth", "保存凭据失败：%v", errSave)
+		return empty, transportError("save_auth", "保存凭据失败：%v", errSave)
 	}
 	forgetLoginSession(state)
 	return response, nil
@@ -328,14 +333,21 @@ func checkinFailed(message string) template.HTML {
 		plugui.Action{Label: "返回状态", Path: "status"})
 }
 
-// lastLoginState returns the most recently started session, so the poll link
-// works even when the page was reached without a state parameter.
+// lastLoginState returns the most recently started PENDING session, so a poll
+// link that lost its state parameter still works while a completed or expired
+// session never gets resumed by accident.
 func lastLoginState() string {
 	loginMu.Lock()
 	defer loginMu.Unlock()
 	newest := ""
 	var newestAt time.Time
 	for state, session := range loginSessions {
+		if session.expired() {
+			continue
+		}
+		if _, _, done := session.snapshot(); done {
+			continue
+		}
 		if session.CreatedAt.After(newestAt) {
 			newest = state
 			newestAt = session.CreatedAt

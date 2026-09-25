@@ -220,3 +220,6 @@ func sanitizeFileName(value string) string {
 	}
 	return strings.Trim(builder.String(), "-")
 }
+
+// nowMillis is the current time as a millisecond timestamp.
+func nowMillis() int64 { return time.Now().UnixMilli() }

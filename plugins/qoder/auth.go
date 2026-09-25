@@ -50,7 +50,7 @@ func handleAuthRefresh(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		return nil, errParse
 	}
 	if !credential.Refreshable() {
-		return nil, abiboot.Errorf("not_refreshable", "该 Qoder 账号缺少 refresh_token，请重新登录")
+		return nil, credentialError("not_refreshable", "该 Qoder 账号缺少 refresh_token，请重新登录")
 	}
 	refreshed, errRefresh := refreshCredential(h, credential, settings())
 	if errRefresh != nil {
@@ -81,19 +81,19 @@ func refreshCredential(h *abiboot.Host, credential *Credential, cfg Config) (*Cr
 	)
 	response, errDo := hostRequest(h, http.MethodPost, p.OpenAPIBase+RefreshPath, headers, body, cfg)
 	if errDo != nil {
-		return nil, abiboot.RetryableError("refresh_transport", "续期请求失败：%v", errDo)
+		return nil, transportError("refresh_transport", "续期请求失败：%v", errDo)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-			return nil, abiboot.HTTPError("refresh_token_expired", http.StatusUnauthorized,
-				"Qoder refresh_token 已失效，请重新登录")
+			return nil, credentialError("refresh_token_expired", "Qoder refresh_token 已失效，请重新登录")
 		}
-		return nil, abiboot.Errorf("refresh_failed", "续期返回 HTTP %d：%s",
-			response.StatusCode, truncate(string(response.Body), 300))
+		return nil, upstreamStatusError("refresh_failed", response.StatusCode,
+			"续期返回 HTTP %d：%s%s", response.StatusCode,
+			truncate(string(response.Body), 300), credentialAdvice(response.StatusCode))
 	}
 	payload := parseTokenPayloadJSON(response.Body)
 	if payload.AccessToken == "" {
-		return nil, abiboot.Errorf("refresh_empty", "续期响应没有访问令牌：%s", truncate(string(response.Body), 300))
+		return nil, transportError("refresh_empty", "续期响应没有访问令牌：%s", truncate(string(response.Body), 300))
 	}
 	return credential.applyRefresh(payload), nil
 }

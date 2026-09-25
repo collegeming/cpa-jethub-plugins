@@ -370,14 +370,14 @@ func (c *Credential) Encode() (json.RawMessage, error) {
 // ParseCredential decodes and validates an auth-file payload.
 func ParseCredential(raw []byte) (*Credential, error) {
 	if len(raw) == 0 {
-		return nil, abiboot.Errorf("invalid_credential", "empty Qoder credential")
+		return nil, credentialError("invalid_credential", "empty Qoder credential")
 	}
 	var credential Credential
 	if err := json.Unmarshal(raw, &credential); err != nil {
-		return nil, abiboot.Errorf("invalid_credential", "decode Qoder credential: %v", err)
+		return nil, credentialError("invalid_credential", "decode Qoder credential: %v", err)
 	}
 	if strings.TrimSpace(credential.bearerToken()) == "" {
-		return nil, abiboot.Errorf("invalid_credential", "Qoder credential is missing security_oauth_token/access_token")
+		return nil, credentialError("invalid_credential", "Qoder credential is missing security_oauth_token/access_token")
 	}
 	return &credential, nil
 }

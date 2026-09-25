@@ -207,11 +207,11 @@ func TestUpstreamErrorClassification(t *testing.T) {
 		wantCode  string
 		retryable bool
 	}{
-		{http.StatusTooManyRequests, "rate_limited", false},
+		{http.StatusTooManyRequests, "rate_limited", true},
 		{http.StatusUnauthorized, "auth", false},
 		{http.StatusForbidden, "auth", false},
 		{http.StatusBadGateway, "upstream_error", true},
-		{http.StatusNotFound, "upstream_error", false},
+		{http.StatusNotFound, "upstream_error", true},
 	}
 	for _, testCase := range cases {
 		errUpstream := upstreamError(httpResponse(testCase.status, "nope"))

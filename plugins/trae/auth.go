@@ -208,7 +208,11 @@ func handleAuthLoginPoll(h *abiboot.Host, raw json.RawMessage) (any, error) {
 			session.fail(message)
 			return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: message}, nil
 		}
-		session.finish(credential, "登录成功："+credential.Nickname)
+		label := credential.Nickname
+		if label == "" {
+			label = credential.UID
+		}
+		session.finish(credential, "登录成功："+label)
 		auth, errAuth := authDataFor(credential, "")
 		if errAuth != nil {
 			return nil, errAuth
@@ -216,7 +220,7 @@ func handleAuthLoginPoll(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		forgetLoginSession(request.State)
 		return pluginapi.AuthLoginPollResponse{
 			Status:  pluginapi.AuthLoginStatusSuccess,
-			Message: "登录成功：" + credential.Nickname,
+			Message: "登录成功：" + label,
 			Auth:    auth,
 		}, nil
 	}

@@ -47,12 +47,12 @@ func managementCall(t *testing.T, h *abiboot.Host, request pluginapi.ManagementR
 // (`/v0/management/qoder/checkin`) only agree on the final segment.
 func TestManagementRouteUsesTheLastSegment(t *testing.T) {
 	cases := map[string]string{
-		"/status":                        "/status",
-		"/status/":                       "/status",
+		"/status":                           "/status",
+		"/status/":                          "/status",
 		"/v0/resource/plugins/qoder/status": "/status",
-		"/v0/management/qoder/checkin":   "/checkin",
-		"/v0/management/qoder/status":    "/status",
-		"":                               "/",
+		"/v0/management/qoder/checkin":      "/checkin",
+		"/v0/management/qoder/status":       "/status",
+		"":                                  "/",
 	}
 	for input, want := range cases {
 		if got := managementRoute(input); got != want {
@@ -329,7 +329,7 @@ func TestLoginPageTwoStepFlow(t *testing.T) {
 	if !strings.Contains(page, DeviceSelectPath) {
 		t.Fatalf("the start page does not show the authorization URL:\n%s", page)
 	}
-	if !strings.Contains(page, "action=poll&state=") {
+	if !strings.Contains(page, "action=poll&amp;state=") {
 		t.Fatalf("the start page has no poll link:\n%s", page)
 	}
 

@@ -17,17 +17,6 @@ import (
 // advertised rather than a fabricated per-model one.
 const defaultMaxOutputTokens = 65536
 
-// modelContextWindowOf returns the catalog context window, or 0 when the model
-// is not a catalog entry (the public endpoint serves names this table does not
-// know, so an unknown model must not be given an invented window).
-func modelContextWindowOf(p *product, model string) int64 {
-	entry, ok := catalogModelFor(p, model)
-	if !ok {
-		return 0
-	}
-	return entry.ContextWindow
-}
-
 // promotionActiveNow reports whether the off-peak window covers `now`.
 //
 // Port of `promotionActiveNow` (`qoder-adapter.ts:400-419`). The catalog's
@@ -219,11 +208,4 @@ func handleModelForAuth(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 		region = credential.regionOr(cfg.Region)
 	}
 	return pluginapi.ModelResponse{Provider: ProviderKey, Models: staticModelInfos(cfg, region)}, nil
-}
-
-// catalogKeyKnown reports whether a model name is one of the catalog keys that
-// only the encrypted endpoint accepts.
-func catalogKeyKnown(p *product, model string) bool {
-	_, ok := catalogModelFor(p, model)
-	return ok
 }

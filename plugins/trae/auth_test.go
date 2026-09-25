@@ -105,6 +105,56 @@ func TestCredentialParseAndEncode(t *testing.T) {
 	}
 }
 
+// TestCredentialExpiresAtAcceptsHostNumber is the regression guard for a real
+// defect: the host re-serialises the auth storage it holds and turns a
+// numeric-looking `expires_at` into a JSON *number*. A plain string field fails
+// to decode, which silently hides every model of the provider ("unknown provider
+// for model ..." on the client side, with no error in any log).
+func TestCredentialExpiresAtAcceptsHostNumber(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int64
+	}{
+		{name: "string as stored by the plugin", body: `{"access_token":"t","expires_at":"1786847930000"}`, want: 1786847930000},
+		{name: "number as rewritten by the host", body: `{"access_token":"t","expires_at":1786847930000}`, want: 1786847930000},
+		{name: "float from the host", body: `{"access_token":"t","expires_at":1786847930000.0}`, want: 1786847930000},
+		{name: "seconds as a number", body: `{"access_token":"t","expires_at":1786847930}`, want: 1786847930000},
+		{name: "null", body: `{"access_token":"t","expires_at":null}`},
+		{name: "absent", body: `{"access_token":"t"}`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			credential, errParse := ParseCredential([]byte(testCase.body))
+			if errParse != nil {
+				t.Fatalf("ParseCredential: %v", errParse)
+			}
+			got, ok := credential.ExpiresAtMS()
+			if testCase.want == 0 {
+				if ok {
+					t.Fatalf("expiry = %d, want no value", got)
+				}
+				return
+			}
+			if !ok || got != testCase.want {
+				t.Fatalf("expiry = %d (ok=%v), want %d", got, ok, testCase.want)
+			}
+		})
+	}
+}
+
+// TestCredentialEncodeKeepsExpiresAtAString: the stored form stays a string so
+// the file remains interchangeable with Jet-Hub's.
+func TestCredentialEncodeKeepsExpiresAtAString(t *testing.T) {
+	encoded, errEncode := (&Credential{AccessToken: "t", ExpiresAt: ExpiresAtValue("1786847930000")}).Encode()
+	if errEncode != nil {
+		t.Fatalf("encode: %v", errEncode)
+	}
+	if !strings.Contains(string(encoded), `"expires_at":"1786847930000"`) {
+		t.Fatalf("encoded credential = %s", encoded)
+	}
+}
+
 // TestDefaultAuthFileName sanitizes the identity into a safe file name.
 func TestDefaultAuthFileName(t *testing.T) {
 	cases := []struct {
@@ -139,7 +189,7 @@ func TestAuthDataFor(t *testing.T) {
 	credential := &Credential{
 		AccessToken:  "tok",
 		RefreshToken: "refresh",
-		ExpiresAt:    strconvFormat(expiry.UnixMilli()),
+		ExpiresAt:    ExpiresAtValue(strconvFormat(expiry.UnixMilli())),
 		UID:          "uid-123456789",
 		Nickname:     "昵称",
 		MachineID:    "machine",

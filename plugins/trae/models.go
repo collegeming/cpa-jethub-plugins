@@ -784,6 +784,13 @@ func handleModelForAuth(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	cfg := settings()
 	credential, errCredential := ParseCredential(request.StorageJSON)
 	if errCredential != nil || credential.AccessToken == "" {
+		// The contract is to answer with an empty list rather than an error, but a
+		// credential that cannot be parsed is a real fault worth surfacing: it
+		// silently hides every model of the provider.
+		if h != nil && errCredential != nil {
+			h.Log("warn", "TRAE 凭据解析失败，无法列出模型",
+				map[string]any{"error": errCredential.Error(), "auth_id": request.AuthID})
+		}
 		return pluginapi.ModelResponse{Provider: ProviderKey, Models: []pluginapi.ModelInfo{}}, nil
 	}
 	if !cfg.DiscoverModels {

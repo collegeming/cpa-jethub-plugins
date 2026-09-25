@@ -166,22 +166,23 @@ func fetchCreditBalance(h *abiboot.Host, credential *Credential, cfg Config) (*c
 	p := credential.product(cfg.Region)
 	response, errDo := hostRequest(h, http.MethodGet, p.OpenAPIBase+UsagePath, creditsHeaders(credential, p), nil, cfg)
 	if errDo != nil {
-		return nil, abiboot.Errorf("credits_transport", "查询积分失败：%v", errDo)
+		return nil, transportError("credits_transport", "查询积分失败：%v", errDo)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, abiboot.Errorf("credits_status", "积分接口返回 HTTP %d：%s",
-			response.StatusCode, truncate(string(response.Body), 300))
+		return nil, upstreamStatusError("credits_status", response.StatusCode,
+			"积分接口返回 HTTP %d：%s%s", response.StatusCode,
+			truncate(string(response.Body), 300), credentialAdvice(response.StatusCode))
 	}
 	var root map[string]any
 	if errDecode := json.Unmarshal(response.Body, &root); errDecode != nil {
-		return nil, abiboot.Errorf("credits_decode", "解析积分响应失败：%v", errDecode)
+		return nil, transportError("credits_decode", "解析积分响应失败：%v", errDecode)
 	}
 	if readText(root, "displayMode") == "enterprise" {
 		return nil, nil
 	}
 	usage, ok := root["qoderUsage"].(map[string]any)
 	if !ok {
-		return nil, abiboot.Errorf("credits_shape", "积分响应缺少 qoderUsage")
+		return nil, transportError("credits_shape", "积分响应缺少 qoderUsage")
 	}
 
 	packages := make([]creditPackage, 0, 3)
@@ -218,7 +219,7 @@ func fetchCreditBalance(h *abiboot.Host, credential *Credential, cfg Config) (*c
 	if len(packages) == 0 {
 		// A response whose shape does not match is "query failed", not "zero
 		// balance" (`qoder-credits.ts:218-220`).
-		return nil, abiboot.Errorf("credits_shape", "积分响应没有可解析的额度包")
+		return nil, transportError("credits_shape", "积分响应没有可解析的额度包")
 	}
 	total := 0.0
 	for _, pkg := range packages {
@@ -232,11 +233,12 @@ func loadCampaigns(h *abiboot.Host, credential *Credential, cfg Config) (*campai
 	p := credential.product(cfg.Region)
 	response, errDo := hostRequest(h, http.MethodGet, p.OpenAPIBase+CampaignsPath, creditsHeaders(credential, p), nil, cfg)
 	if errDo != nil {
-		return nil, abiboot.Errorf("campaigns_transport", "查询活动列表失败：%v", errDo)
+		return nil, transportError("campaigns_transport", "查询活动列表失败：%v", errDo)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, abiboot.Errorf("campaigns_status", "活动列表返回 HTTP %d：%s",
-			response.StatusCode, truncate(string(response.Body), 300))
+		return nil, upstreamStatusError("campaigns_status", response.StatusCode,
+			"活动列表返回 HTTP %d：%s%s", response.StatusCode,
+			truncate(string(response.Body), 300), credentialAdvice(response.StatusCode))
 	}
 	return parseCampaigns(response.Body)
 }
@@ -245,7 +247,7 @@ func loadCampaigns(h *abiboot.Host, credential *Credential, cfg Config) (*campai
 func parseCampaigns(body []byte) (*campaigns, error) {
 	var root map[string]any
 	if errDecode := json.Unmarshal(body, &root); errDecode != nil {
-		return nil, abiboot.Errorf("campaigns_decode", "解析活动列表失败：%v", errDecode)
+		return nil, transportError("campaigns_decode", "解析活动列表失败：%v", errDecode)
 	}
 	parsed := &campaigns{
 		ShowCampaign: root["showCampaign"] == true,
@@ -335,7 +337,10 @@ func claimCampaign(h *abiboot.Host, credential *Credential, cfg Config, campaign
 func claimDailyCheckin(h *abiboot.Host, credential *Credential, cfg Config) (claimOutcome, error) {
 	parsed, errLoad := loadCampaigns(h, credential, cfg)
 	if errLoad != nil {
-		return claimOutcome{Status: "failed", Message: "活动列表查询失败：" + errLoad.Error()}, nil
+		// A dead credential or an upstream fault must stay a classified failure:
+		// reporting it as a 200 "failed outcome" would hide the 401 from the host
+		// and from any script.
+		return claimOutcome{}, errLoad
 	}
 	targets := claimableCampaigns(parsed)
 	if len(targets) == 0 {

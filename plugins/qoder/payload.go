@@ -180,7 +180,7 @@ func buildInferPayload(ask inferAsk) ([]byte, error) {
 	}
 	encoded, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
-		return nil, abiboot.Errorf("encode_infer_payload", "encode encrypted inference payload: %v", errMarshal)
+		return nil, statusError(false, "encode_infer_payload", http.StatusInternalServerError, "encode encrypted inference payload: %v", errMarshal)
 	}
 	return encoded, nil
 }

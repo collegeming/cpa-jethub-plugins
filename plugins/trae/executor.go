@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -422,19 +421,4 @@ func looksLikeSOLO(body []byte) bool {
 		return true
 	}
 	return strings.Contains(text, "\nevent:") || strings.Contains(text, "\r\nevent:")
-}
-
-// describeChatError renders a short diagnosis for the management UI.
-func describeChatError(err error) string {
-	if err == nil {
-		return ""
-	}
-	var envelope *abiboot.EnvelopeError
-	if typed, ok := err.(*abiboot.EnvelopeError); ok {
-		envelope = typed
-	}
-	if envelope != nil && envelope.HTTPStatus != 0 {
-		return fmt.Sprintf("%s (HTTP %d)", envelope.Message, envelope.HTTPStatus)
-	}
-	return err.Error()
 }

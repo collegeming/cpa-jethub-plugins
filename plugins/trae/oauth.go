@@ -655,7 +655,7 @@ func buildTraeCredential(exchange traeExchangeResult, userInfo traeUserInfoResul
 		Type:         ProviderKey,
 		AccessToken:  exchange.AccessToken,
 		RefreshToken: exchange.RefreshToken,
-		ExpiresAt:    expiresAtString(exchange, nowMS),
+		ExpiresAt:    ExpiresAtValue(expiresAtString(exchange, nowMS)),
 		UID:          userInfo.UID,
 		Nickname:     userInfo.ScreenName,
 		MachineID:    session.MachineID,
@@ -677,7 +677,7 @@ func applyTraeRefresh(previous *Credential, exchange traeExchangeResult, nowMS i
 	if exchange.RefreshToken != "" {
 		refreshed.RefreshToken = exchange.RefreshToken
 	}
-	refreshed.ExpiresAt = expiresAtString(exchange, nowMS)
+	refreshed.ExpiresAt = ExpiresAtValue(expiresAtString(exchange, nowMS))
 	return &refreshed
 }
 

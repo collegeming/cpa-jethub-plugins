@@ -137,7 +137,7 @@ func selectAccount(h *abiboot.Host, request pluginapi.ManagementRequest) (plugin
 // credentialOf loads and parses the credential of one account.
 func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, error) {
 	if strings.TrimSpace(entry.AuthIndex) == "" {
-		return nil, abiboot.Errorf("missing_auth", "账号 %s 缺少运行时索引", entry.Name)
+		return nil, statusError(false, "missing_auth", http.StatusBadRequest, "账号 %s 缺少运行时索引", entry.Name)
 	}
 	auth, errGet := h.GetAuth(entry.AuthIndex)
 	if errGet != nil {
@@ -178,7 +178,7 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 	if errCredential != nil {
 		account["error"] = errCredential.Error()
 		body["account"] = account
-		return jsonManagementResponse(http.StatusOK, body)
+		return jsonManagementResponse(statusOf(errCredential, http.StatusOK), body)
 	}
 	account["region"] = string(credential.regionOr(activeRegion()))
 	account["expires_at"] = jsonTime(credential.ExpiresAt())
@@ -238,14 +238,18 @@ func checkinResponse(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	credential, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		if wantsJSON(request) {
-			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": errCredential.Error()})
+			return jsonManagementResponse(statusOf(errCredential, http.StatusBadRequest),
+				map[string]any{"error": errCredential.Error()})
 		}
 		return pluguiPage("Qoder 签到", checkinFailed(errCredential.Error()))
 	}
 	outcome, errClaim := claimDailyCheckin(h, credential, settings())
 	if errClaim != nil {
+		// The failure's own status travels to the caller: a dead credential must
+		// be a 401, not a generic 502.
 		if wantsJSON(request) {
-			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": errClaim.Error()})
+			return jsonManagementResponse(statusOf(errClaim, http.StatusBadGateway),
+				map[string]any{"error": errClaim.Error()})
 		}
 		return pluguiPage("Qoder 签到", checkinFailed(errClaim.Error()))
 	}

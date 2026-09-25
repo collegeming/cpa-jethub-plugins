@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -137,4 +138,9 @@ func decodeResult[T any](t *testing.T, value any) T {
 		t.Fatalf("unmarshal handler result: %v", errUnmarshal)
 	}
 	return out
+}
+
+// base64Fixture base64-encodes a JSON payload for the ABI's []byte fields.
+func base64Fixture(value string) string {
+	return base64.StdEncoding.EncodeToString([]byte(value))
 }

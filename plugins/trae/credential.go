@@ -23,7 +23,13 @@ type Credential struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 	// ExpiresAt is a **millisecond** timestamp held as a string, matching the
 	// Jet-Hub storage convention (trae.ts:95-101).
-	ExpiresAt string `json:"expires_at,omitempty"`
+	//
+	// The type is tolerant on purpose: the host re-serialises the auth storage it
+	// holds and turns a numeric-looking value into a JSON *number*, so a plain
+	// `string` field fails to decode on the model-discovery and execution paths
+	// ("cannot unmarshal number into Go struct field ... of type string") and the
+	// provider silently lists no models.
+	ExpiresAt ExpiresAtValue `json:"expires_at,omitempty"`
 	// UID is the account identity used for pooling and check-in derivation.
 	UID string `json:"uid"`
 	// Nickname is display-only.
@@ -44,6 +50,43 @@ type Credential struct {
 	// EnterpriseID comes from the callback's `TenantID` field (trae-oauth.ts:288).
 	EnterpriseID string `json:"enterprise_id,omitempty"`
 }
+
+// ExpiresAtValue is a timestamp that may arrive as a JSON string (the storage
+// convention) or as a JSON number (what the host produces when it re-serialises
+// a numeric-looking value). Both are normalised to a decimal string.
+type ExpiresAtValue string
+
+// UnmarshalJSON accepts a string, a number, null or an absent value.
+func (v *ExpiresAtValue) UnmarshalJSON(data []byte) error {
+	text := strings.TrimSpace(string(data))
+	if text == "" || text == "null" {
+		*v = ""
+		return nil
+	}
+	if text[0] == '"' {
+		var decoded string
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return err
+		}
+		*v = ExpiresAtValue(strings.TrimSpace(decoded))
+		return nil
+	}
+	var number json.Number
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.UseNumber()
+	if err := decoder.Decode(&number); err != nil {
+		return err
+	}
+	if parsed, errFloat := number.Float64(); errFloat == nil {
+		*v = ExpiresAtValue(strconv.FormatFloat(parsed, 'f', -1, 64))
+		return nil
+	}
+	*v = ExpiresAtValue(number.String())
+	return nil
+}
+
+// String renders the timestamp.
+func (v ExpiresAtValue) String() string { return string(v) }
 
 // ParseCredential decodes and validates an auth-file payload.
 func ParseCredential(raw []byte) (*Credential, error) {
@@ -87,7 +130,7 @@ func (c *Credential) Refreshable() bool {
 // The second return value is false when neither source yields a value, in which
 // case the credential is *not* treated as expired (trae.ts:152-156).
 func (c *Credential) ExpiresAtMS() (int64, bool) {
-	if raw := strings.TrimSpace(c.ExpiresAt); raw != "" {
+	if raw := strings.TrimSpace(c.ExpiresAt.String()); raw != "" {
 		if isDigits(raw) {
 			value, err := strconv.ParseInt(raw, 10, 64)
 			if err == nil {

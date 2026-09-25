@@ -58,7 +58,7 @@ type executorStreamResponse struct {
 // stay under the host's control (the plugin never opens a socket itself).
 func hostRequest(h *abiboot.Host, method, rawURL string, headers http.Header, body []byte, _ Config) (*pluginapi.HTTPResponse, error) {
 	if h == nil {
-		return nil, abiboot.Errorf("host_unavailable", "插件未通过宿主调用（缺少 host 句柄）")
+		return nil, transportError("host_unavailable", "插件未通过宿主调用（缺少 host 句柄）")
 	}
 	return h.HTTPDo(abiboot.HTTPDoRequest{Method: method, URL: rawURL, Headers: headers, Body: body})
 }
@@ -118,7 +118,7 @@ func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	completion := aggregateChunks(chunks, request.Model)
 	payload, errMarshal := json.Marshal(completion)
 	if errMarshal != nil {
-		return nil, abiboot.Errorf("encode_response", "encode completion: %v", errMarshal)
+		return nil, statusError(false, "encode_response", http.StatusInternalServerError, "encode completion: %v", errMarshal)
 	}
 	return pluginapi.ExecutorResponse{
 		Payload: payload,
@@ -243,7 +243,10 @@ func sendPublic(h *abiboot.Host, request pluginapi.ExecutorRequest, credential *
 func sendEncrypted(h *abiboot.Host, request pluginapi.ExecutorRequest, credential *Credential, cfg Config, p *product) (*pluginapi.HTTPResponse, error) {
 	signer, errSigner := signerFor(cfg.WASMPath)
 	if errSigner != nil {
-		return nil, abiboot.Errorf("wasm_signer", "无法加载 Qoder 签名 WASM（%s）：%v", cfg.WASMPath, errSigner)
+		// A plugin-side misconfiguration, not an upstream fault: the request never
+		// leaves the process, so 500 is the honest classification.
+		return nil, statusError(false, "wasm_signer", http.StatusInternalServerError,
+			"无法加载 Qoder 签名 WASM（%s）：%v", cfg.WASMPath, errSigner)
 	}
 	ask, errAsk := inferAskFromRequest(request, credential, cfg, p)
 	if errAsk != nil {
@@ -259,7 +262,7 @@ func sendEncrypted(h *abiboot.Host, request pluginapi.ExecutorRequest, credentia
 		Ask:           ask,
 	})
 	if errSign != nil {
-		return nil, abiboot.Errorf("wasm_sign", "WASM 签名失败：%v", errSign)
+		return nil, statusError(false, "wasm_sign", http.StatusInternalServerError, "WASM 签名失败：%v", errSign)
 	}
 	headers := http.Header{}
 	for name, value := range signed.Headers {
@@ -366,18 +369,24 @@ func itoaInt(value int) string {
 }
 
 // upstreamError classifies a non-2xx upstream answer.
+//
+// The status is normalised rather than passed through: the host uses it to decide
+// whether the request was at fault (and therefore whether the credential should
+// be rotated), and an upstream 404 or 403 says nothing useful about that.
 func upstreamError(response *pluginapi.HTTPResponse) error {
 	detail := truncate(string(response.Body), 300)
 	status := response.StatusCode
 	switch {
-	case status == http.StatusTooManyRequests:
-		return abiboot.HTTPError("rate_limited", status, "Qoder 限流：%s", detail)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return abiboot.HTTPError("auth", status, "Qoder 凭据无效：%s", detail)
-	case status >= 500:
-		return abiboot.RetryableError("upstream_error", "Qoder 服务端错误（HTTP %d）：%s", status, detail)
+		return credentialError("auth", "Qoder 凭据无效（HTTP %d）：%s%s", status, detail, credentialAdvice(status))
+	case status == http.StatusPaymentRequired:
+		return statusError(false, "quota_exhausted", http.StatusPaymentRequired, "Qoder 额度已耗尽：%s", detail)
+	case status == http.StatusTooManyRequests:
+		return statusError(true, "rate_limited", http.StatusTooManyRequests, "Qoder 限流：%s", detail)
+	case status == http.StatusGatewayTimeout:
+		return statusError(true, "upstream_timeout", http.StatusGatewayTimeout, "Qoder 上游超时：%s", detail)
 	default:
-		return abiboot.HTTPError("upstream_error", status, "Qoder 返回 HTTP %d：%s", status, detail)
+		return transportError("upstream_error", "Qoder 返回 HTTP %d：%s", status, detail)
 	}
 }
 
@@ -398,7 +407,7 @@ func publicRequestBody(request pluginapi.ExecutorRequest, cfg Config) ([]byte, e
 	}
 	encoded, errMarshal := json.Marshal(body)
 	if errMarshal != nil {
-		return nil, abiboot.Errorf("encode_request", "encode request: %v", errMarshal)
+		return nil, statusError(false, "encode_request", http.StatusInternalServerError, "encode request: %v", errMarshal)
 	}
 	return encoded, nil
 }
