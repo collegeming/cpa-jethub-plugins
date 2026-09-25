@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cpa-jethub/plugins/internal/jethub/openai"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
 )
 
 // 本文件覆盖 DSML 原生工具调用模式的移植结果，重点是最容易出错的两处：

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cpa-jethub/plugins/internal/jethub/openai"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
 )
 
 // Ports llm-adapter.ts:212-236 (buildDsmlSystemPrompt), llm-adapter.ts:464-725

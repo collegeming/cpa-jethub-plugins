@@ -13,3 +13,6 @@ dist/
 /qoder
 /trae
 /lobsterai
+
+# release packaging output
+release/

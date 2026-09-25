@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cpa-jethub/plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 )
 
 // ErrRefreshTokenExpired reports that the refresh token can never be used

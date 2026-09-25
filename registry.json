@@ -1,160 +1,79 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "plugins": [
     {
       "id": "codearts",
       "name": "CodeArts Agent",
-      "description": "华为云 CodeArts Agent 原生 Go 插件：SDK-HMAC-SHA256 签名、STS 凭据换发与 OAuth 登录均已实现。",
-      "author": "cpa-jethub",
-      "version": "0.1.0",
-      "repository": "https://github.com/cpa-jethub/plugins",
-      "install": {
-        "type": "direct",
-        "artifacts": [
-          {
-            "goos": "linux",
-            "goarch": "amd64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codearts_linux_amd64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "linux",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codearts_linux_arm64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "darwin",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codearts_darwin_arm64.dylib",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          }
-        ]
-      }
+      "description": "华为云 CodeArts Agent 接入：SDK-HMAC-SHA256 签名、OAuth 浏览器登录与凭据续期、动态模型目录、DSML 原生工具调用、每日签到。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "logo": "https://www.huaweicloud.com/favicon.ico",
+      "tags": [
+        "Provider",
+        "Huawei",
+        "CodeArts",
+        "OAuth",
+        "Credits"
+      ]
     },
     {
       "id": "codebuddy",
       "name": "CodeBuddy",
-      "description": "腾讯 CodeBuddy 适配器插件（脚手架，尚未实现）。Scaffold only — not implemented.",
-      "author": "cpa-jethub",
-      "version": "0.1.0",
-      "repository": "https://github.com/cpa-jethub/plugins",
-      "install": {
-        "type": "direct",
-        "artifacts": [
-          {
-            "goos": "linux",
-            "goarch": "amd64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codebuddy_linux_amd64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "linux",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codebuddy_linux_arm64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "darwin",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/codebuddy_darwin_arm64.dylib",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          }
-        ]
-      }
+      "description": "腾讯 CodeBuddy / WorkBuddy 接入：同一 CLI 内核与认证协议，差异由 endpoint 决定。上游协议移植中。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "Tencent",
+        "CodeBuddy",
+        "WorkBuddy"
+      ]
     },
     {
       "id": "qoder",
       "name": "Qoder",
-      "description": "阿里 Qoder 适配器插件（脚手架，尚未实现）。Scaffold only — not implemented.",
-      "author": "cpa-jethub",
-      "version": "0.1.0",
-      "repository": "https://github.com/cpa-jethub/plugins",
-      "install": {
-        "type": "direct",
-        "artifacts": [
-          {
-            "goos": "linux",
-            "goarch": "amd64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/qoder_linux_amd64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "linux",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/qoder_linux_arm64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "darwin",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/qoder_darwin_arm64.dylib",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          }
-        ]
-      }
+      "description": "阿里 Qoder 接入：PKCE 设备码登录与加密推理端点。上游协议移植中。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "Alibaba",
+        "Qoder"
+      ]
     },
     {
       "id": "trae",
       "name": "TRAE",
-      "description": "字节 TRAE 适配器插件（脚手架，尚未实现）。Scaffold only — not implemented.",
-      "author": "cpa-jethub",
-      "version": "0.1.0",
-      "repository": "https://github.com/cpa-jethub/plugins",
-      "install": {
-        "type": "direct",
-        "artifacts": [
-          {
-            "goos": "linux",
-            "goarch": "amd64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/trae_linux_amd64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "linux",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/trae_linux_arm64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "darwin",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/trae_darwin_arm64.dylib",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          }
-        ]
-      }
+      "description": "字节 TRAE 接入：ExchangeToken 轮换与 OpenAI↔SOLO 双向载荷转换。上游协议移植中。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "ByteDance",
+        "TRAE"
+      ]
     },
     {
       "id": "lobsterai",
       "name": "LobsterAI",
-      "description": "网易有道 LobsterAI 适配器插件（脚手架，尚未实现）。Scaffold only — not implemented.",
-      "author": "cpa-jethub",
-      "version": "0.1.0",
-      "repository": "https://github.com/cpa-jethub/plugins",
-      "install": {
-        "type": "direct",
-        "artifacts": [
-          {
-            "goos": "linux",
-            "goarch": "amd64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/lobsterai_linux_amd64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "linux",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/lobsterai_linux_arm64.so",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          },
-          {
-            "goos": "darwin",
-            "goarch": "arm64",
-            "url": "https://github.com/cpa-jethub/plugins/releases/download/v0.1.0/plugins/lobsterai_darwin_arm64.dylib",
-            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-          }
-        ]
-      }
+      "description": "有道 LobsterAI 接入：本地回环回调 + authCode 换取令牌，三步式登录。上游协议移植中。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "Youdao",
+        "LobsterAI"
+      ]
     }
   ]
 }

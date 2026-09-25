@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cpa-jethub/plugins/internal/jethub/openai"
-	"github.com/cpa-jethub/plugins/internal/jethub/sse"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 

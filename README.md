@@ -1,4 +1,4 @@
-# cpa-jethub-plugins
+# cpa-jethub-plugins-plugins
 
 CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个平台适配器移植为 `-buildmode=c-shared` 动态库，经 CPA 的插件 ABI 以 JSON envelope 提供登录、凭据续期、模型目录、执行器与配额能力。
 
@@ -102,7 +102,7 @@ Linux 与 FreeBSD 用 `.so`，macOS 用 `.dylib`，Windows 用 `.dll`。
 plugins:
   enabled: true
   store-sources:
-    - https://raw.githubusercontent.com/cpa-jethub/plugins/main/registry.json
+    - https://raw.githubusercontent.com/cpa-jethub-plugins/plugins/main/registry.json
 ```
 
 ### 依赖的宿主能力

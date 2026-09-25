@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cpa-jethub/plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -80,7 +80,7 @@ func (p *plugin) Registration() abiboot.Registration {
 		Name:             "CodeArts",
 		Version:          PluginVersion,
 		Author:           "cpa-jethub",
-		GitHubRepository: "https://github.com/cpa-jethub/plugins",
+		GitHubRepository: "https://github.com/collegeming/cpa-jethub-plugins",
 		Logo:             "https://www.huaweicloud.com/favicon.ico",
 		ConfigFields:     configFieldsForHost(),
 	}

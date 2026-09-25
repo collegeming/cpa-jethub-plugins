@@ -9,7 +9,7 @@ package main
 import (
 	"encoding/json"
 
-	"github.com/cpa-jethub/plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -24,7 +24,7 @@ const (
 	// Author identifies the plugin author organization.
 	Author = "cpa-jethub"
 	// Repository is the public source location of this plugin.
-	Repository = "https://github.com/cpa-jethub/plugins"
+	Repository = "https://github.com/collegeming/cpa-jethub-plugins"
 )
 
 // plugin is the package-level abiboot.Plugin implementation.

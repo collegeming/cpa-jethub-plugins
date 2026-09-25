@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cpa-jethub/plugins/internal/abiboot"
-	"github.com/cpa-jethub/plugins/internal/jethub/openai"
-	"github.com/cpa-jethub/plugins/internal/jethub/sse"
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -30,7 +30,7 @@ const (
 // attributionUserAgent identifies this adapter to the gateway. It is an
 // unsigned header, so it never participates in the signature.
 func attributionUserAgent() string {
-	return "cpa-jethub-codearts/" + PluginVersion + " (+https://github.com/cpa-jethub/plugins)"
+	return "cpa-jethub-codearts/" + PluginVersion + " (+https://github.com/collegeming/cpa-jethub-plugins)"
 }
 
 // executorStreamResponse is the wire shape of executor.execute_stream.

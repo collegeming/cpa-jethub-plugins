@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cpa-jethub/plugins/internal/abiboot"
-	"github.com/cpa-jethub/plugins/internal/jethub/openai"
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
 )
 
 // ErrQueueFull reports the CodeArts concurrency ceiling; the caller should poll

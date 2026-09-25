@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cpa-jethub/plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 )
 
 // Credential is the JSON persisted as the CPA auth file for one CodeArts

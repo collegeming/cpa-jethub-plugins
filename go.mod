@@ -1,4 +1,4 @@
-module github.com/cpa-jethub/plugins
+module github.com/collegeming/cpa-jethub-plugins
 
 go 1.26.0
 

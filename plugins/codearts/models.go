@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cpa-jethub/plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 

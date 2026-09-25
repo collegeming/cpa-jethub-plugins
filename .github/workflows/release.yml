@@ -1,0 +1,132 @@
+name: release
+
+# Publishes the plugin store release layout:
+#   <id>_<version>_<goos>_<goarch>.zip  (dynamic library at the zip root, <id>.<ext>)
+#   checksums.txt                        (sha256sum format)
+#
+# c-shared needs cgo, so each platform is built on a runner that can actually
+# link for it: linux/arm64 and windows/amd64 use cross gcc from apt, darwin is
+# built natively on macOS runners.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不带前导 v，例如 0.1.0）"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  GOFLAGS: -mod=mod
+  CGO_ENABLED: "1"
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, goos: linux, goarch: amd64, ext: so, cc: gcc }
+          - { runner: ubuntu-latest, goos: linux, goarch: arm64, ext: so, cc: aarch64-linux-gnu-gcc }
+          - { runner: ubuntu-latest, goos: windows, goarch: amd64, ext: dll, cc: x86_64-w64-mingw32-gcc }
+          - { runner: macos-14, goos: darwin, goarch: arm64, ext: dylib, cc: clang }
+          - { runner: macos-13, goos: darwin, goarch: amd64, ext: dylib, cc: clang }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 安装交叉编译器
+        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: 安装 mingw 交叉编译器
+        if: matrix.goos == 'windows'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: 解析版本号
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+            echo "::error::版本号 '$version' 不是点分数字形式"
+            exit 1
+          fi
+          echo "value=$version" >>"$GITHUB_OUTPUT"
+
+      - name: 构建并打包
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: bash scripts/release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: release/${{ matrix.goos }}/${{ matrix.goarch }}/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析版本号
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "value=$version" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: release-*
+          merge-multiple: true
+
+      # checksums.txt must cover every zip in the release, so it is generated
+      # once here after all platform jobs have finished.
+      - name: 生成 checksums.txt
+        run: |
+          cd assets
+          ls -1 ./*.zip >/dev/null
+          sha256sum ./*.zip | sed 's|\./||' >checksums.txt
+          cat checksums.txt
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" assets/*.zip assets/checksums.txt --clobber
+          else
+            gh release create "$tag" assets/*.zip assets/checksums.txt \
+              --title "$tag" --generate-notes
+          fi
