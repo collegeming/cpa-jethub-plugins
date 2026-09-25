@@ -63,7 +63,6 @@ static void free_host_buffer(void* ptr, size_t len) {
 import "C"
 
 import (
-	"encoding/json"
 	"unsafe"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
@@ -143,5 +142,3 @@ func cliproxyPluginFree(ptr unsafe.Pointer, _ C.size_t) {
 func cliproxyPluginShutdown() {
 	abiboot.ClearHostCaller()
 }
-
-var _ = json.Marshal
