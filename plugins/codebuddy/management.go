@@ -78,25 +78,45 @@ func isResourceMount(path string) bool {
 	return strings.Contains(path, "/resource/plugins/")
 }
 
-// handleManagementRegister declares the resource pages and the JSON endpoints.
+// handleManagementRegister declares exactly ONE sidebar entry (the status page)
+// plus the browser pages and JSON endpoints behind it.
+//
+// Three mounts, all decided by the host:
+//   - a GET route carrying a Menu is registered ONLY under
+//     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
+//     CPA-Manager-Plus. The manager renders one nav item per menu route and does
+//     not group them by plugin, so every extra menu route looks like a duplicate
+//     entry. That is why only the status page carries one.
+//   - a ResourceRoute is registered under the same prefix but is listed in the
+//     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
+//     browser-reachable (the status page links to it) without adding a nav item.
+//   - any other route is registered under `/v0/management/<path>`, a GLOBAL
+//     namespace, so its path must be prefixed with the provider key or a
+//     collision is skipped with a warning.
+//
+// Login has no sidebar entry on purpose: the manager's own "OAuth 登录" page
+// discovers every plugin that declares the auth-provider capability and drives
+// `auth.login.start` / `auth.login.poll` itself, then saves the credential.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	product, _ := productByConfigValue(settings().Product)
-	routes := []pluginapi.ManagementRoute{
-		{Method: http.MethodGet, Path: "/status", Menu: "CodeBuddy", Description: "账号、凭据有效期与积分余额"},
-		{Method: http.MethodGet, Path: "/login", Menu: "CodeBuddy 登录", Description: "浏览器登录 CodeBuddy / WorkBuddy 账号"},
+	resources := []pluginapi.ResourceRoute{
+		{Path: "/login", Description: "浏览器登录 CodeBuddy / WorkBuddy 账号（由状态页或 OAuth 登录页进入）"},
 	}
 	// 只有 CodeBuddy 国内版有签到接口（product.ts:366-367）。
 	if supportsCheckin(product) {
-		routes = append(routes,
-			pluginapi.ManagementRoute{Method: http.MethodGet, Path: "/checkin", Menu: "CodeBuddy 积分", Description: "查询并领取每日积分"},
+		resources = append(resources,
+			pluginapi.ResourceRoute{Path: "/checkin", Description: "查询并领取每日积分（由状态页进入）"},
 		)
 	}
-	// 脚本/API 用：不带 Menu，因此挂在全局管理命名空间下，必须自带前缀。
-	routes = append(routes,
-		pluginapi.ManagementRoute{Method: http.MethodGet, Path: "/" + ProviderKey + "/status", Description: "账号状态（JSON）"},
-		pluginapi.ManagementRoute{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（JSON）"},
-	)
-	return pluginapi.ManagementRegistrationResponse{Routes: routes}, nil
+	return pluginapi.ManagementRegistrationResponse{
+		Routes: []pluginapi.ManagementRoute{
+			{Method: http.MethodGet, Path: "/status", Menu: "CodeBuddy", Description: "账号、凭据有效期与积分余额"},
+			// 脚本/API 用：不带 Menu，因此挂在全局管理命名空间下，必须自带前缀。
+			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status", Description: "账号状态（JSON）"},
+			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（JSON）"},
+		},
+		Resources: resources,
+	}, nil
 }
 
 // handleManagementHandle dispatches the routes declared above.

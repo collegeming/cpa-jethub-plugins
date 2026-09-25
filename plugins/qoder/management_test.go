@@ -111,22 +111,35 @@ func TestManagementRegistrationFollowsTheMountRules(t *testing.T) {
 			}
 		}
 	}
-	if menus < 3 {
-		t.Fatalf("menu routes = %d, want at least status, login and checkin", menus)
+	// Exactly ONE sidebar entry: CPA-Manager-Plus renders one navigation item per
+	// menu route and does not group them by plugin, so extra menus look like
+	// duplicates. The status page carries it; login and check-in are reachable
+	// from that page (and from the manager's own OAuth page for login).
+	if menus != 1 {
+		t.Fatalf("menu routes = %d, want exactly 1 (the status page)", menus)
+	}
+	if menu, present := registration.Routes[0].Menu, true; !present || menu != "" {
+		_ = menu
 	}
 	if apiOnly == 0 {
 		t.Fatal("no script-facing route was registered")
 	}
-	// The embedded pages must be reachable as GET resources.
-	for _, wanted := range []string{"/status", "/login", "/checkin"} {
-		found := false
-		for _, route := range registration.Routes {
-			if route.Method == http.MethodGet && route.Path == wanted && route.Menu != "" {
-				found = true
-			}
+	// The status page is the only menu route.
+	if registration.Routes[0].Path != "/status" || registration.Routes[0].Menu == "" {
+		t.Errorf("first route = %+v, want the /status menu route", registration.Routes[0])
+	}
+	// The embedded pages must stay reachable as GET resources even without a
+	// menu: CPA-Manager-Plus iframes any resource path, menu or not.
+	resourcePaths := map[string]bool{}
+	for _, route := range registration.Resources {
+		resourcePaths[route.Path] = true
+		if strings.TrimSpace(route.Menu) != "" {
+			t.Errorf("resource route %s carries a menu and would become another sidebar entry", route.Path)
 		}
-		if !found {
-			t.Errorf("GET %s with a Menu was not registered", wanted)
+	}
+	for _, wanted := range []string{"/login", "/checkin"} {
+		if !resourcePaths[wanted] {
+			t.Errorf("GET %s was not registered as a menu-less resource route", wanted)
 		}
 	}
 }

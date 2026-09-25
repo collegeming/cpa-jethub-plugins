@@ -130,9 +130,6 @@ func TestManagementRegisterDeclaresBothMounts(t *testing.T) {
 		t.Fatalf("handleManagementRegister: %v", errRegister)
 	}
 	response := value.(pluginapi.ManagementRegistrationResponse)
-	if len(response.Routes) < 3 {
-		t.Fatalf("routes = %+v", response.Routes)
-	}
 
 	menus := map[string]string{}
 	managementPaths := map[string]string{}
@@ -154,9 +151,25 @@ func TestManagementRegisterDeclaresBothMounts(t *testing.T) {
 		managementPaths[route.Path] = route.Method
 	}
 
-	for _, path := range []string{"/status", "/login", "/checkin"} {
-		if _, present := menus[path]; !present {
-			t.Fatalf("menu route %s is missing: %v", path, menus)
+	// Exactly one sidebar entry: CPAMP renders one nav item per menu route and
+	// does not group them by plugin, so extra menus look like duplicates. Login
+	// and check-in are reached from the status page and from the manager's own
+	// OAuth page instead.
+	if len(menus) != 1 || menus["/status"] == "" {
+		t.Fatalf("menu routes = %v, want only /status", menus)
+	}
+
+	// The browser-reachable pages that must NOT add a sidebar entry.
+	resources := map[string]bool{}
+	for _, route := range response.Resources {
+		if strings.TrimSpace(route.Menu) != "" {
+			t.Fatalf("resource route %s carries a menu, which would add a nav item: %+v", route.Path, route)
+		}
+		resources[route.Path] = true
+	}
+	for _, path := range []string{"/login", "/checkin"} {
+		if !resources[path] {
+			t.Fatalf("resource route %s is missing: %v", path, resources)
 		}
 	}
 	for path, method := range map[string]string{

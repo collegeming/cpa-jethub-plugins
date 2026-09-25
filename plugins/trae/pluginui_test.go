@@ -146,32 +146,44 @@ func TestManagementRouteAndWantsJSON(t *testing.T) {
 	}
 }
 
-// TestManagementRegistrationMountRules guards the two mounts: Menu-carrying GET
-// routes live in the resource namespace, everything else in the global management
-// namespace and therefore has to carry the plugin prefix.
+// TestManagementRegistrationMountRules guards the three mounts and the sidebar
+// budget: exactly ONE route may carry a Menu (the status page), because CPAMP
+// renders one sidebar entry per menu route and does not group them by plugin.
+// The login and check-in pages are ResourceRoutes with an empty Menu: still
+// reachable in the browser, but not a nav item. Everything else lands in the
+// global management namespace and must carry the plugin prefix.
 func TestManagementRegistrationMountRules(t *testing.T) {
 	value, errRegister := handleManagementRegister(nil, nil)
 	if errRegister != nil {
 		t.Fatalf("management.register: %v", errRegister)
 	}
 	response := value.(pluginapi.ManagementRegistrationResponse)
-	resources := map[string]string{}
+
+	menus := map[string]string{}
 	for _, route := range response.Routes {
 		if route.Method == http.MethodGet && route.Menu != "" {
-			resources[route.Path] = route.Menu
+			menus[route.Path] = route.Menu
 			continue
 		}
 		if !strings.HasPrefix(route.Path, "/"+ProviderKey+"/") {
 			t.Fatalf("non-resource route %q must be prefixed with the plugin key", route.Path)
 		}
 	}
-	for _, required := range []string{"/status", "/login", "/checkin"} {
-		if resources[required] == "" {
-			t.Fatalf("resource route %q with a menu is missing", required)
-		}
+	if len(menus) != 1 || menus["/status"] == "" {
+		t.Fatalf("menu routes = %v, want exactly the status page", menus)
 	}
-	if len(response.Routes) < 5 {
-		t.Fatalf("expected the resource and script routes, got %d", len(response.Routes))
+
+	pages := map[string]string{}
+	for _, route := range response.Resources {
+		if route.Menu != "" {
+			t.Fatalf("resource route %q carries a menu and would add a sidebar entry", route.Path)
+		}
+		pages[route.Path] = route.Description
+	}
+	for _, required := range []string{"/login", "/checkin"} {
+		if pages[required] == "" {
+			t.Fatalf("resource route %q is missing: %v", required, pages)
+		}
 	}
 }
 

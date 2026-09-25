@@ -175,16 +175,22 @@ func managementRoute(path string) string {
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/status", Menu: "TRAE 状态",
+			// Exactly one Menu route: the manager renders one sidebar entry per
+			// menu route and does not group them by plugin, so extra menu routes
+			// look like duplicates. Login lives on the manager's own OAuth page
+			// (it discovers plugins declaring the auth-provider capability).
+			{Method: http.MethodGet, Path: "/status", Menu: "TRAE",
 				Description: "账号、凭据有效期、可用通道/模型与积分签到状态"},
-			{Method: http.MethodGet, Path: "/login", Menu: "TRAE 登录",
-				Description: "浏览器登录 TRAE 账号（两步式：先取链接，再检查结果）"},
-			{Method: http.MethodGet, Path: "/checkin", Menu: "TRAE 签到",
-				Description: "查询并执行 TRAE 每日签到与积分余额"},
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status",
 				Description: "TRAE 账号状态（JSON，脚本用）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin",
 				Description: "执行 TRAE 每日签到（JSON，脚本用）"},
+		},
+		// Browser-reachable pages that must NOT become sidebar entries: a
+		// ResourceRoute only shows in the manager nav when it carries a Menu.
+		Resources: []pluginapi.ResourceRoute{
+			{Path: "/login", Description: "浏览器登录 TRAE 账号（两步式：先取链接，再检查结果）"},
+			{Path: "/checkin", Description: "查询并执行 TRAE 每日签到与积分余额"},
 		},
 	}, nil
 }

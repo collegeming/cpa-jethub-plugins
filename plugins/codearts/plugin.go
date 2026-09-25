@@ -205,22 +205,34 @@ func managementRoute(path string) string {
 	return "/" + trimmed
 }
 
-// handleManagementRegister declares the account, login and check-in entries that
-// management clients show.
+// handleManagementRegister declares exactly ONE sidebar entry (the status page)
+// plus the browser pages and script endpoints behind it.
 //
-// Two mounts with different rules, determined by the host:
+// Three mounts, all decided by the host:
 //   - a GET route carrying a Menu is registered ONLY under
-//     `/v0/resource/plugins/<id>/<path>`, the path management clients embed;
+//     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
+//     CPA-Manager-Plus. That is why only the status page carries one: the
+//     manager renders one nav item per menu route and does not group them by
+//     plugin, so every extra menu route is a duplicate-looking entry.
+//   - a ResourceRoute is registered under the same prefix but is listed in the
+//     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
+//     browser-reachable (the status page links to it) without adding a nav item.
 //   - any other route is registered under `/v0/management/<path>`, which is a
 //     GLOBAL namespace shared with every other plugin and with the host's own
 //     endpoints. A collision there is skipped with a warning, so those paths are
 //     prefixed with the provider key.
+//
+// Login deliberately has no sidebar entry: the manager's own "OAuth 登录" page
+// discovers every plugin that declares the auth-provider capability and drives
+// `auth.login.start` / `auth.login.poll` itself, then saves the credential.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: "/status", Menu: "CodeArts", Description: "账号、额度与签到状态"},
-			{Method: http.MethodGet, Path: "/login", Menu: "CodeArts", Description: "浏览器登录 CodeArts 账号"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用，返回 JSON）"},
+		},
+		Resources: []pluginapi.ResourceRoute{
+			{Path: "/login", Description: "浏览器登录 CodeArts 账号（由状态页或 OAuth 登录页进入）"},
 		},
 	}, nil
 }

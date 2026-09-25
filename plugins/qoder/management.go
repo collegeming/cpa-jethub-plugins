@@ -28,18 +28,24 @@ import (
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
+			// Exactly one Menu route: the manager renders one sidebar entry per
+			// menu route and does not group them by plugin, so extra menu routes
+			// look like duplicates. Login lives on the manager's own OAuth page
+			// (it discovers plugins declaring the auth-provider capability).
 			{Method: http.MethodGet, Path: "/status", Menu: "Qoder",
 				Description: "账号、推理通道、模型数量与积分余额"},
-			{Method: http.MethodGet, Path: "/login", Menu: "Qoder",
-				Description: "设备码 (PKCE) 登录 Qoder 账号"},
-			{Method: http.MethodGet, Path: "/checkin", Menu: "Qoder",
-				Description: "领取 Qoder 每日积分"},
 			// Script-facing routes: no Menu, therefore management-API only, and
 			// namespaced by the provider key.
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status",
 				Description: "账号与积分状态（JSON）"},
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/checkin",
 				Description: "执行每日领取（JSON）"},
+		},
+		// Browser-reachable pages that must NOT become sidebar entries: a
+		// ResourceRoute only shows in the manager nav when it carries a Menu.
+		Resources: []pluginapi.ResourceRoute{
+			{Path: "/login", Description: "设备码 (PKCE) 登录 Qoder 账号（由状态页或 OAuth 登录页进入）"},
+			{Path: "/checkin", Description: "领取 Qoder 每日积分（由状态页进入）"},
 		},
 	}, nil
 }

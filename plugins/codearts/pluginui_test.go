@@ -99,9 +99,10 @@ func TestRenderStatusPageWithoutAccountsOffersLogin(t *testing.T) {
 	}
 }
 
-// TestManagementRegisteredRoutesFollowHostMountRules pins the two constraints
-// that decide whether a route is reachable at all: menu routes are resource-only,
-// and non-menu routes must self-namespace because the management path is global.
+// TestManagementRegisteredRoutesFollowHostMountRules pins the three constraints
+// that decide whether a route is reachable at all and how the manager renders it:
+// menu routes are resource-only, non-menu routes must self-namespace because the
+// management path is global, and exactly one route may carry a menu.
 func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 	value, errRegister := handleManagementRegister(nil, nil)
 	if errRegister != nil {
@@ -112,13 +113,12 @@ func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 		t.Fatalf("unexpected registration type %T", value)
 	}
 
-	var menus, plain int
+	var plain int
 	for _, route := range registration.Routes {
 		if route.Path == "" || !strings.HasPrefix(route.Path, "/") {
 			t.Errorf("route %q must be an absolute path", route.Path)
 		}
 		if route.Menu != "" {
-			menus++
 			if !strings.EqualFold(route.Method, "GET") {
 				t.Errorf("route %s carries a menu but is %s; only GET+menu mounts on the resource path", route.Path, route.Method)
 			}
@@ -131,7 +131,40 @@ func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 			t.Errorf("route %q has no menu and is not namespaced under /%s/, so it can be skipped as a collision", route.Path, ProviderKey)
 		}
 	}
-	if menus == 0 || plain == 0 {
-		t.Fatalf("expected both menu and plain routes, got %d menu and %d plain", menus, plain)
+	if plain == 0 {
+		t.Fatal("expected at least one plain script route")
+	}
+
+	// The manager turns every menu-carrying route into its own sidebar item and
+	// does not group them by plugin, so a second menu route is a second entry
+	// that looks like a duplicate. Only the status page may carry one.
+	menuPaths := make([]string, 0, 2)
+	for _, route := range registration.Routes {
+		if route.Menu != "" {
+			menuPaths = append(menuPaths, route.Path)
+		}
+	}
+	for _, resource := range registration.Resources {
+		if resource.Path == "" || !strings.HasPrefix(resource.Path, "/") {
+			t.Errorf("resource %q must be an absolute path", resource.Path)
+		}
+		if resource.Menu != "" {
+			menuPaths = append(menuPaths, resource.Path)
+		}
+	}
+	if len(menuPaths) != 1 || menuPaths[0] != "/status" {
+		t.Fatalf("menu routes = %v, want exactly [/status]; every extra menu route becomes another sidebar entry", menuPaths)
+	}
+
+	// The login page must stay reachable from the status page while adding no
+	// sidebar entry of its own.
+	var loginResource bool
+	for _, resource := range registration.Resources {
+		if resource.Path == "/login" {
+			loginResource = true
+		}
+	}
+	if !loginResource {
+		t.Error("login page is not registered as a resource route, so the status page link would 404")
 	}
 }

@@ -173,25 +173,36 @@ func managementRoute(path string) string {
 	return "/" + trimmed
 }
 
-// handleManagementRegister declares the status, login and check-in entries the
-// management client shows.
+// handleManagementRegister declares exactly ONE sidebar entry (the status page)
+// plus the browser pages and JSON endpoints behind it.
 //
-// Two mounts with different rules, determined by the host:
+// Three mounts, all decided by the host:
 //   - a GET route carrying a Menu is registered ONLY under
-//     `/v0/resource/plugins/<id>/<path>`, which is what CPAMP embeds in an
-//     iframe and dispatches as GET;
+//     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
+//     CPAMP. The manager renders one nav item per menu route and does not group
+//     them by plugin, so every extra menu route looks like a duplicate entry.
+//     That is why only the status page carries one.
+//   - a ResourceRoute is registered under the same prefix but is listed in the
+//     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
+//     browser-reachable (the status page links to it) without adding a nav item.
 //   - any other route is registered under `/v0/management/<path>`, a GLOBAL
-//     namespace shared with every plugin and the host. A collision is skipped
-//     with a warning, so those paths carry the provider key prefix.
+//     namespace, so its path must be prefixed with the provider key or a
+//     collision is skipped with a warning.
+//
+// Login has no sidebar entry on purpose: the manager's own "OAuth 登录" page
+// discovers every plugin that declares the auth-provider capability and drives
+// `auth.login.start` / `auth.login.poll` itself, then saves the credential.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: "/status", Menu: "LobsterAI", Description: "账号、凭据有效期、模型参数与积分余额"},
-			{Method: http.MethodGet, Path: "/login", Menu: "LobsterAI 登录", Description: "浏览器两步式登录（本地回调 + authCode 换 token）"},
-			{Method: http.MethodGet, Path: "/checkin", Menu: "LobsterAI 签到", Description: "每日签到领取积分（客户端幂等）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用，返回 JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/login/start", Description: "发起登录并返回授权 URL（JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/login/poll", Description: "轮询登录结果并保存凭据（JSON）"},
+		},
+		Resources: []pluginapi.ResourceRoute{
+			{Path: "/login", Description: "浏览器两步式登录（本地回调 + authCode 换 token）"},
+			{Path: "/checkin", Description: "每日签到领取积分（客户端幂等）"},
 		},
 	}, nil
 }

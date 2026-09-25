@@ -101,11 +101,31 @@ func TestManagementRegisterRoutes(t *testing.T) {
 			}
 		}
 	}
-	if menus < 3 {
-		t.Errorf("menus = %d, want status + login + checkin", menus)
+	// CPA-Manager-Plus renders ONE sidebar entry per menu route and does not
+	// group them by plugin, so only the status page may carry a menu. Login and
+	// check-in ride the menu-less resource list and are reached from the page.
+	if menus != 1 {
+		t.Errorf("menus = %d, want exactly the status page; extra menu routes duplicate sidebar entries", menus)
 	}
 	if globalRoutes < 2 {
 		t.Errorf("script routes = %d, want the status and checkin JSON endpoints", globalRoutes)
+	}
+	// Every interactive page must still be reachable, menu or not.
+	for _, wanted := range []string{"/status", "/login", "/checkin"} {
+		found := false
+		for _, route := range response.Resources {
+			if route.Path == wanted {
+				found = true
+			}
+		}
+		for _, route := range response.Routes {
+			if route.Path == wanted {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("page %s is not reachable on any mount", wanted)
+		}
 	}
 
 	// A product without check-in must not advertise the check-in page.
@@ -115,6 +135,11 @@ func TestManagementRegisterRoutes(t *testing.T) {
 		t.Fatalf("register: %v", errRegister)
 	}
 	response = value.(pluginapi.ManagementRegistrationResponse)
+	for _, route := range response.Resources {
+		if route.Path == "/checkin" {
+			t.Error("WorkBuddy has no check-in endpoint, so the page must not be advertised")
+		}
+	}
 	for _, route := range response.Routes {
 		if route.Path == "/checkin" && route.Menu != "" {
 			t.Error("WorkBuddy has no check-in endpoint, so the page must not be advertised")
