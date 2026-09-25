@@ -62,14 +62,14 @@ var (
 // ParseCredential decodes and validates an auth-file payload.
 func ParseCredential(raw []byte) (*Credential, error) {
 	if len(raw) == 0 {
-		return nil, abiboot.Errorf("invalid_credential", "empty LobsterAI credential")
+		return nil, abiboot.HTTPError("invalid_credential", http.StatusUnauthorized, "empty LobsterAI credential")
 	}
 	var credential Credential
 	if errUnmarshal := decodeJSON(raw, &credential); errUnmarshal != nil {
-		return nil, abiboot.Errorf("invalid_credential", "decode LobsterAI credential: %v", errUnmarshal)
+		return nil, abiboot.HTTPError("invalid_credential", http.StatusUnauthorized, "decode LobsterAI credential: %v", errUnmarshal)
 	}
 	if strings.TrimSpace(credential.AccessToken) == "" {
-		return nil, abiboot.Errorf("invalid_credential", "LobsterAI credential is missing access_token")
+		return nil, abiboot.HTTPError("invalid_credential", http.StatusUnauthorized, "LobsterAI credential is missing access_token")
 	}
 	return &credential, nil
 }

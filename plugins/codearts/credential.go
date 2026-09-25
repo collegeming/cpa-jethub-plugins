@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"time"
 
@@ -42,14 +43,14 @@ type DpopPrivateJWK struct {
 // ParseCredential decodes and validates an auth-file payload.
 func ParseCredential(raw []byte) (*Credential, error) {
 	if len(raw) == 0 {
-		return nil, abiboot.Errorf("invalid_credential", "empty CodeArts credential")
+		return nil, abiboot.HTTPError("invalid_credential", http.StatusUnauthorized, "empty CodeArts credential")
 	}
 	var credential Credential
 	if err := json.Unmarshal(raw, &credential); err != nil {
-		return nil, abiboot.Errorf("invalid_credential", "decode CodeArts credential: %v", err)
+		return nil, abiboot.HTTPError("invalid_credential", http.StatusUnauthorized, "decode CodeArts credential: %v", err)
 	}
 	if strings.TrimSpace(credential.AccessKeyID) == "" || strings.TrimSpace(credential.SecretAccessKey) == "" {
-		return nil, abiboot.Errorf("invalid_credential", "CodeArts credential is missing access_key_id/secret_access_key")
+		return nil, abiboot.HTTPError("invalid_credential", http.StatusUnauthorized, "CodeArts credential is missing access_key_id/secret_access_key")
 	}
 	return &credential, nil
 }
