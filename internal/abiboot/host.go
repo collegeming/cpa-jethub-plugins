@@ -165,6 +165,21 @@ func (h *Host) GetAuth(authIndex string) (*pluginapi.HostAuthGetResponse, error)
 	return out, nil
 }
 
+// ListAuth enumerates every credential the host currently tracks. The list is
+// host-wide, so callers must filter it down to their own provider key.
+func (h *Host) ListAuth() ([]pluginapi.HostAuthFileEntry, error) {
+	payload := struct {
+		HostCallbackID string `json:"host_callback_id,omitempty"`
+	}{HostCallbackID: h.CallbackID}
+	out := struct {
+		Files []pluginapi.HostAuthFileEntry `json:"files"`
+	}{}
+	if errCall := HostCallInto(pluginabi.MethodHostAuthList, payload, &out); errCall != nil {
+		return nil, errCall
+	}
+	return out.Files, nil
+}
+
 // Log emits a structured log line into the CPA log stream.
 func (h *Host) Log(level, message string, fields map[string]any) {
 	payload := struct {

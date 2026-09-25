@@ -11,7 +11,7 @@ func TestDocumentRendersFragments(t *testing.T) {
 		Card("账号状态", Fields(
 			Field{Label: "账号", Value: "probe"},
 			Field{Label: "剩余额度", Value: "12.5"},
-		), Action{Label: "签到", Path: "checkin", Kind: "primary"}),
+		), Action{Label: "签到", Query: "action=checkin", Kind: "primary"}),
 		Notice("success", "签到成功"),
 		Badge("warning", "即将过期"),
 	)
@@ -22,8 +22,10 @@ func TestDocumentRendersFragments(t *testing.T) {
 		"<h1>CodeArts</h1>",
 		"<h2>账号状态</h2>",
 		`<dt>账号</dt><dd>probe</dd>`,
-		`action="checkin"`,
-		`class="primary"`,
+		// Actions must be GET navigations: the host dispatches the route that
+		// management clients embed as GET only.
+		`href="?action=checkin"`,
+		`class="btn primary"`,
 		`class="notice success"`,
 		`class="badge warning"`,
 		// The host theme variables must be consumed, never hard-coded colours.
@@ -34,6 +36,9 @@ func TestDocumentRendersFragments(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Errorf("rendered page is missing %q", want)
 		}
+	}
+	if strings.Contains(html, "<form") {
+		t.Error("actions must not be form submissions; the embedded resource route is GET-only")
 	}
 }
 

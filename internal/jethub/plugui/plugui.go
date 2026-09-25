@@ -24,6 +24,8 @@ package plugui
 import (
 	"bytes"
 	"html/template"
+	"net/url"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -67,8 +69,7 @@ body {
 .fields dt { color: var(--text-secondary, #59636e); }
 .fields dd { margin: 0; color: var(--text-primary, #1f2328); word-break: break-all; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.actions form { margin: 0; }
-button {
+.btn, button {
   font: inherit;
   cursor: pointer;
   border-radius: var(--app-radius-sm, 6px);
@@ -76,14 +77,17 @@ button {
   background: var(--app-input-bg, var(--bg-tertiary, #f6f8fa));
   color: var(--text-primary, #1f2328);
   padding: 6px 14px;
+  display: inline-block;
+  text-decoration: none;
+  line-height: 1.4;
 }
-button:hover { background: var(--bg-hover, #eef1f4); border-color: var(--border-hover, #c9d1d9); }
-button.primary {
+.btn:hover, button:hover { background: var(--bg-hover, #eef1f4); border-color: var(--border-hover, #c9d1d9); }
+.btn.primary, button.primary {
   background: var(--primary-color, #1f6feb);
   border-color: var(--primary-color, #1f6feb);
   color: var(--primary-contrast, #ffffff);
 }
-button.primary:hover { background: var(--primary-hover, #1a5fd0); border-color: var(--primary-hover, #1a5fd0); }
+.btn.primary:hover, button.primary:hover { background: var(--primary-hover, #1a5fd0); border-color: var(--primary-hover, #1a5fd0); }
 button:disabled { opacity: .55; cursor: default; }
 a { color: var(--primary-color, #1f6feb); }
 .notice {
@@ -119,13 +123,20 @@ code { background: var(--app-surface-muted, var(--bg-tertiary, #f6f8fa)); paddin
 </html>
 `
 
-// Action is a button that submits a POST to a management route of the same
-// plugin. The path is relative to the plugin's own route namespace, so
-// "checkin" resolves to the plugin's `checkin` route whatever prefix the host
-// mounted it under.
+// Action is a link that performs a management action by reloading the current
+// route with an extra query string.
+//
+// Actions are navigations rather than form submissions on purpose: the host
+// dispatches the resource route that management clients embed (`/v0/resource/
+// plugins/<id>/...`) as GET only, so a POST form would silently never reach the
+// plugin from inside the UI.
 type Action struct {
 	Label string
-	Path  string
+	// Path is an optional relative target route, for example "status". When it
+	// is empty the action targets the current route.
+	Path string
+	// Query is appended to the target, for example "action=checkin".
+	Query string
 	// Kind is "" for a neutral button, "primary" for the accented one.
 	Kind string
 }
@@ -141,7 +152,7 @@ var (
 	cardTmpl     = template.Must(template.New("card").Parse(
 		`<section class="card">{{if .Title}}<h2>{{.Title}}</h2>{{end}}{{.Body}}{{if .Actions}}` +
 			`<div class="actions">{{range .Actions}}` +
-			`<form method="post" action="{{.Path}}"><button{{if .Kind}} class="{{.Kind}}"{{end}} type="submit">{{.Label}}</button></form>` +
+			`<a class="btn{{if .Kind}} {{.Kind}}{{end}}" href="{{.Href}}">{{.Label}}</a>` +
 			`{{end}}</div>{{end}}</section>`))
 	fieldsTmpl = template.Must(template.New("fields").Parse(
 		`<dl class="fields">{{range .}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>{{end}}</dl>`))
@@ -184,13 +195,56 @@ func HTML(heading string, body ...template.HTML) pluginapi.ManagementResponse {
 	}
 }
 
-// Card renders a titled section with optional action buttons.
+// Card renders a titled section with optional action links.
 func Card(title string, body template.HTML, actions ...Action) template.HTML {
+	rendered := make([]cardAction, 0, len(actions))
+	for _, action := range actions {
+		rendered = append(rendered, cardAction{
+			Label: action.Label,
+			Href:  actionHref(action.Path, action.Query),
+			Kind:  action.Kind,
+		})
+	}
 	return render(cardTmpl, struct {
 		Title   string
 		Body    template.HTML
-		Actions []Action
-	}{Title: title, Body: body, Actions: actions})
+		Actions []cardAction
+	}{Title: title, Body: body, Actions: rendered})
+}
+
+// cardAction is an Action with its href pre-computed and marked safe.
+type cardAction struct {
+	Label string
+	Href  template.URL
+	Kind  string
+}
+
+// actionHref builds an action target from a relative path and a query string.
+//
+// The query is re-encoded through url.Values so the result is well-formed, then
+// handed to the template as a template.URL. Without that, Go's URL filter
+// percent-encodes the '=' inside the attribute and the host would receive the
+// whole action as a single key with no value.
+func actionHref(path, query string) template.URL {
+	values, errParse := url.ParseQuery(strings.TrimPrefix(query, "?"))
+	if errParse != nil {
+		return template.URL("?")
+	}
+	encoded := values.Encode()
+	target := strings.TrimSpace(path)
+	switch {
+	case target == "":
+		return template.URL("?" + encoded)
+	case encoded == "":
+		return template.URL(target)
+	default:
+		return template.URL(target + "?" + encoded)
+	}
+}
+
+// Group concatenates several body fragments into the single body a Card takes.
+func Group(fragments ...template.HTML) template.HTML {
+	return template.HTML(join(fragments))
 }
 
 // Fields renders label/value rows.

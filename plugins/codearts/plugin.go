@@ -191,67 +191,70 @@ func handleResponseTranslate(_ *abiboot.Host, raw json.RawMessage) (any, error) 
 	return pluginapi.PayloadResponse{Body: request.Body}, nil
 }
 
-// handleManagementRegister exposes the account status and check-in actions to
-// the CPA management UI.
+// managementRoute reduces the request path to the route the plugin registered.
+//
+// The host passes the full incoming path, which differs between the two mounts:
+// `/v0/management/codearts/status` on the management API and
+// `/v0/resource/plugins/codearts/status` on the resource path that management
+// clients embed. Only the last segment identifies the route in both cases.
+func managementRoute(path string) string {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(path), "/")
+	if index := strings.LastIndex(trimmed, "/"); index >= 0 {
+		trimmed = trimmed[index+1:]
+	}
+	return "/" + trimmed
+}
+
+// handleManagementRegister declares the account, login and check-in entries that
+// management clients show.
+//
+// Two mounts with different rules, determined by the host:
+//   - a GET route carrying a Menu is registered ONLY under
+//     `/v0/resource/plugins/<id>/<path>`, the path management clients embed;
+//   - any other route is registered under `/v0/management/<path>`, which is a
+//     GLOBAL namespace shared with every other plugin and with the host's own
+//     endpoints. A collision there is skipped with a warning, so those paths are
+//     prefixed with the provider key.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/status", Menu: "CodeArts", Description: "查询 CodeArts 账号额度与签到状态"},
-			{Method: http.MethodPost, Path: "/checkin", Menu: "CodeArts", Description: "执行 CodeArts 每日签到"},
+			{Method: http.MethodGet, Path: "/status", Menu: "CodeArts", Description: "账号、额度与签到状态"},
+			{Method: http.MethodGet, Path: "/login", Menu: "CodeArts", Description: "浏览器登录 CodeArts 账号"},
+			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用）"},
 		},
 	}, nil
 }
 
-// handleManagementHandle serves the routes declared above.
+// handleManagementHandle dispatches the routes declared above.
+//
+// The resource route used by management clients is dispatched as GET only, so
+// every action lives in the query string; the POST route exists for scripts and
+// returns JSON. Both representations share the same handlers.
 func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	request, errDecode := abiboot.Decode[pluginapi.ManagementRequest](raw)
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	authIndex := strings.TrimSpace(request.Query.Get("auth_index"))
-	if authIndex == "" {
-		authIndex = strings.TrimSpace(request.Query.Get("auth_id"))
-	}
-	credential, errCredential := credentialForManagement(h, authIndex)
-	if errCredential != nil {
-		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": errCredential.Error()}), nil
-	}
 
-	switch strings.TrimSuffix(request.Path, "/") {
+	switch managementRoute(request.Path) {
 	case "/status":
-		balance, errBalance := fetchCreditBalance(h, credential)
-		if errBalance != nil {
-			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": errBalance.Error()}), nil
+		if wantsJSON(request) {
+			return statusJSON(h, request), nil
 		}
-		body := map[string]any{
-			"credit_package": balance.IsCreditPackage,
-			"remaining":      balance.Remaining,
-			"used":           balance.Used,
-			"total":          balance.Total,
+		return renderStatusPage(h, request), nil
+
+	case "/login":
+		if wantsJSON(request) {
+			return jsonManagementResponse(http.StatusOK, map[string]any{
+				"flow":   settings().Flow,
+				"action": request.Query.Get("action"),
+				"hint":   "GET ?action=login 发起登录；GET ?action=poll&state=<state> 查询结果",
+			}), nil
 		}
-		if activity, errActivity := fetchDailyActivity(h, credential); errActivity == nil && activity != nil {
-			body["daily_checkin"] = map[string]any{
-				"campaign_id": activity.CampaignID,
-				"claimable":   activity.Claimable,
-				"status":      activity.Status,
-			}
-		}
-		return jsonManagementResponse(http.StatusOK, body), nil
+		return renderLoginPage(h, request), nil
 
 	case "/checkin":
-		outcome, errClaim := claimDaily(h, credential)
-		if errClaim != nil {
-			return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": errClaim.Error()}), nil
-		}
-		body := map[string]any{
-			"status":  outcome.Status,
-			"message": outcome.Message,
-			"amount":  outcome.Amount,
-		}
-		if outcome.Balance != nil {
-			body["remaining"] = outcome.Balance.Remaining
-		}
-		return jsonManagementResponse(http.StatusOK, body), nil
+		return checkinResponse(h, request), nil
 	}
 
 	return jsonManagementResponse(http.StatusNotFound, map[string]any{"error": "unknown CodeArts management route"}), nil

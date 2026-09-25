@@ -170,6 +170,22 @@ CPAMP 页面  /plugins/<id>/<menuIndex>
 1. **路径经 CPAMP 自己的同源反向代理**（manager-server 的 allowlist 放行 `/v0/resource/plugins/...`），所以 iframe 与 CPAMP 同源，宿主才能对 iframe 注入样式。
 2. **主题通过 CSS 自定义属性下发**：CPAMP 在 iframe 的 `<head>` 注入一份样式表，定义 `--bg-primary`／`--bg-secondary`／`--text-primary`／`--text-secondary`／`--border-color`／`--primary-color`／`--app-surface`／`--app-input-bg`／`--app-radius-*`／`--success-color`／`--warning-color`／`--danger-color` 等变量，并把 `body` 的底色、文字色与字体设为主题值。所以**插件只要用这些变量写普通 HTML，就能自动跟随 CPAMP 的浅色／深色主题**。
 
+### 挂载规则（实测确认，写插件前必须知道）
+
+宿主对两类路由的处理完全不同（`internal/pluginhost/management.go` 的 `routeDeclaresLegacyMenuResource`）：
+
+| 声明方式 | 实际挂载点 | 命名空间 |
+| --- | --- | --- |
+| GET **且**带 `Menu` | 仅 `/v0/resource/plugins/<插件ID>/<路径>` | 含插件 ID，安全 |
+| 其他任意方法 | 仅 `/v0/management/<路径>` | **全局共享**，与所有插件及宿主内置端点同处一个命名空间 |
+
+两个后果：
+
+1. **带 `Menu` 的 GET 路由不会挂到管理 API 下。** 想同时提供网页和脚本接口时，网页用带 `Menu` 的 GET 路由，脚本接口用**不带 `Menu`** 的路由。
+2. **不带 `Menu` 的路由路径必须自带插件前缀**，例如 `/codearts/checkin` 而不是 `/checkin`。冲突时宿主只打一条 `management route ... was skipped` 警告就丢弃该路由——静默失效，很难排查。
+
+另外，resource 路径**只以 GET 派发**（`management.go` 里 `Method: http.MethodGet` 是写死的）。所以管理页面里的操作不能是表单 POST，必须是携带查询参数的 GET 链接；本仓库的 `plugui.Action` 就按此设计（渲染成 `<a href="?action=...">`），并有单测断言页面里不出现 `<form>`。
+
 因此插件侧只需：`management.register` 声明菜单（`Menu` 字段是分组名，`Description` 是副标题），`management.handle` 在这些路径上返回 `Content-Type: text/html`。本仓库把这件事做成了共享工具包 [`internal/jethub/plugui`](internal/jethub/plugui/plugui.go)——`Document`／`HTML`／`Card`／`Fields`／`Notice`／`Badge`／`Action`，渲染出的页面只消费上述宿主变量，自带浅色／深色适配，且对运行期取到的值（账号名、上游报错文本）做 HTML 转义。
 
 设计约束（有意为之）：
