@@ -336,6 +336,69 @@ func TestPublicAddressOverridesRedirectURI(t *testing.T) {
 	}
 }
 
+// TestPersistentListenerIgnoresTTL pins the contract a pinned callback port
+// depends on: the port has to stay reachable after the sign-in that opened it has
+// ended, so a persistent listener must not time out. Before this, the listener
+// was closed with the session, and the browser landed on a closed published port
+// — the ERR_CONNECTION_REFUSED the user reported.
+func TestPersistentListenerIgnoresTTL(t *testing.T) {
+	server, err := Start(Options{
+		Path:       "/auth/callback",
+		Persistent: true,
+		// Deliberately tiny: a non-persistent listener would already be expired,
+		// so this is what proves the TTL is ignored rather than merely long.
+		TTL: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = server.Close() }()
+
+	if !server.ExpiresAt().IsZero() {
+		t.Fatalf("ExpiresAt() = %v, want the zero time for a persistent listener", server.ExpiresAt())
+	}
+
+	// Wait must still be blocked well past the TTL. A short context bounds the
+	// check without a long sleep: only the deadline may end it.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, errWait := server.Wait(ctx); !errors.Is(errWait, context.DeadlineExceeded) {
+		t.Fatalf("Wait = %v, want the context deadline (still listening past the TTL)", errWait)
+	}
+
+	// A callback arriving after that deadline must still be captured.
+	response, errGet := noRedirectClient().Get(server.RedirectURI() + "?code=LATE")
+	if errGet != nil {
+		t.Fatalf("GET callback: %v", errGet)
+	}
+	_ = response.Body.Close()
+
+	result, errWait := server.Wait(context.Background())
+	if errWait != nil {
+		t.Fatalf("Wait after TTL: %v", errWait)
+	}
+	if result.Code != "LATE" {
+		t.Fatalf("Code = %q, want LATE", result.Code)
+	}
+}
+
+// TestNonPersistentListenerStillExpires guards the default: only a listener that
+// asks for it is TTL-free, so a caller relying on ErrTimeout keeps working.
+func TestNonPersistentListenerStillExpires(t *testing.T) {
+	server, err := Start(Options{Path: "/auth/callback", TTL: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = server.Close() }()
+
+	if server.ExpiresAt().IsZero() {
+		t.Fatal("ExpiresAt() is zero, want a real deadline for a non-persistent listener")
+	}
+	if _, errWait := server.Wait(context.Background()); !errors.Is(errWait, ErrTimeout) {
+		t.Fatalf("Wait = %v, want ErrTimeout", errWait)
+	}
+}
+
 // itoa avoids pulling strconv into the test's import list for a single call.
 func itoa(value int) string {
 	if value == 0 {

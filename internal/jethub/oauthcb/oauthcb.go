@@ -90,8 +90,19 @@ type Options struct {
 	// MinPort rejects ephemeral ports below it. Defaults to DefaultMinPort.
 	// Ignored when Port is set.
 	MinPort int
-	// TTL bounds the wait for a callback. Defaults to DefaultTTL.
+	// TTL bounds the wait for a callback. Defaults to DefaultTTL. Ignored when
+	// Persistent is set.
 	TTL time.Duration
+	// Persistent keeps the listener alive indefinitely: Wait blocks until a
+	// callback, ctx cancellation or Close, and never returns ErrTimeout, while
+	// ExpiresAt reports the zero time.
+	//
+	// Use it when the listener must outlive an individual sign-in. A pinned
+	// callback port is reachable by the browser only while something is bound to
+	// it, so tying the bind to one session means the browser lands on a closed
+	// port whenever that session has already ended — timed out, superseded, or
+	// lost to a restart. Callers then impose their own deadline per sign-in.
+	Persistent bool
 	// RedirectURL is where the browser is sent (307) after a successful
 	// capture. Empty means the request is answered with a 200 HTML page
 	// instead.
@@ -192,6 +203,11 @@ func Start(opts Options) (*Server, error) {
 		publicPort:  opts.PublicPort,
 		results:     make(chan Result, resultBuffer),
 		closed:      make(chan struct{}),
+	}
+	if opts.Persistent {
+		// The zero time is what marks the listener as TTL-free, for Wait and for
+		// ExpiresAt alike.
+		server.expiresAt = time.Time{}
 	}
 	if server.successHTML == "" {
 		server.successHTML = defaultSuccessHTML
@@ -295,20 +311,38 @@ func (s *Server) RedirectURI() string {
 	return fmt.Sprintf("http://%s:%d%s", host, port, s.path)
 }
 
-// ExpiresAt is the instant Wait stops accepting callbacks.
+// ExpiresAt is the instant Wait stops accepting callbacks, or the zero time for
+// a persistent listener.
 func (s *Server) ExpiresAt() time.Time { return s.expiresAt }
+
+// persistent reports whether this listener ignores TTL.
+func (s *Server) persistent() bool { return s.expiresAt.IsZero() }
 
 // Wait blocks until a callback arrives, the TTL elapses, or ctx is done.
 //
 // A callback that arrives after Wait returned is retained (up to the internal
 // buffer) and delivered to the next Wait call, which lets a caller discard, say,
 // a callback missing the parameter it needs and keep waiting.
+//
+// A persistent listener never returns ErrTimeout: it keeps accepting callbacks
+// for as long as it is open.
 func (s *Server) Wait(ctx context.Context) (Result, error) {
 	// Prefer an already-captured callback over an expired timer.
 	select {
 	case result := <-s.results:
 		return result, nil
 	default:
+	}
+
+	if s.persistent() {
+		select {
+		case result := <-s.results:
+			return result, nil
+		case <-s.closed:
+			return Result{}, ErrClosed
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		}
 	}
 
 	remaining := time.Until(s.expiresAt)
