@@ -26,8 +26,11 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | `qoder` | Qoder | 状态、登录、签到 | 12 | 阿里 Qoder，设备码登录；加密推理需可选 WASM |
 | `trae` | TRAE | 状态、登录、签到 | 13 | 字节 TRAE，OpenAI↔SOLO 双向载荷转换 |
 | `lobsterai` | LobsterAI（有道） | 状态、登录、签到 | 5 | 有道 LobsterAI，本地回环回调 + authCode 换取 |
+| `cline` | Cline | 状态、登录 | 9 | Cline（cline.bot），WorkOS 设备码登录，标准 OpenAI 兼容推理 |
+| `loomy` | Loomy（讯飞） | 状态、登录、签到 | 10 | 讯飞 Loomy，短信验证码登录，两个积分池 + 新手任务 |
+| `codebuddy-intl` 等 | CodeBuddy／WorkBuddy | 状态、登录、签到 | 9 | 见下方「产品变体」——同一份代码按产品构建的独立插件 |
 
-五个适配器都实现了完整方法面：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器统一声明 `chat-completions` 入出格式且 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
+七个适配器都实现了完整方法面：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器统一声明 `chat-completions` 入出格式且 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
 
 ### 选择平台／区域
 
@@ -58,6 +61,13 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 ### 两个需要知情的实现取舍
 
 - **Qoder 加密推理**：加密请求的签名头由 Jet-Hub 的 `qoder-auth-wasm.wasm`（约 292 KB 第三方编译产物）生成。本仓库**不包含**该二进制——再分发属于仓库所有者的授权决定。把 `wasm_path` 指向你本地的副本即启用加密路径；留空则只走公开的 OpenAI 兼容端点。
+- **Loomy（讯飞）与其余七个都不同源**，有三点必须知情：
+  - 它是唯一用**短信验证码**登录的：没有可打开的登录 URL，验证码在插件自己的页面里输入。而 resource 路由只派发 GET，页面不能用表单，所以动作用查询串链接（含数字键盘式的验证码输入）。
+  - 它是唯一**不能续期**的：后端没有 refresh 端点，`auth.refresh` 只做有效性探测，失效即提示重新登录。这是如实标记，不是遗漏。
+  - 积分是**两个池**（永久积分 + 每日赠送，消耗后不回补），分开显示；鉴权头也分两套——`/chat/completions` 用 `Bearer`，而 `/models`、`/points/*`、`/onboarding/*` **只认小写 `token` 头**，带错的那个返回 **HTTP 200** 加 `code:100002`，只看状态码会误判成功。
+  它的账号接口用 HMAC-SHA1 签名，密钥是**参考实现内置的客户端凭据**（不是你的账号凭据）。若上游轮换该密钥，短信登录会失效而其余接口不受影响；配置项 `account_ak` / `account_sk` 可在不重新构建的情况下替换。
+- **Cline 的 `workos:` 前缀是承载语义的**：鉴权头是 `Authorization: Bearer workos:<token>`，前缀**不能剥离**——同一个凭据 `Bearer workos:eyJ…` 返回 200，剥掉前缀后返回 401，而且错误信息会误导成「请升级 Cline 客户端」。登录走 WorkOS **设备码轮询**，**不监听任何本地端口**，因此不受本文档前述容器回调问题的影响。
+- **Cline 的余额单位是推断值**：接口返回 `balance: 500000`，参考实现按 ÷100000 当作美元（微美元）展示，但这**没有任何来源证据**。本仓库把它做成配置项 `balance_divisor`，状态页同时显示原始值，用真实账号跑一次即可确定。
 - **配置解析**：用 `gopkg.in/yaml.v3` 解析为映射后逐键宽松取值，因此 block 与 flow 两种 YAML 风格都生效，`no`／`off`／`yes`／`on` 等写法也可用，且单个坏值只损失它自己的默认值，不会让整份配置回退。
 
 ## 构建

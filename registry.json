@@ -74,6 +74,34 @@
         "Youdao",
         "LobsterAI"
       ]
+    },
+    {
+      "id": "cline",
+      "name": "Cline",
+      "description": "Cline（cline.bot）接入：WorkOS 设备码登录（无需本地回调端口）、标准 OpenAI 兼容推理、免费模型标记与余额查询。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "Cline",
+        "WorkOS"
+      ]
+    },
+    {
+      "id": "loomy",
+      "name": "Loomy（讯飞）",
+      "description": "讯飞 Loomy 办公助手接入：短信验证码登录、积分余额与每日额度初始化、新手任务一次性领取。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "iFlytek",
+        "Loomy"
+      ]
     }
   ]
 }

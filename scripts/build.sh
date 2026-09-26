@@ -42,7 +42,7 @@ export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOSUMDB="${GOSUMDB:-off}"
 
-PLUGINS=(codearts qoder trae lobsterai)
+PLUGINS=(codearts cline loomy qoder trae lobsterai)
 
 # Variants: one source tree, several CPA plugins.
 #
