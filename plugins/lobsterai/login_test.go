@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -234,8 +235,8 @@ func TestLoginSessionLoopbackCallback(t *testing.T) {
 		t.Fatalf("credential lost the session identity: %+v", credential)
 	}
 
-	// The session is dropped once it has produced a credential; the listener is
-	// closed with it.
+	// The session is dropped once it has produced a credential; the shared
+	// callback listener stays bound for the next sign-in.
 	if _, found := lookupLoginSession(session.State, time.Now()); found {
 		t.Fatal("a completed session must be forgotten")
 	}
@@ -310,6 +311,9 @@ func TestHandleAuthLoginStartReturnsURLImmediately(t *testing.T) {
 	}
 }
 
+// TestShutdownLoginSessionsClosesListeners covers the one moment the shared
+// callback listener may be released: plugin shutdown. A session lifetime must
+// never do it, or the browser finds the published port closed.
 func TestShutdownLoginSessionsClosesListeners(t *testing.T) {
 	fake := newFakeHost()
 	host := installFakeHost(t, fake)
@@ -319,9 +323,13 @@ func TestShutdownLoginSessionsClosesListeners(t *testing.T) {
 		t.Fatalf("handleAuthLoginStart: %v", errStart)
 	}
 	response := value.(pluginapi.AuthLoginStartResponse)
+	callbackURI := fmt.Sprintf("http://127.0.0.1:%v%s", response.Metadata["port"], CallbackPath)
 	shutdownLoginSessions()
 	if _, found := lookupLoginSession(response.State, time.Now()); found {
 		t.Fatal("shutdown must drop every pending session")
+	}
+	if _, errGet := callbackClient().Get(callbackURI); errGet == nil {
+		t.Fatalf("shutdown left the listener bound at %s", callbackURI)
 	}
 }
 

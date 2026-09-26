@@ -8,10 +8,10 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | --- | --- | --- |
 | 共享 ABI 层 | `internal/abiboot` | envelope 编解码、能力注册、方法分发、宿主回调（`host.http.*`、`host.auth.*`、`host.log`） |
 | 插件实现 | `plugins/<provider>/` | `main.go` 导出 4 个 C 符号；`plugin.go` 返回 `Registration` 与方法表 |
-| 分发清单 | `registry.json` | CPA 插件商店清单（官方 `schema_version: 1`，产物走本仓库的 GitHub Release） |
+| 分发清单 | `registry.json` | 插件元数据清单（官方 `schema_version: 1` 格式，产物走本仓库的 GitHub Release） |
 | 管理界面 | `internal/jethub/plugui` | 渲染管理路由的 HTML 页面，只消费宿主主题变量，无前端构建 |
 | 构建 | `scripts/build.sh` | 逐插件产出 c-shared 动态库，文件名可直接安装 |
-| 打包 | `scripts/release.sh` | 产出插件商店要求的 zip 与 `checksums.txt` |
+| 打包 | `scripts/release.sh` | 产出发行 zip 与 `checksums.txt` |
 
 每个插件目录是**单一 Go 包 `package main`**：`main.go` 承载 cgo 胶水并导出 `cliproxy_plugin_init`、`cliproxyPluginCall`、`cliproxyPluginFree`、`cliproxyPluginShutdown`，其余 `.go` 文件承载业务逻辑。这样 `go build -buildmode=c-shared ./plugins/<provider>` 可以从该目录直接产出动态库。
 
@@ -110,69 +110,37 @@ plugins:
 
 Linux 与 FreeBSD 用 `.so`，macOS 用 `.dylib`，Windows 用 `.dll`。
 
-### 第三方源安装
+### 从 Release 安装
 
-`registry.json` 是官方商店格式的 `schema_version: 1` 清单，只有元数据，产物由本仓库的 GitHub Release 解析。把它作为额外源加入 CPA 即可在管理面板的插件商店里看到并一键安装：
-
-```yaml
-plugins:
-  enabled: true
-  store-sources:
-    - https://raw.githubusercontent.com/collegeming/cpa-jethub-plugins/main/registry.json
-```
-
-### 提交到官方插件商店
-
-官方商店仓库是 [`router-for-me/CLIProxyAPI-Plugins-Store`](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)，**只维护一个 `registry.json`**，插件二进制留在作者自己的仓库里。完整流程：
-
-**1. 先发布一个符合要求的 Release。** 商店 README 的硬性要求：
-
-| 要求 | 说明 |
-| --- | --- |
-| Release tag | 必须是 `v<版本>`，版本为点分数字，例如 `v0.1.0` |
-| 资产 | 每个支持的平台一个 zip，外加**一个** `checksums.txt` |
-| zip 命名 | `<id>_<version>_<goos>_<goarch>.zip`，例如 `codearts_0.1.0_linux_amd64.zip` |
-| zip 内容 | 动态库必须放在 **zip 根目录**，且就叫 `<id>.so`／`<id>.dylib`／`<id>.dll`（不带版本后缀、不能嵌套目录） |
-| checksums.txt | `sha256sum` 格式：`<sha256>  <文件名>`（两个空格） |
-
-这些约束由商店 README 明确列出；CPA 安装器会拒绝嵌套动态库、绝对路径、zip-slip 路径、文件名不匹配以及一个 zip 里含多个动态库的情况。
-
-本仓库已把这一步自动化：
+仓库的 [Releases](https://github.com/collegeming/cpa-jethub-plugins/releases) 提供打包好的动态库，zip 内只有动态库本身：
 
 ```bash
-# 本地打包（当前平台）
-VERSION=0.1.0 scripts/release.sh
-# 多平台：推送 tag 后由 .github/workflows/release.yml 构建并创建 Release
-git tag v0.1.0 && git push origin v0.1.0
+# 以 codearts 为例，替换成需要的插件与平台
+curl -LO https://github.com/collegeming/cpa-jethub-plugins/releases/download/v0.1.0/codearts_0.1.0_linux_amd64.zip
+unzip -o codearts_0.1.0_linux_amd64.zip -d /path/to/cpa/plugins/linux/amd64/
 ```
 
-工作流在 ubuntu 上构建 linux/amd64、linux/arm64（`gcc-aarch64-linux-gnu`）、windows/amd64（`gcc-mingw-w64-x86-64`），在 macOS runner 上构建 darwin/amd64、darwin/arm64（c-shared 依赖 cgo，无法单机交叉），收集全部 zip 后统一生成覆盖所有资产的 `checksums.txt`，再创建 Release。
+解压得到的文件名就是插件 ID（`codearts.so` → `codearts`）。想保留版本号就重命名为 `codearts-v0.1.0.so`，ID 不变。装完在 `plugins.configs` 里启用并重启 CPA。
 
-**2. 向商店仓库提 PR。** 只改 `registry.json`。PR 里要写明：
+本仓库也能在本地产出同样的 zip：
 
-- 插件的 GitHub 仓库地址；
-- 最新的 release tag，形如 `v0.1.0`；
-- 证明所需的 zip 资产与 `checksums.txt` 确实存在于该 release；
-- 该插件新增的能力，一句话说明。
-
-条目形状（必填 `id`／`name`／`description`／`author`／`repository`）：
-
-```json
-{
-  "id": "codearts",
-  "name": "CodeArts Agent",
-  "description": "…",
-  "author": "collegeming",
-  "repository": "https://github.com/collegeming/cpa-jethub-plugins",
-  "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
-  "license": "MIT",
-  "tags": ["Provider", "Huawei", "CodeArts"]
-}
+```bash
+VERSION=0.1.0 scripts/release.sh          # 构建 + 打包当前平台
+scripts/release.sh --skip-build           # 只打包已有 dist/
 ```
 
-校验规则（来自商店 README，已用 CPA 真实解析器 `ParseRegistry` + `ValidateRegistry` 验证过本仓库的清单）：`schema_version` 必须是 `1`；`id` 首字符为 ASCII 字母或数字，其余仅限字母、数字、`.`、`_`、`-`，总长 ≤128；`id` 唯一；`version` 若存在**不能以 `v` 开头**；`repository` 必须严格等于 `https://github.com/{owner}/{repo}`。
+产物落在 `release/<goos>/<goarch>/`，含每个插件的 `<id>_<version>_<goos>_<goarch>.zip`，以及覆盖全部 zip 的 `checksums.txt`（`sha256sum` 格式）：
 
-> 本仓库一个 repo 承载多个插件，靠资产名里的 `<id>` 区分，因此 5 个条目共用同一个 `repository`。建议**只把真正实现的插件**提交到官方商店（当前是 `codearts`），脚手架发布的空壳没有价值。发布新版本只需推新 tag，商店清单无需改动。
+```bash
+cd release/linux/amd64 && sha256sum -c checksums.txt
+```
+
+多平台产物由 `.github/workflows/release.yml` 在推送 `v*` tag 时构建。
+
+### 更新与卸载
+
+- **更新**：用新版本动态库替换旧文件后重启 CPA。文件名必须以插件 ID 开头（`<id>.so` 或 `<id>-v<版本>.so`），其他写法会让宿主推导出错误的 ID。
+- **卸载**：删除动态库并重启 CPA，再从 `plugins.configs` 去掉该条目。
 
 ## CPAMP 管理界面
 
@@ -268,9 +236,22 @@ services:
    `-p` 是把流量转发到容器的非回环地址。
 2. **`callback_port` 要避开宿主机上其它服务占用的端口。** 被别的进程占用时登录直接失败并报
    `callback_listen`，不会静默改用其它端口——静默换端口会让浏览器拿到一个无法路由的地址。
-   同一个插件的**上一次未完成登录不算占用**：新请求会取代它并接管端口，所以面板上的「重试」可以反复点。
-   固定端口决定了同一插件同时只能有一个登录会话在进行。
 3. **`codearts` 的端口必须 ≥10000。** 这是华为 portal 自身的约束（`login.ts:338-341`），低于此值的配置会被拒绝。
+
+### 回调监听器是常驻的
+
+每个插件**只绑定一次**回调监听器（首次登录时），此后一直保持监听，直到插件随 CPA 进程退出。这一点很关键：
+
+用户在浏览器里完成授权、平台把浏览器跳回来的时刻，**和发起登录的时刻可能相隔很久**——会话可能已超时、
+可能被更新的登录请求取代、CPA 也可能重启过。如果监听器跟着会话一起关闭，那一刻端口上就没人监听，
+浏览器只会看到 `ERR_CONNECTION_REFUSED`，而授权码其实完全有效。所以监听器的生命周期**不属于任何一次登录**：
+会话有自己的超时（用于面板轮询），但不会关掉端口。
+
+由此带来两点行为：
+
+- **「重试」可以反复点**，不会出现 `address already in use`：端口由常驻监听器持有，而不是每次登录重新绑。
+- **同一插件同时只有一个"当前"登录会话**：新请求会取代上一个未完成的会话（后者被标记为「已被新的登录请求取代」，
+  面板不再空转），但端口本身不受影响。
 
 不改配置也能用：`qoder` 与 `codebuddy` 走**设备码流程**，不需要浏览器回调，在任何部署形态下都可用。
 若浏览器不在宿主机上（远程访问），回环回调本身不可达，可参考 CPA 的
@@ -310,7 +291,7 @@ curl http://localhost:8317/v1/chat/completions \
   未发布该端口时同一请求连接失败（`curl` exit 000），与用户报告的 `ERR_CONNECTION_REFUSED` 一致，构成负向对照；
 - **`codearts` 走通凭据解析到模型目录的全链路**：注入测试凭据后宿主日志出现 `processing auth file` 与 `Registered new model ... from provider codearts`，`/v1/models` 返回 16 个模型；
 - **方法面**逐个经 C `dlopen` 探针调用：`plugin.register`、`auth.identifier`、`model.register`、`model.static`、`quota.identifier`、`quota.describe`、`request.translate`、`response.translate`、`management.register` 在 5 个插件上全部返回成功 envelope；
-- **插件商店清单**用 CPA 真实解析器（`ParseRegistry` + `ValidateRegistry`）校验通过；发布产物按商店要求打包并校验 sha256。
+- **`registry.json` 清单**用 CPA 真实解析器（`ParseRegistry` + `ValidateRegistry`）校验通过；发布产物按规范打包并校验 sha256。
 
 **尚未验证的部分**：五个平台的上游协议都**没有对真实服务端跑通过**——这里没有它们的账号。签名算法、载荷转换、SSE 解析、登录状态机、错误分类由单元测试覆盖（`go test ./...`），但**真实登录授权、模型调用与每日签到需要你用真实账号各试一次**。已知的取舍与未移植项记录在 [docs/PORTING.md](docs/PORTING.md)。
 

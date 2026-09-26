@@ -20,33 +20,40 @@ func freeCallbackPort(t *testing.T) int {
 	return port
 }
 
-// TestPinnedCallbackPortSurvivesRetry is the container regression guard. A
-// pinned port stays bound for the life of the pending session, so starting a
-// second sign-in — which is what the panel's 重试 button does — used to fail with
-// "address already in use" until the first session's TTL lapsed. The earlier
-// attempt now has to give the port up before the retry binds it.
-func TestPinnedCallbackPortSurvivesRetry(t *testing.T) {
+// pinnedCallbackConfig is the container-shaped deployment the regression is
+// about: the callback port is pinned to the published mapping, bound on loopback
+// so the test can dial it the way the browser does.
+func pinnedCallbackConfig(t *testing.T) (Config, int) {
+	t.Helper()
 	port := freeCallbackPort(t)
-
 	cfg := DefaultConfig()
 	cfg.CallbackPort = port
 	cfg.CallbackBindHost = "127.0.0.1"
+	return cfg, port
+}
+
+// TestPinnedCallbackPortSurvivesRetry is the container regression guard. A
+// pinned port used to belong to the pending session, so starting a second
+// sign-in — which is what the panel's 重试 button does — failed with "address
+// already in use" until the first session's TTL lapsed. The listener is now
+// shared and outlives sessions, so a retry cannot contend for the port at all;
+// it only has to settle the attempt it replaces.
+func TestPinnedCallbackPortSurvivesRetry(t *testing.T) {
+	cfg, port := pinnedCallbackConfig(t)
+	t.Cleanup(shutdownLoginSessions)
 
 	first, errFirst := startLoginSession(cfg)
 	if errFirst != nil {
 		t.Fatalf("first startLoginSession: %v", errFirst)
 	}
 	if first.Port != port {
-		first.fail("test teardown")
 		t.Fatalf("first session port = %d, want the pinned %d", first.Port, port)
 	}
 
 	second, errSecond := startLoginSession(cfg)
 	if errSecond != nil {
-		first.fail("test teardown")
 		t.Fatalf("retry failed, want the previous attempt superseded: %v", errSecond)
 	}
-	defer second.fail("test teardown")
 
 	if second.Port != port {
 		t.Fatalf("retry bound port %d, want the pinned %d", second.Port, port)
@@ -68,26 +75,29 @@ func TestPinnedCallbackPortSurvivesRetry(t *testing.T) {
 
 // TestUnpinnedCallbackPortKeepsConcurrentSessions protects native installs: with
 // no pinned port two sign-ins may coexist, because they never contend for the
-// same port. Only a pinned deployment supersedes.
+// same port. Only a pinned deployment supersedes. Both attempts share the one
+// listener either way, so they report the port it is bound to.
 func TestUnpinnedCallbackPortKeepsConcurrentSessions(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.CallbackPort != 0 {
 		t.Fatalf("default CallbackPort = %d, want 0 (unpinned)", cfg.CallbackPort)
 	}
+	t.Cleanup(shutdownLoginSessions)
 
 	first, errFirst := startLoginSession(cfg)
 	if errFirst != nil {
 		t.Fatalf("first startLoginSession: %v", errFirst)
 	}
-	defer first.fail("test teardown")
 
 	second, errSecond := startLoginSession(cfg)
 	if errSecond != nil {
 		t.Fatalf("second startLoginSession: %v", errSecond)
 	}
-	defer second.fail("test teardown")
 
 	if _, _, _, finished := first.snapshot(); finished {
 		t.Fatal("unpinned start superseded an earlier session, want both left running")
+	}
+	if first.Port != second.Port {
+		t.Fatalf("sessions report ports %d and %d, want the one shared listener", first.Port, second.Port)
 	}
 }

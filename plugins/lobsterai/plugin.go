@@ -118,10 +118,12 @@ func (p *plugin) Configure(configYAML []byte) error {
 	return nil
 }
 
-// Quiesce is a no-op: the adapter holds no background workers.
+// Quiesce is a no-op: the only background worker is the callback dispatcher, and
+// stopping it early would close the published callback port while a browser
+// redirect may still be on its way. Shutdown is the only place it is released.
 func (p *plugin) Quiesce() {}
 
-// Shutdown releases the loopback callback listeners.
+// Shutdown releases the plugin's long-lived loopback callback listener.
 func (p *plugin) Shutdown() { shutdownLoginSessions() }
 
 // configFieldsForHost converts the settings description into the host type.

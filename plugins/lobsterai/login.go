@@ -20,8 +20,8 @@ import (
 // Three-step interactive sign-in, ported from
 // jethub-src/src/lobsterai-oauth.ts:
 //
-//  1. create a login session (random uuid + firstKeyfrom) and bind a loopback
-//     callback listener on a random port;
+//  1. create a login session (random uuid + firstKeyfrom) on the plugin's
+//     long-lived loopback callback listener (see callbackListener);
 //  2. hand the browser
 //     `{portalBase}/portal#/login?source=electron&redirect_uri=...&state=...`;
 //     the portal redirects back to `http://127.0.0.1:<port>/auth/callback`
@@ -55,7 +55,8 @@ type loginSession struct {
 	// LatestKeyfrom is submitted with the exchange and persisted as-is
 	// afterwards: the reference never refreshes it.
 	LatestKeyfrom string
-	// Port is the bound loopback callback port.
+	// Port is the bound port of the shared callback listener, i.e. the port
+	// this sign-in's redirect_uri names.
 	Port int
 	// AuthCode is the captured authorization code.
 	AuthCode string
@@ -70,13 +71,135 @@ type loginSession struct {
 	credential *Credential
 	finished   bool
 
-	callback *oauthcb.Server
+	// redirectURI is the address the browser was told to call for this sign-in.
+	// It is a value copied from the shared listener, not ownership of it: the
+	// listener outlives every session (see callbackListener).
+	redirectURI string
 }
 
 var (
 	loginMu       sync.Mutex
 	loginSessions = map[string]*loginSession{}
 )
+
+// The callback listener is process-wide, not per sign-in. The portal's redirect
+// arrives whenever the user finishes authorising, which can be after the session
+// that started the flow has expired, been superseded, or been lost to a
+// container restart. A container also publishes the callback port in advance, so
+// the browser cannot follow the listener to another port: binding per session
+// leaves the published port closed exactly when the browser arrives
+// (ERR_CONNECTION_REFUSED). Only plugin shutdown closes this listener.
+var (
+	callbackMu     sync.Mutex
+	callbackServer *oauthcb.Server
+	callbackKey    string
+)
+
+// callbackOptions is the listener configuration the live settings imply.
+func callbackOptions() oauthcb.Options {
+	cfg := settings()
+	return oauthcb.Options{
+		Path:     CallbackPath,
+		MinPort:  MinCallbackPort,
+		Port:     cfg.CallbackPort,
+		BindHost: cfg.CallbackBindHost,
+		// PublicHost/PublicPort are the browser-visible address; they differ
+		// from the bind address in a container (bind 0.0.0.0, dial 127.0.0.1).
+		PublicHost:  cfg.CallbackPublicHost,
+		PublicPort:  cfg.CallbackPublicPort,
+		SuccessHTML: callbackSuccessHTML,
+		// Persistent: Wait never times out, so the port stays bound between
+		// sign-ins and the session's own TTL (LoginTimeout) decides when the
+		// panel stops polling.
+		Persistent: true,
+	}
+}
+
+// callbackListenerKey names every option that shapes the listener's behaviour.
+// Settings equal to the cached key keep the bound listener, which is what lets a
+// retry on a pinned port succeed instead of racing the previous bind.
+func callbackListenerKey(options oauthcb.Options) string {
+	// NUL cannot occur in a host name, a query-free path or the success page,
+	// so no field value can forge a key that matches another configuration.
+	return fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%d\x00%s",
+		options.Path, options.BindHost, options.Port, options.PublicHost, options.PublicPort, options.SuccessHTML)
+}
+
+// callbackListener returns the plugin's long-lived callback listener, building
+// or rebuilding it only when the settings that shape it change.
+func callbackListener(options oauthcb.Options) (*oauthcb.Server, error) {
+	key := callbackListenerKey(options)
+
+	callbackMu.Lock()
+	defer callbackMu.Unlock()
+
+	if callbackServer != nil && callbackKey == key {
+		return callbackServer, nil
+	}
+
+	// A reconfigure moved the bind host, the port or the success page, so the
+	// running listener answers the wrong address. Release it before rebinding:
+	// a pinned port cannot be taken while the previous listener still holds it.
+	// A failed bind leaves the cache empty, so the next sign-in retries instead
+	// of handing out a closed server.
+	if callbackServer != nil {
+		_ = callbackServer.Close()
+		callbackServer = nil
+		callbackKey = ""
+	}
+	server, errStart := oauthcb.Start(options)
+	if errStart != nil {
+		return nil, errStart
+	}
+	callbackServer = server
+	callbackKey = key
+	// Exactly one dispatcher per listener: it is the only reader of the
+	// listener's callback channel, and it ends with the listener.
+	go dispatchCallbacks(server)
+	return server, nil
+}
+
+// dispatchCallbacks routes every callback the shared listener captures to the
+// pending sessions. The listener cannot know which sign-in a callback belongs
+// to, so each session's own state match decides whether it is the recipient.
+func dispatchCallbacks(server *oauthcb.Server) {
+	for {
+		result, errWait := server.Wait(context.Background())
+		if errWait != nil {
+			// A persistent listener only returns on Close — plugin shutdown or
+			// a settings rebuild — so there is nothing left to route.
+			return
+		}
+
+		loginMu.Lock()
+		pending := make([]*loginSession, 0, len(loginSessions))
+		for _, session := range loginSessions {
+			pending = append(pending, session)
+		}
+		loginMu.Unlock()
+
+		for _, session := range pending {
+			// Outside loginMu: deliver takes the session lock, and a session
+			// settling concurrently must not hold up the registry.
+			session.deliver(result)
+		}
+	}
+}
+
+// closeCallbackListener releases the shared listener. Plugin shutdown is the
+// only caller: a session that closed it would leave the published port
+// unreachable for the browser redirect that follows.
+func closeCallbackListener() {
+	callbackMu.Lock()
+	server := callbackServer
+	callbackServer = nil
+	callbackKey = ""
+	callbackMu.Unlock()
+
+	if server != nil {
+		_ = server.Close()
+	}
+}
 
 // randomHex returns n random bytes hex-encoded.
 func randomHex(n int) (string, error) {
@@ -104,8 +227,8 @@ func createLoginSessionState(now time.Time) (loginSessionState, error) {
 	}, nil
 }
 
-// startLoginSession allocates the loopback listener and registers the session
-// under a fresh random state value.
+// startLoginSession registers a sign-in under a fresh random state value on the
+// plugin's shared callback listener.
 func startLoginSession(now time.Time) (*loginSession, error) {
 	state, errState := randomHex(16)
 	if errState != nil {
@@ -122,7 +245,10 @@ func startLoginSession(now time.Time) (*loginSession, error) {
 		FirstKeyfrom:  sessionState.FirstKeyfrom,
 		LatestKeyfrom: sessionState.LatestKeyfrom,
 		CreatedAt:     now,
-		status:        pluginapi.AuthLoginStatusPending,
+		// The listener does not expire, so the session carries its own deadline:
+		// it is what stops the panel from polling an abandoned sign-in.
+		ExpiresAt: now.Add(LoginTimeout),
+		status:    pluginapi.AuthLoginStatusPending,
 	}
 
 	// LobsterAI takes a full `redirect_uri` and echoes the `state` we generate,
@@ -130,80 +256,63 @@ func startLoginSession(now time.Time) (*loginSession, error) {
 	// not make an ephemeral port work in a container: it cannot be published in
 	// advance, and the container's 127.0.0.1 is not the browser's. Such a
 	// deployment pins the port and binds 0.0.0.0, which is what the host's own
-	// callback forwarder does.
-	cfg := settings()
-	// Binding happens under loginMu so that releasing a superseded session and
-	// taking the port are a single step. A pinned port carries one sign-in at a
-	// time, so without this a retry races the previous attempt and reports
-	// "address already in use" — the error the panel shows on 重试.
-	loginMu.Lock()
-	purgeExpiredLoginSessionsLocked(now)
-	if cfg.CallbackPort > 0 {
-		supersedePendingLoginSessionsLocked(supersededLoginMessage)
-	}
-	callback, errListen := oauthcb.Start(oauthcb.Options{
-		Path:        CallbackPath,
-		MinPort:     MinCallbackPort,
-		Port:        cfg.CallbackPort,
-		BindHost:    cfg.CallbackBindHost,
-		PublicHost:  cfg.CallbackPublicHost,
-		PublicPort:  cfg.CallbackPublicPort,
-		TTL:         LoginTimeout,
-		SuccessHTML: callbackSuccessHTML,
-	})
+	// callback forwarder does. Reusing the shared listener is also what keeps
+	// that pinned port bound between sign-ins.
+	callback, errListen := callbackListener(callbackOptions())
 	if errListen != nil {
-		loginMu.Unlock()
-		if cfg.CallbackPort > 0 {
+		if cfg := settings(); cfg.CallbackPort > 0 {
 			return nil, abiboot.Errorf("callback_listen",
 				"LobsterAI 回调端口 %d 无法监听（%v）；请确认该端口未被其它程序占用", cfg.CallbackPort, errListen)
 		}
 		return nil, abiboot.Errorf("callback_listen", "start LobsterAI callback listener: %v", errListen)
 	}
-	session.callback = callback
 	session.Port = callback.Port()
-	session.ExpiresAt = callback.ExpiresAt()
+	session.redirectURI = callback.RedirectURI()
+
+	// Superseding no longer has to protect a bind — the listener already holds
+	// the port for the process lifetime — but a pinned deployment still carries
+	// one sign-in at a time, and the replaced attempt has to settle so the panel
+	// stops polling a state that can never complete. Settling it in the same
+	// critical section as the registration keeps a concurrent start from
+	// superseding the session it just created.
+	loginMu.Lock()
+	purgeExpiredLoginSessionsLocked(now)
+	if settings().CallbackPort > 0 {
+		supersedePendingLoginSessionsLocked(supersededLoginMessage)
+	}
 	loginSessions[state] = session
 	loginMu.Unlock()
 
-	go session.awaitCallback()
 	return session, nil
 }
 
-// awaitCallback stores the callback delivered by the browser. A callback whose
-// state does not match this session is discarded and the wait resumes; the
-// reference answers such a request with HTTP 400, which the shared oauthcb
-// listener cannot do per-request, so the observable difference is only the
-// browser page (documented deviation).
-func (s *loginSession) awaitCallback() {
-	for {
-		result, errWait := s.callback.Wait(context.Background())
-		if errWait != nil {
-			// TTL expiry, plugin shutdown, or an already-finished session.
-			return
-		}
-		if strings.TrimSpace(result.Query.Get("state")) != s.State {
-			continue
-		}
-		if strings.TrimSpace(result.Code) == "" {
-			continue
-		}
-
-		s.mu.Lock()
-		if s.finished {
-			s.mu.Unlock()
-			return
-		}
-		s.Callback = result
-		s.AuthCode = result.Code
-		s.mu.Unlock()
+// deliver routes one browser callback to this session. A callback whose state
+// does not match belongs to another session (or to a stale page) and is
+// discarded, so the shared listener keeps routing later callbacks here. The
+// reference answers such a request with HTTP 400; the shared oauthcb listener
+// cannot answer per-request, so only the browser page differs (documented
+// deviation).
+func (s *loginSession) deliver(result oauthcb.Result) {
+	if strings.TrimSpace(result.Query.Get("state")) != s.State {
 		return
 	}
+	if strings.TrimSpace(result.Code) == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
+	s.Callback = result
+	s.AuthCode = result.Code
 }
 
 // RedirectURI is the loopback redirect the portal must call back.
 func (s *loginSession) RedirectURI() string {
-	if s.callback != nil {
-		return s.callback.RedirectURI()
+	if s.redirectURI != "" {
+		return s.redirectURI
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d%s", s.Port, CallbackPath)
 }
@@ -235,17 +344,17 @@ func (s *loginSession) sessionState() loginSessionState {
 // expired reports whether the session outlived its TTL.
 func (s *loginSession) expired(now time.Time) bool { return now.After(s.ExpiresAt) }
 
-// expire marks a session as failed and releases its listener.
+// expire marks a session as failed. The shared listener stays bound: a browser
+// redirect may still be on its way.
 func (s *loginSession) expire(message string) {
 	s.mu.Lock()
 	s.finished = true
 	s.status = pluginapi.AuthLoginStatusError
 	s.message = message
 	s.mu.Unlock()
-	s.closeCallback()
 }
 
-// finish records a successful credential and releases the listener.
+// finish records a successful credential.
 func (s *loginSession) finish(credential *Credential, message string) {
 	s.mu.Lock()
 	s.finished = true
@@ -253,27 +362,15 @@ func (s *loginSession) finish(credential *Credential, message string) {
 	s.message = message
 	s.credential = credential
 	s.mu.Unlock()
-	s.closeCallback()
 }
 
-// fail records a terminal failure and releases the listener.
+// fail records a terminal failure.
 func (s *loginSession) fail(message string) {
 	s.mu.Lock()
 	s.finished = true
 	s.status = pluginapi.AuthLoginStatusError
 	s.message = message
 	s.mu.Unlock()
-	s.closeCallback()
-}
-
-// closeCallback releases the loopback listener, if one was bound.
-func (s *loginSession) closeCallback() {
-	s.mu.Lock()
-	callback := s.callback
-	s.mu.Unlock()
-	if callback != nil {
-		_ = callback.Close()
-	}
 }
 
 // snapshot reads the current session outcome.
@@ -323,10 +420,12 @@ func forgetLoginSession(state string) {
 // than look like a silent stall.
 const supersededLoginMessage = "该登录已被新的登录请求取代，请重新发起"
 
-// supersedePendingLoginSessionsLocked releases every live session and forgets
-// it. A pinned callback port carries one sign-in at a time, so an earlier
-// attempt must give the port up before a retry can bind it. Callers must hold
-// loginMu.
+// supersedePendingLoginSessionsLocked settles every live session and forgets it.
+// A pinned deployment carries one sign-in at a time — the panel's 重试 replaces
+// the pending attempt rather than adding a second one — so the replaced session
+// has to report that it lost, or the panel keeps polling a state that can never
+// complete. Releasing the port is no longer part of this: the shared listener
+// holds it for the process lifetime. Callers must hold loginMu.
 func supersedePendingLoginSessionsLocked(message string) {
 	for state, session := range loginSessions {
 		delete(loginSessions, state)
@@ -345,18 +444,17 @@ func purgeExpiredLoginSessionsLocked(now time.Time) {
 	}
 }
 
-// shutdownLoginSessions closes every listener, used during plugin shutdown.
+// shutdownLoginSessions drops every pending session and releases the shared
+// callback listener. Only plugin shutdown may do the latter: as long as the
+// plugin runs, a sign-in that is not in flight must not take the published
+// callback port down with it.
 func shutdownLoginSessions() {
 	loginMu.Lock()
-	sessions := make([]*loginSession, 0, len(loginSessions))
-	for state, session := range loginSessions {
-		sessions = append(sessions, session)
+	for state := range loginSessions {
 		delete(loginSessions, state)
 	}
 	loginMu.Unlock()
-	for _, session := range sessions {
-		session.closeCallback()
-	}
+	closeCallbackListener()
 }
 
 // exchangeRequest is the exact exchange body. The endpoint requires these five

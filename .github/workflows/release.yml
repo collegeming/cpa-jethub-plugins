@@ -1,6 +1,6 @@
 name: release
 
-# Publishes the plugin store release layout:
+# Publishes the release layout:
 #   <id>_<version>_<goos>_<goarch>.zip  (dynamic library at the zip root, <id>.<ext>)
 #   checksums.txt                        (sha256sum format)
 #

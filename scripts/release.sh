@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# Package the plugins into the layout the CPA plugin store expects.
+# Package the plugins into a release layout.
 #
 #   <id>_<version>_<goos>_<goarch>.zip    one per plugin per platform
 #   checksums.txt                          sha256sum format
 #
-# The official store README requires:
+# Layout convention:
 #   - the release tag is `v<version>` with a dotted numeric version;
 #   - every release carries one zip per supported platform plus one
 #     `checksums.txt`;
 #   - each zip holds the dynamic library at the zip ROOT, named `<id>.<ext>`
-#     (no version suffix and no nested directory), because the CPA installer
-#     renames the file to `<id>-v<version><ext>` itself.
+#     (no version suffix and no nested directory), so unpacking a zip straight
+#     into the host's plugin directory yields the right plugin ID.
 #
 # This script packages whatever platform the local toolchain can build — by
 # default the host platform. Multi-platform releases are produced by
