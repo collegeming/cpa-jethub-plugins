@@ -21,13 +21,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	// ProviderKey is the single CPA provider key this plugin registers. The
-	// Jet-Hub ids (buddy / buddy-intl / workbuddy-cn / workbuddy) are folded
-	// into the `product` config field below.
+// Plugin identity.
+//
+// These are vars, not consts, so one source tree can be built into a separate
+// plugin per product family: CPA derives a plugin's id from its file name
+// (`<id>-v<version>.so`) and lets one plugin register exactly one provider key,
+// so "CodeBuddy 国内版 and WorkBuddy 国际版 both available at once" means several
+// .so files. scripts/build.sh passes the identity with
+// `-ldflags -X main.ProviderKey=... -X main.DefaultProduct=...`.
+var (
+	// ProviderKey is the CPA provider key this build registers. It names the
+	// auth files, the model prefix and the executor route, so two builds that
+	// shared it would collide.
 	ProviderKey = "codebuddy"
-	// DisplayName is the default human-readable name.
+	// DisplayName is the human-readable name shown by the host.
 	DisplayName = "CodeBuddy"
+	// DefaultProduct is the Jet-Hub product this build serves when the user
+	// configures nothing. Overriding it is what makes a variant "the
+	// international one" out of the box rather than by configuration.
+	DefaultProduct = ProductCodeBuddy
+)
+
+const (
 	// Version is the plugin release version.
 	Version = "0.1.0"
 	// Author identifies the plugin author organization.
@@ -282,8 +297,18 @@ func ProductIDs() []string {
 	return out
 }
 
-// ProductDefault returns the default product (CodeBuddy 国内版).
+// ProductDefault returns the product this build serves when nothing is
+// configured. It is Products[0] unless the build pinned another one.
+//
+// It deliberately does not go through productByConfigValue: that function falls
+// back to this one, so delegating would recurse forever on a bad pin.
 func ProductDefault() productConfig {
+	wanted := strings.ToLower(strings.TrimSpace(DefaultProduct))
+	for _, product := range Products {
+		if product.ConfigValue == wanted || product.ID == wanted {
+			return product
+		}
+	}
 	return Products[0]
 }
 
@@ -373,7 +398,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Enabled:             true,
-		Product:             ProductCodeBuddy,
+		Product:             ProductDefault().ConfigValue,
 		DiscoverModels:      true,
 		DefaultMaxTokens:    0,
 		PromptCacheKey:      true,

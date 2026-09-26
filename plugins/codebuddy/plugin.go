@@ -8,6 +8,7 @@
 package main
 
 import (
+	"strings"
 	"sync/atomic"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
@@ -84,8 +85,9 @@ func Registration() abiboot.Registration {
 		Version:          Version,
 		Author:           Author,
 		GitHubRepository: Repository,
-		// Website home of the default product (buddy.ts:26).
-		Logo:         WebsiteHome + "/favicon.ico",
+		// Follow the product this build serves rather than the China home, so an
+		// international variant does not advertise the China site's icon.
+		Logo:         productLogoURL(),
 		ConfigFields: configFieldsForHost(),
 	}, abiboot.Capabilities{
 		ModelRegistrar:        true,
@@ -134,4 +136,15 @@ func configFieldsForHost() []pluginapi.ConfigField {
 		})
 	}
 	return out
+}
+
+// productLogoURL is the favicon of the product this build serves. It follows the
+// configured API domain so the international variants link to their own site
+// instead of the China one, falling back to that home when a product declares no
+// domain.
+func productLogoURL() string {
+	if domain := strings.TrimSpace(ProductDefault().APIDomain); domain != "" {
+		return "https://" + domain + "/favicon.ico"
+	}
+	return WebsiteHome + "/favicon.ico"
 }

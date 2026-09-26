@@ -36,6 +36,19 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | 插件 | 配置项 | 取值 |
 | --- | --- | --- |
 | `codebuddy` | `product` | `codebuddy`（国内，默认）、`codebuddy-intl`（国际）、`workbuddy-cn`、`workbuddy` |
+
+> **想让国内版与国际版同时可用**，靠 `product` 做不到：CPA 由 `.so` 文件名决定插件 ID，而一个插件只能注册一个 provider key（它决定了凭据文件名、模型前缀与执行器路由）。
+> 因此本仓库用**同一份代码构建多个「产品变体」**，每个变体在构建期把 provider key、显示名与默认产品固定下来：
+>
+> | 变体 ID | provider key | 默认产品 | 登录域名 |
+> | --- | --- | --- | --- |
+> | `codebuddy` | `codebuddy` | CodeBuddy 国内版 | `copilot.tencent.com` |
+> | `codebuddy-intl` | `codebuddy-intl` | CodeBuddy 国际版 | `www.codebuddy.ai` |
+> | `workbuddy-cn` | `workbuddy-cn` | WorkBuddy 国内版 | `copilot.tencent.com` |
+> | `workbuddy` | `workbuddy` | WorkBuddy 国际版 | `www.workbuddy.ai` |
+>
+> `scripts/build.sh` 会把这四个变体连同其余插件一起产出；`plugins.configs` 里按变体 ID 分别启用即可，每个变体有自己的凭据与模型前缀。
+> 变体由 `-ldflags -X main.ProviderKey=... -X main.DefaultProduct=...` 注入，构建期固定，不需要（也不建议）在配置里再写 `product`。
 | `qoder` | `region` | `qoder`（国际，默认）、`qoder-cn` |
 | `trae` | `region` | `trae`（国内，默认）、`trae-intl` |
 | `codearts` | `flow` | `oauth`（浏览器 PKCE，默认）、`ticket`（旧版票据轮询） |

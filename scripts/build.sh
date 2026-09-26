@@ -42,7 +42,24 @@ export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOSUMDB="${GOSUMDB:-off}"
 
-PLUGINS=(codearts codebuddy qoder trae lobsterai)
+PLUGINS=(codearts qoder trae lobsterai)
+
+# Variants: one source tree, several CPA plugins.
+#
+# CPA derives a plugin's ID from the artifact file name and lets a plugin
+# register exactly ONE provider key, which is what names its auth files, its
+# model prefix and its executor route. The Tencent family therefore cannot be
+# "both China and international at once" from a single artifact: it has to be
+# one artifact per product, each pinned at build time.
+#
+# Fields: artifact-id | package | provider key | display name | default product
+# The default product is a config value from plugins/codebuddy/config.go.
+VARIANTS=(
+	"codebuddy|./plugins/codebuddy|codebuddy|CodeBuddy|codebuddy"
+	"codebuddy-intl|./plugins/codebuddy|codebuddy-intl|CodeBuddy (国际版)|codebuddy-intl"
+	"workbuddy-cn|./plugins/codebuddy|workbuddy-cn|WorkBuddy (国内版)|workbuddy-cn"
+	"workbuddy|./plugins/codebuddy|workbuddy|WorkBuddy (国际版)|workbuddy"
+)
 
 GOOS="${GOOS:-$("$GO" env GOOS)}"
 GOARCH="${GOARCH:-$("$GO" env GOARCH)}"
@@ -76,12 +93,41 @@ plugin_version() {
 }
 
 declare -A ARTIFACT=()
+ALL_IDS=()
 
 ok=()
 failed=()
 skipped=()
 
+# build_variant compiles one product-pinned artifact of a shared source tree.
+build_variant() {
+	local spec="$1" id pkg provider display product version out ldflags
+	IFS='|' read -r id pkg provider display product <<<"$spec"
+
+	version="$(plugin_version "$pkg")"
+	out="${OUT_DIR}/${id}-v${version}.${EXT}"
+	# The display names contain spaces and parentheses, so each -X assignment is
+	# quoted for the ldflags parser: it splits like a shell, and a bare space
+	# would be read as the start of the next flag.
+	ldflags="-X main.ProviderKey=${provider} -X \"main.DisplayName=${display}\" -X main.DefaultProduct=${product}"
+	echo "==> $id: $GO build -buildmode=c-shared -ldflags \"$ldflags\" -o $out $pkg"
+	if "$GO" build -buildmode=c-shared -ldflags "$ldflags" -o "$out" "$pkg"; then
+		ok+=("$id")
+		ARTIFACT["$id"]="$out"
+	else
+		echo "!!! $id: build FAILED" >&2
+		failed+=("$id")
+	fi
+}
+
+for spec in "${VARIANTS[@]}"; do
+	id="${spec%%|*}"
+	ALL_IDS+=("$id")
+	build_variant "$spec"
+done
+
 for p in "${PLUGINS[@]}"; do
+	ALL_IDS+=("$p")
 	pkg="./plugins/$p"
 	if [[ ! -d "$pkg" ]]; then
 		echo "==> $p: SKIP (no directory $pkg)"
@@ -118,7 +164,7 @@ done
 echo
 echo "================ build summary (${GOOS}/${GOARCH}) ================"
 printf '%-11s %-8s %s\n' PLUGIN STATUS ARTIFACT
-for p in "${PLUGINS[@]}"; do
+for p in "${ALL_IDS[@]}"; do
 	out="${ARTIFACT[$p]:-}"
 	if printf '%s\n' "${ok[@]:-}" | grep -qx "$p" && [[ -n "$out" && -f "$out" ]]; then
 		printf '%-11s %-8s %s (%s)\n' "$p" OK "$out" "$(du -h "$out" | cut -f1)"
