@@ -102,8 +102,9 @@ func TestConfigureAppliesSettings(t *testing.T) {
 }
 
 // TestManagementRouteTable pins the two hard rules of the host's mounting
-// scheme: exactly ONE route with a Menu, and every Menu-less route namespaced by
-// the provider key.
+// scheme: NO route with a Menu (the hub plugin owns the repository's single
+// sidebar entry), and every Menu-less management route namespaced by the
+// provider key.
 func TestManagementRouteTable(t *testing.T) {
 	value, errRegister := handleManagementRegister(nil, nil)
 	if errRegister != nil {
@@ -113,35 +114,32 @@ func TestManagementRouteTable(t *testing.T) {
 	if !okRegistration {
 		t.Fatalf("unexpected reply %T", value)
 	}
-	menus := 0
 	for _, route := range registration.Routes {
 		if route.Menu != "" {
-			menus++
-			if route.Method != http.MethodGet {
-				t.Errorf("a menu route must be GET (the resource mount is GET-only): %s %s", route.Method, route.Path)
-			}
-			if route.Path != "/status" {
-				t.Errorf("the single menu route must be the status page, got %q", route.Path)
-			}
-		} else if !strings.HasPrefix(route.Path, "/"+ProviderKey+"/") {
+			t.Errorf("management route %s carries Menu %q: the sidebar belongs to the hub plugin", route.Path, route.Menu)
+		}
+		if !strings.HasPrefix(route.Path, "/"+ProviderKey+"/") {
 			t.Errorf("a Menu-less management route must be provider-prefixed: %q", route.Path)
 		}
 		if route.Description == "" {
 			t.Errorf("route %q has no description", route.Path)
 		}
 	}
-	if menus != 1 {
-		t.Fatalf("menu routes = %d, want exactly 1", menus)
-	}
-	if len(registration.Resources) == 0 {
-		t.Fatal("the login page must be reachable as a resource route")
-	}
+	// The status and login pages stay reachable on the resource mount: the hub's
+	// channel overview links to /status, and /status links to /login.
+	pages := map[string]bool{}
 	for _, resource := range registration.Resources {
 		if resource.Menu != "" {
 			t.Errorf("a resource route must not add a sidebar entry: %q", resource.Path)
 		}
-		if resource.Path != "/login" {
-			t.Errorf("unexpected resource route %q", resource.Path)
+		if resource.Description == "" {
+			t.Errorf("resource %q has no description", resource.Path)
+		}
+		pages[resource.Path] = true
+	}
+	for _, want := range []string{"/status", "/login"} {
+		if !pages[want] {
+			t.Errorf("resource route %s is missing, so the page would 404", want)
 		}
 	}
 }

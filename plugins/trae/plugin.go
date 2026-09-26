@@ -162,25 +162,21 @@ func managementRoute(path string) string {
 }
 
 // handleManagementRegister declares the status, login and check-in entries that
-// management clients show.
+// management clients show. This plugin contributes NO sidebar entry.
 //
 // Two mounts with different rules, both determined by the host:
 //
 //   - a GET route carrying a Menu is registered ONLY under
 //     `/v0/resource/plugins/trae/<path>`, which is what CPA-Manager-Plus embeds
-//     in its iframe;
+//     in its iframe. The repository's ONE Menu belongs to the hub plugin, so the
+//     status page is declared here as a Menu-less ResourceRoute instead and is
+//     reached from the hub's channel overview;
 //   - any other route lands in the GLOBAL `/v0/management/<path>` namespace, so
 //     its path must be prefixed with the provider key or a collision with another
 //     plugin is silently skipped. Those routes exist for scripts and return JSON.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			// Exactly one Menu route: the manager renders one sidebar entry per
-			// menu route and does not group them by plugin, so extra menu routes
-			// look like duplicates. Login lives on the manager's own OAuth page
-			// (it discovers plugins declaring the auth-provider capability).
-			{Method: http.MethodGet, Path: "/status", Menu: "TRAE",
-				Description: "账号、凭据有效期、可用通道/模型与积分签到状态"},
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status",
 				Description: "TRAE 账号状态（JSON，脚本用）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin",
@@ -188,7 +184,10 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 		},
 		// Browser-reachable pages that must NOT become sidebar entries: a
 		// ResourceRoute only shows in the manager nav when it carries a Menu.
+		// Login lives on the manager's own OAuth page too (it discovers plugins
+		// declaring the auth-provider capability).
 		Resources: []pluginapi.ResourceRoute{
+			{Path: "/status", Description: "账号、凭据有效期、可用通道/模型与积分签到状态（由 hub 的渠道总览链接进入）"},
 			{Path: "/login", Description: "浏览器登录 TRAE 账号（两步式：先取链接，再检查结果）"},
 			{Path: "/checkin", Description: "查询并执行 TRAE 每日签到与积分余额"},
 		},

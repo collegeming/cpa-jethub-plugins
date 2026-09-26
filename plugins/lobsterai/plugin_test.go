@@ -131,19 +131,12 @@ func TestManagementRegisterDeclaresBothMounts(t *testing.T) {
 	}
 	response := value.(pluginapi.ManagementRegistrationResponse)
 
-	menus := map[string]string{}
 	managementPaths := map[string]string{}
 	for _, route := range response.Routes {
 		if strings.TrimSpace(route.Menu) != "" {
-			// A GET+Menu route is mounted ONLY under the resource path, which is
-			// what CPAMP embeds.
-			if !strings.EqualFold(route.Method, http.MethodGet) {
-				t.Fatalf("a menu route must be GET: %+v", route)
-			}
-			menus[route.Path] = route.Menu
-			continue
+			t.Errorf("management route %s carries menu %q; the sidebar belongs to the hub plugin", route.Path, route.Menu)
 		}
-		// Every other route lands in the global management namespace, so it must
+		// Every route here lands in the global management namespace, so it must
 		// carry the provider prefix or it can be silently skipped on collision.
 		if !strings.HasPrefix(route.Path, "/"+ProviderKey+"/") {
 			t.Fatalf("management route %q is not namespaced by the provider key", route.Path)
@@ -151,12 +144,12 @@ func TestManagementRegisterDeclaresBothMounts(t *testing.T) {
 		managementPaths[route.Path] = route.Method
 	}
 
-	// Exactly one sidebar entry: CPAMP renders one nav item per menu route and
-	// does not group them by plugin, so extra menus look like duplicates. Login
-	// and check-in are reached from the status page and from the manager's own
-	// OAuth page instead.
-	if len(menus) != 1 || menus["/status"] == "" {
-		t.Fatalf("menu routes = %v, want only /status", menus)
+	// NO sidebar entry: CPAMP renders one nav item per menu route and does not
+	// group them by plugin, and the repository spends its single item on the hub.
+	// The status page is reached from the hub's channel overview, login and
+	// check-in from the status page and the manager's own OAuth page.
+	if len(managementPaths) == 0 {
+		t.Fatal("the script routes must still be registered on the management mount")
 	}
 
 	// The browser-reachable pages that must NOT add a sidebar entry.
@@ -167,7 +160,7 @@ func TestManagementRegisterDeclaresBothMounts(t *testing.T) {
 		}
 		resources[route.Path] = true
 	}
-	for _, path := range []string{"/login", "/checkin"} {
+	for _, path := range []string{"/status", "/login", "/checkin"} {
 		if !resources[path] {
 			t.Fatalf("resource route %s is missing: %v", path, resources)
 		}

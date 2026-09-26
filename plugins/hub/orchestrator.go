@@ -385,7 +385,7 @@ func reportedAccounts(document map[string]any) (int, []accountRef, bool) {
 		refs    []accountRef
 		present bool
 	)
-	if items, ok := arrayField(document, "accounts"); ok {
+	if items, ok := arrayAt(document, "accounts"); ok {
 		present = true
 		count = len(items)
 		refs = make([]accountRef, 0, len(items))
@@ -395,11 +395,11 @@ func reportedAccounts(document map[string]any) (int, []accountRef, bool) {
 				continue
 			}
 			ref := accountRef{
-				AuthIndex: stringField(object, "auth_index"),
-				Name:      stringField(object, "name"),
-				Label:     stringField(object, "label"),
+				AuthIndex: stringAt(object, "auth_index"),
+				Name:      stringAt(object, "name"),
+				Label:     stringAt(object, "label"),
 			}
-			if disabled, okDisabled := boolField(object, "disabled"); okDisabled {
+			if disabled, okDisabled := flagAt(object, "disabled"); okDisabled {
 				ref.Disabled = disabled
 			}
 			if ref.AuthIndex == "" && ref.Name == "" {
@@ -408,19 +408,19 @@ func reportedAccounts(document map[string]any) (int, []accountRef, bool) {
 			refs = append(refs, ref)
 		}
 	}
-	if value, okNumber := numberField(document, "accounts"); okNumber && !present {
+	if value, okNumber := numberAt(document, "accounts"); okNumber && !present {
 		present = true
 		count = int(value)
 	}
-	if value, okNumber := numberField(document, "account_count"); okNumber && !present {
+	if value, okNumber := numberAt(document, "account_count"); okNumber && !present {
 		present = true
 		count = int(value)
 	}
-	if account, okAccount := objectField(document, "account"); okAccount {
+	if account, okAccount := objectAt(document, "account"); okAccount {
 		ref := accountRef{
-			AuthIndex: stringField(account, "auth_index"),
-			Name:      stringField(account, "name"),
-			Label:     stringField(account, "label"),
+			AuthIndex: stringAt(account, "auth_index"),
+			Name:      stringAt(account, "name"),
+			Label:     stringAt(account, "label"),
 		}
 		if ref.AuthIndex != "" {
 			present = true
@@ -433,9 +433,9 @@ func reportedAccounts(document map[string]any) (int, []accountRef, bool) {
 	// codearts answers with the account fields at the top level (its empty case
 	// is the only one that nests them under "account").
 	if ref := (accountRef{
-		AuthIndex: stringField(document, "auth_index"),
-		Name:      stringField(document, "name"),
-		Label:     stringField(document, "label"),
+		AuthIndex: stringAt(document, "auth_index"),
+		Name:      stringAt(document, "name"),
+		Label:     stringAt(document, "label"),
 	}); ref.AuthIndex != "" {
 		present = true
 		if count < 1 {
@@ -780,17 +780,17 @@ func dailyActivityState(document map[string]any) dailyState {
 	if document == nil {
 		return state
 	}
-	if remaining, okRemaining := numberField(document, "remaining"); okRemaining {
+	if remaining, okRemaining := numberAt(document, "remaining"); okRemaining {
 		state.remaining = remaining
 		state.remainingKnown = true
 	}
-	block, okBlock := objectField(document, "daily_checkin")
+	block, okBlock := objectAt(document, "daily_checkin")
 	if !okBlock {
 		return state
 	}
 	state.present = true
-	state.status = stringField(block, "status")
-	if claimable, okClaimable := boolField(block, "claimable"); okClaimable {
+	state.status = stringAt(block, "status")
+	if claimable, okClaimable := flagAt(block, "claimable"); okClaimable {
 		state.claimable = claimable
 	}
 	return state
@@ -837,23 +837,23 @@ func interpretCheckinJSON(document map[string]any) checkinVerdict {
 	if document == nil {
 		return verdict
 	}
-	if supported, okSupported := boolField(document, "supported"); okSupported && !supported {
+	if supported, okSupported := flagAt(document, "supported"); okSupported && !supported {
 		verdict.Kind = kindUnsupported
-		verdict.Message = stringField(document, "message")
+		verdict.Message = stringAt(document, "message")
 		return verdict
 	}
 
-	claim, _ := objectField(document, "claim")
+	claim, _ := objectAt(document, "claim")
 	verdict.ProviderStatus = firstNonEmpty(
-		stringField(document, "outcome"),
-		stringField(document, "status"),
-		stringField(claim, "status"),
+		stringAt(document, "outcome"),
+		stringAt(document, "status"),
+		stringAt(claim, "status"),
 	)
 	verdict.Kind = normalizeProviderStatus(verdict.ProviderStatus)
 	verdict.Message = firstNonEmpty(
-		stringField(document, "message"),
-		stringField(claim, "message"),
-		stringField(document, "server_message"),
+		stringAt(document, "message"),
+		stringAt(claim, "message"),
+		stringAt(document, "server_message"),
 	)
 	verdict.Facts = checkinFacts(document, claim)
 	return verdict
@@ -863,14 +863,14 @@ func interpretCheckinJSON(document map[string]any) checkinVerdict {
 // order and without inventing any: a field that is absent contributes nothing.
 func checkinFacts(document, claim map[string]any) []string {
 	facts := make([]string, 0, 3)
-	if amount, okAmount := numberField(document, "amount"); okAmount && amount != 0 {
+	if amount, okAmount := numberAt(document, "amount"); okAmount && amount != 0 {
 		facts = append(facts, "本次 +"+trimFloat(amount))
 	}
-	credit, granted := numberField(claim, "credit")
+	credit, granted := numberAt(claim, "credit")
 	if !granted {
-		credit, granted = numberField(document, "credit")
+		credit, granted = numberAt(document, "credit")
 		if granted {
-			if flag, okFlag := boolField(document, "credit_granted"); okFlag && !flag {
+			if flag, okFlag := flagAt(document, "credit_granted"); okFlag && !flag {
 				granted = false
 			}
 		}
@@ -878,19 +878,19 @@ func checkinFacts(document, claim map[string]any) []string {
 	if granted && credit != 0 {
 		facts = append(facts, "本次 +"+trimFloat(credit))
 	}
-	if credits, okCredits := numberField(document, "credits"); okCredits && credits != 0 {
+	if credits, okCredits := numberAt(document, "credits"); okCredits && credits != 0 {
 		facts = append(facts, "签到奖励 "+trimFloat(credits))
 	}
-	streak, okStreak := numberField(claim, "streak_days")
+	streak, okStreak := numberAt(claim, "streak_days")
 	if !okStreak {
-		streak, okStreak = numberField(document, "streak_days")
+		streak, okStreak = numberAt(document, "streak_days")
 	}
 	if okStreak && streak > 0 {
 		facts = append(facts, fmt.Sprintf("连续签到 %d 天", int(streak)))
 	}
-	remaining, okRemaining := numberField(document, "remaining")
+	remaining, okRemaining := numberAt(document, "remaining")
 	if !okRemaining {
-		remaining, okRemaining = numberField(document, "credit_remaining")
+		remaining, okRemaining = numberAt(document, "credit_remaining")
 	}
 	if okRemaining {
 		facts = append(facts, "剩余 "+trimFloat(remaining))
@@ -971,6 +971,13 @@ func noticeFromHTML(markup string) (string, string) {
 }
 
 // ── Small JSON helpers ──
+//
+// Every reader takes a dotted PATH rather than a flat key, because the
+// documents this plugin reads nest differently per provider: codearts reports
+// the credit balance at the top level (`remaining`), qoder under `account` and
+// `daily_checkin`, lobsterai under `selected`. A path with no dot is the flat
+// lookup it looks like, so the same helpers serve both shapes and there is no
+// second, subtly different set for nested keys.
 
 func parseJSONObject(body []byte) (map[string]any, error) {
 	var document map[string]any
@@ -980,11 +987,37 @@ func parseJSONObject(body []byte) (map[string]any, error) {
 	return document, nil
 }
 
-func objectField(document map[string]any, key string) (map[string]any, bool) {
-	if document == nil {
-		return nil, false
+// valueAt walks a dotted path through the nested objects of a document, and
+// through arrays with a numeric segment (`accounts.0.expires_at_ms`, which is
+// where trae reports the expiry of its selected account). It stops at the first
+// segment that is missing, is not an object, or is not a valid index, so a
+// provider that returns a scalar where an object is expected reads as "absent"
+// instead of panicking.
+func valueAt(document map[string]any, path string) (any, bool) {
+	var current any = document
+	for _, segment := range strings.Split(path, ".") {
+		switch typed := current.(type) {
+		case map[string]any:
+			value, okValue := typed[segment]
+			if !okValue {
+				return nil, false
+			}
+			current = value
+		case []any:
+			index, errIndex := strconv.Atoi(segment)
+			if errIndex != nil || index < 0 || index >= len(typed) {
+				return nil, false
+			}
+			current = typed[index]
+		default:
+			return nil, false
+		}
 	}
-	value, ok := document[key]
+	return current, true
+}
+
+func objectAt(document map[string]any, path string) (map[string]any, bool) {
+	value, ok := valueAt(document, path)
 	if !ok {
 		return nil, false
 	}
@@ -992,11 +1025,8 @@ func objectField(document map[string]any, key string) (map[string]any, bool) {
 	return object, okObject
 }
 
-func arrayField(document map[string]any, key string) ([]any, bool) {
-	if document == nil {
-		return nil, false
-	}
-	value, ok := document[key]
+func arrayAt(document map[string]any, path string) ([]any, bool) {
+	value, ok := valueAt(document, path)
 	if !ok {
 		return nil, false
 	}
@@ -1004,21 +1034,22 @@ func arrayField(document map[string]any, key string) ([]any, bool) {
 	return items, okArray
 }
 
-func stringField(document map[string]any, key string) string {
-	if document == nil {
+// stringAt returns the trimmed string at a path, or "" when it is absent or not
+// a string.
+func stringAt(document map[string]any, path string) string {
+	value, ok := valueAt(document, path)
+	if !ok {
 		return ""
 	}
-	if text, ok := document[key].(string); ok {
-		return strings.TrimSpace(text)
+	text, okText := value.(string)
+	if !okText {
+		return ""
 	}
-	return ""
+	return strings.TrimSpace(text)
 }
 
-func numberField(document map[string]any, key string) (float64, bool) {
-	if document == nil {
-		return 0, false
-	}
-	value, ok := document[key]
+func numberAt(document map[string]any, path string) (float64, bool) {
+	value, ok := valueAt(document, path)
 	if !ok {
 		return 0, false
 	}
@@ -1040,11 +1071,8 @@ func numberField(document map[string]any, key string) (float64, bool) {
 	}
 }
 
-func boolField(document map[string]any, key string) (bool, bool) {
-	if document == nil {
-		return false, false
-	}
-	value, ok := document[key]
+func flagAt(document map[string]any, path string) (bool, bool) {
+	value, ok := valueAt(document, path)
 	if !ok {
 		return false, false
 	}

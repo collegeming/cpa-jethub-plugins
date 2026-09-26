@@ -19,11 +19,12 @@ import (
 //     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
 //     CPA-Manager-Plus. The manager renders one nav item per menu route and does
 //     not group them by plugin, so EVERY EXTRA MENU ROUTE LOOKS LIKE A DUPLICATE
-//     ENTRY. Exactly one route below carries a Menu: the status page.
+//     ENTRY. The repository's single entry belongs to the hub plugin, which is
+//     why NO route below carries a Menu.
 //   - a ResourceRoute is mounted under the same prefix but is listed in the
 //     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
-//     browser-reachable — the status page links to it — without adding a nav
-//     item.
+//     browser-reachable — the hub's channel overview and the status page link to
+//     it — without adding a nav item.
 //   - any other route is registered under `/v0/management/<path>`, a GLOBAL
 //     namespace shared with every other plugin. A collision is skipped with a
 //     warning, so such paths would need the provider prefix. This plugin
@@ -36,14 +37,9 @@ import (
 // handleManagementRegister declares the entries management clients show.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
-		Routes: []pluginapi.ManagementRoute{
-			// The single Menu route. Login lives on the manager's own OAuth page
-			// (it discovers every plugin declaring the auth-provider capability)
-			// and on the resource page below.
-			{Method: http.MethodGet, Path: "/status", Menu: "Loomy",
-				Description: "账号、模型目录与积分余额"},
-		},
+		Routes: []pluginapi.ManagementRoute{},
 		Resources: []pluginapi.ResourceRoute{
+			{Path: "/status", Description: "账号、模型目录与积分余额（由 hub 的渠道总览链接进入）"},
 			{Path: "/login", Description: "手机验证码登录 Loomy 账号（由状态页或 OAuth 登录页进入）"},
 			{Path: "/checkin", Description: "初始化 Loomy 每日赠送额度（由状态页进入）"},
 			{Path: "/onboarding", Description: "领取 Loomy 一次性新手任务积分（由状态页进入）"},

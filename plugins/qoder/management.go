@@ -15,7 +15,10 @@ import (
 // (`internal/pluginhost/management.go`, README "挂载规则"):
 //   - a GET route carrying a Menu is registered ONLY under
 //     `/v0/resource/plugins/<id>/<path>`, the path management clients embed in an
-//     iframe, and that mount is dispatched as GET ONLY;
+//     iframe, and that mount is dispatched as GET ONLY. The repository's ONE
+//     Menu belongs to the hub plugin, so this plugin declares none: its pages
+//     are ResourceRoutes, reached from the hub's channel overview and from each
+//     other;
 //   - every other route is registered under `/v0/management/<path>`, a GLOBAL
 //     namespace shared with all other plugins and with the host's own endpoints.
 //     A collision is skipped with a warning, so those paths carry the provider
@@ -28,12 +31,6 @@ import (
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			// Exactly one Menu route: the manager renders one sidebar entry per
-			// menu route and does not group them by plugin, so extra menu routes
-			// look like duplicates. Login lives on the manager's own OAuth page
-			// (it discovers plugins declaring the auth-provider capability).
-			{Method: http.MethodGet, Path: "/status", Menu: "Qoder",
-				Description: "账号、推理通道、模型数量与积分余额"},
 			// Script-facing routes: no Menu, therefore management-API only, and
 			// namespaced by the provider key.
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status",
@@ -43,7 +40,10 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 		},
 		// Browser-reachable pages that must NOT become sidebar entries: a
 		// ResourceRoute only shows in the manager nav when it carries a Menu.
+		// Login lives on the manager's own OAuth page too (it discovers plugins
+		// declaring the auth-provider capability).
 		Resources: []pluginapi.ResourceRoute{
+			{Path: "/status", Description: "账号、推理通道、模型数量与积分余额（由 hub 的渠道总览链接进入）"},
 			{Path: "/login", Description: "设备码 (PKCE) 登录 Qoder 账号（由状态页或 OAuth 登录页进入）"},
 			{Path: "/checkin", Description: "领取 Qoder 每日积分（由状态页进入）"},
 		},

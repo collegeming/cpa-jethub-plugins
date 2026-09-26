@@ -175,18 +175,21 @@ func managementRoute(path string) string {
 	return "/" + trimmed
 }
 
-// handleManagementRegister declares exactly ONE sidebar entry (the status page)
-// plus the browser pages and JSON endpoints behind it.
+// handleManagementRegister declares the status page as a Menu-less resource plus
+// the browser pages and JSON endpoints behind it. This plugin contributes NO
+// sidebar entry.
 //
 // Three mounts, all decided by the host:
 //   - a GET route carrying a Menu is registered ONLY under
 //     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
 //     CPAMP. The manager renders one nav item per menu route and does not group
-//     them by plugin, so every extra menu route looks like a duplicate entry.
-//     That is why only the status page carries one.
-//   - a ResourceRoute is registered under the same prefix but is listed in the
+//     them by plugin, so this repository gives that one entry to the hub plugin
+//     and none to any provider: the sidebar is a single "Jet Hub" row that links
+//     to `/v0/resource/plugins/lobsterai/status`.
+//   - a ResourceRoute is registered under the same prefix and is listed in the
 //     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
-//     browser-reachable (the status page links to it) without adding a nav item.
+//     browser-reachable — the hub and the login page link to it — without adding
+//     a nav item.
 //   - any other route is registered under `/v0/management/<path>`, a GLOBAL
 //     namespace, so its path must be prefixed with the provider key or a
 //     collision is skipped with a warning.
@@ -197,12 +200,12 @@ func managementRoute(path string) string {
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/status", Menu: "LobsterAI", Description: "账号、凭据有效期、模型参数与积分余额"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用，返回 JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/login/start", Description: "发起登录并返回授权 URL（JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/login/poll", Description: "轮询登录结果并保存凭据（JSON）"},
 		},
 		Resources: []pluginapi.ResourceRoute{
+			{Path: "/status", Description: "账号、凭据有效期、模型参数与积分余额（由 hub 的渠道总览链接进入）"},
 			{Path: "/login", Description: "浏览器两步式登录（本地回调 + authCode 换 token）"},
 			{Path: "/checkin", Description: "每日签到领取积分（客户端幂等）"},
 		},

@@ -10,9 +10,12 @@ dist/
 # stray binaries from ad-hoc `go build -o <name>`
 /codearts
 /codebuddy
+/cline
+/hub
+/lobsterai
+/loomy
 /qoder
 /trae
-/lobsterai
 
 # release packaging output
 release/

@@ -25,10 +25,11 @@ import (
 //     build and both light and dark themes work for free.
 //
 // plugui renders cards, fields, notices and badges but has no table helper, and
-// the deliverable of this plugin IS one aggregated table, so this file owns a
-// small table renderer of its own. It goes through html/template like plugui
-// does, which keeps every provider-supplied string (account labels, upstream
-// messages) escaped.
+// the deliverable of this plugin IS two aggregated tables — the channel overview
+// and the previous run's results — so this file owns a small table renderer of
+// its own. It goes through html/template like plugui does, which keeps every
+// provider-supplied string (account labels, upstream messages, status text)
+// escaped.
 
 // hubTableStyle is the only extra CSS this plugin needs. It consumes the same
 // host variables plugui consumes, with neutral fallbacks, so it follows the
@@ -39,6 +40,12 @@ table.hub th, table.hub td { text-align: left; padding: 6px 10px 6px 0; border-b
 table.hub th { color: var(--text-secondary, #59636e); font-weight: 600; white-space: nowrap; }
 table.hub tr:last-child td { border-bottom: none; }
 table.hub td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; color: var(--text-secondary, #59636e); }
+.channel { display: flex; align-items: center; gap: 8px; }
+.channel img { width: 20px; height: 20px; border-radius: 4px; flex: none; }
+.channel .channel-body { display: flex; flex-direction: column; }
+.channel .channel-line { display: flex; align-items: center; gap: 6px; }
+.channel .channel-name { font-weight: 600; white-space: nowrap; }
+.channel .channel-id { color: var(--text-secondary, #59636e); font-size: 12px; }
 </style>`
 
 // tableTemplate renders a plain HTML table. Cells arrive as template.HTML
@@ -72,30 +79,32 @@ func monoCell(value string) template.HTML {
 	return template.HTML(`<span class="mono">` + template.HTMLEscapeString(value) + `</span>`)
 }
 
-// renderStatusPage renders the ONE menu page: the configured targets, their last
-// known account counts, and the previous run's table when there is one.
+// renderStatusPage renders the ONE menu page. It is the channel overview: one
+// row per provider, plus the one-click check-in and the previous run's table.
 //
-// Nothing here performs a request. The page is a report of what the last
-// `?action=checkin` run observed; that is why the counters say "上次" instead of
-// claiming a live value.
-func renderStatusPage(cfg Config, last *runResult) pluginapi.ManagementResponse {
+// The rows arrive as reports because reading them is the caller's job
+// (`channelReports`), which is what keeps this function a pure renderer: it is
+// the reason the page can be tested with scripted reports and no transport, and
+// the reason a page load cannot accidentally claim anything.
+func renderStatusPage(reports []channelReport, cfg Config, last *runResult) pluginapi.ManagementResponse {
 	// The table style travels once per page: plugui owns the document shell and
 	// has no table helper, so the only CSS this plugin adds is emitted here.
 	body := []template.HTML{template.HTML(hubTableStyle)}
 
-	intro := "本页汇总所有 provider 的每日签到入口。签到是写操作，" +
-		"只有显式点击下面的「一键签到」按钮（即 ?action=checkin）才会执行；" +
-		"打开本页不会向任何 provider 发起签到请求。"
+	intro := "本页汇总每个渠道的账号与状态。状态文字取自各 provider 自己的 " +
+		"status?format=json 文档，只报告它确实返回的字段；读取状态是只读操作，" +
+		"打开本页不会向任何 provider 发起签到。"
 	if !cfg.Enabled {
 		intro += " 当前配置 enabled=false，一键签到已关闭。"
 	}
-	body = append(body, plugui.Card("一键签到",
-		plugui.Notice(introTone(cfg), intro),
-		plugui.Action{Label: "一键签到", Query: "action=checkin", Kind: "primary"},
-		plugui.Action{Label: "JSON", Query: "format=json"},
-	))
-
-	body = append(body, renderTargetsCard(cfg, last))
+	body = append(body,
+		plugui.Card("渠道总览", renderChannelTable(reports)),
+		plugui.Card("一键签到",
+			plugui.Notice(introTone(cfg), intro+
+				"签到是写操作，只有显式点击下面的「一键签到」按钮（即 ?action=checkin）才会执行。"),
+			plugui.Action{Label: "一键签到", Query: "action=checkin", Kind: "primary"},
+			plugui.Action{Label: "JSON", Query: "format=json"},
+		))
 
 	if last != nil {
 		body = append(body,
@@ -107,57 +116,86 @@ func renderStatusPage(cfg Config, last *runResult) pluginapi.ManagementResponse 
 	return plugui.HTML(MenuLabel, body...)
 }
 
-// renderTargetsCard renders the target table: what will be driven, how many
-// accounts each provider had last time, and which request the driver will send.
-func renderTargetsCard(cfg Config, last *runResult) template.HTML {
-	counts := map[string]int{}
-	ranAt := ""
-	if last != nil {
-		counts = last.accountCounts()
-		ranAt = last.FinishedAt.Local().Format("01-02 15:04")
-	}
-	notes := map[string]string{}
-	if last != nil {
-		for _, entry := range last.Providers {
-			if entry.Error != "" {
-				notes[entry.Target.ID] = entry.Error
-			}
-		}
-	}
-
-	rows := make([][]template.HTML, 0, len(selectTargets(cfg)))
-	for _, entry := range selectTargets(cfg) {
-		support := plugui.Badge("success", "支持")
-		if !entry.supportsCheckin() {
-			support = plugui.Badge("", "不支持")
-		}
-		count := cell("—（尚未运行）")
-		if value, ok := counts[entry.ID]; ok {
-			count = cell(fmt.Sprintf("%d", value))
-		}
-		ran := cell("—")
-		if ranAt != "" {
-			ran = cell(ranAt)
-		}
-		request := monoCell(entry.checkinDescription())
-		if entry.Note != "" {
-			request = plugui.Group(request, template.HTML("<br>"),
-				cell(entry.Note))
-		}
-		if note, ok := notes[entry.ID]; ok {
-			request = plugui.Group(request, template.HTML("<br>"),
-				plugui.Notice("warning", note))
-		}
+// renderChannelTable renders the overview: one row per provider, in catalogue
+// order, each with its mark, its account count, the provider's own one-line
+// state and the link to its full page.
+func renderChannelTable(reports []channelReport) template.HTML {
+	rows := make([][]template.HTML, 0, len(reports))
+	for _, report := range reports {
 		rows = append(rows, []template.HTML{
-			cell(fmt.Sprintf("%s（%s）", entry.Label, entry.ID)),
-			support,
-			count,
-			ran,
-			request,
+			channelCell(report),
+			channelAccountsCell(report),
+			channelStatusCell(report),
+			channelLinkCell(report),
 		})
 	}
-	return plugui.Card("签到目标",
-		renderTable([]string{"提供方", "签到能力", "上次账号数", "上次运行", "实际请求 / 备注"}, rows))
+	return renderTable([]string{"渠道", "账号", "状态", "页面"}, rows)
+}
+
+// channelLinkCell links to a channel's full page — but only when the host
+// actually has that plugin loaded. A plugin that is installed but disabled is
+// never mounted, so its resource route answers 404 and the link would be a
+// dead end; the row already says 未安装或未启用, so showing no link is the
+// honest rendering.
+func channelLinkCell(report channelReport) template.HTML {
+	if report.State == channelMissing {
+		return template.HTML(`<span class="muted">—</span>`)
+	}
+	return template.HTML(`<a href="` + template.HTMLEscapeString(report.URL()) + `">打开</a>`)
+}
+
+// channelCell renders the mark and the name of one channel.
+//
+// The icon is a compile-time data URL from internal/jethub/brandicons, so
+// writing it into the attribute needs no template.URL escape hatch — the value
+// is a constant of this program, and escaping it keeps the attribute well formed
+// even for the one icon that carries raw quotes in its SVG payload. The label
+// beside it is provider data and stays escaped.
+func channelCell(report channelReport) template.HTML {
+	icon := `<img src="` + template.HTMLEscapeString(report.Target.Icon) + `" alt="" width="20" height="20">`
+	name := template.HTML(`<span class="channel-name">` + template.HTMLEscapeString(report.Target.Label) + `</span>`)
+	// The one thing the overview knows that a provider document does not say:
+	// cline has no check-in endpoint upstream, so it never appears in a run.
+	if !report.Target.supportsCheckin() {
+		name = plugui.Group(name, plugui.Badge("", "不支持签到"))
+	}
+	// The plugin id sits on its own line: it is what names this channel in
+	// `plugins.configs.<id>` and in the auth files, and long labels made it wrap
+	// mid-word when it shared the line.
+	body := `<span class="channel-line">` + string(name) + `</span>` +
+		`<span class="channel-id mono">` + template.HTMLEscapeString(report.Target.ID) + `</span>`
+	return template.HTML(`<span class="channel">` + icon + `<span class="channel-body">` + body + `</span></span>`)
+}
+
+// channelAccountsCell renders the account count: the host's credential ledger,
+// with the provider's own number next to it whenever the two disagree.
+func channelAccountsCell(report channelReport) template.HTML {
+	if report.State == channelMissing {
+		return cell("—")
+	}
+	text := fmt.Sprintf("%d", report.Accounts)
+	switch {
+	case report.Reported < 0:
+		// The provider's document carries no count at all; showing one would be
+		// an invention, so the ledger stands alone.
+	case report.Reported != report.Accounts:
+		text += fmt.Sprintf("（provider 报告 %d）", report.Reported)
+	}
+	return cell(text)
+}
+
+// channelStatusCell renders the provider's own one-line state, or the reason
+// there is none. Both failure shapes stay inside the row: a channel that is not
+// installed is a normal row in this panel, never an error page.
+func channelStatusCell(report channelReport) template.HTML {
+	switch report.State {
+	case channelMissing:
+		return plugui.Badge("warning", report.Status)
+	case channelUnreadable:
+		return plugui.Group(plugui.Badge("danger", report.Status), template.HTML("<br>"), cell(report.Error))
+	default:
+		return cell(report.Status)
+	}
 }
 
 // renderResultPage renders one completed run.

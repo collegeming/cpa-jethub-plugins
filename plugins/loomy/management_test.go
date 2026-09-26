@@ -21,23 +21,17 @@ func registerResponse(t *testing.T) pluginapi.ManagementRegistrationResponse {
 	return decodeResult[pluginapi.ManagementRegistrationResponse](t, value)
 }
 
-// Exactly ONE route carries a Menu. The manager renders one sidebar entry per
-// menu route and does not group them by plugin, so extra menus look like
-// duplicates (README "挂载规则").
-func TestManagementRegistrationHasOneMenuAndNoLooseRoutes(t *testing.T) {
+// NO route carries a Menu. The manager renders one sidebar entry per menu route
+// and does not group them by plugin, and the repository spends that single entry
+// on the hub plugin, so every page here is a Menu-less resource route (README
+// "挂载规则").
+func TestManagementRegistrationHasNoMenuAndNoLooseRoutes(t *testing.T) {
 	registration := registerResponse(t)
-	if len(registration.Routes) != 1 {
-		t.Fatalf("routes = %d, want exactly 1 (the status menu route)", len(registration.Routes))
-	}
-	status := registration.Routes[0]
-	if status.Menu == "" {
-		t.Fatal("the single route must carry a Menu, otherwise there is no sidebar entry at all")
-	}
-	if status.Method != http.MethodGet || status.Path != "/status" {
-		t.Fatalf("menu route = %s %s, want GET /status", status.Method, status.Path)
+	if len(registration.Routes) != 0 {
+		t.Fatalf("routes = %d, want none: every page is a resource route", len(registration.Routes))
 	}
 	if len(registration.Resources) == 0 {
-		t.Fatal("the sub-pages must be declared as resources")
+		t.Fatal("the pages must be declared as resources")
 	}
 	seen := map[string]bool{}
 	for _, resource := range registration.Resources {
@@ -52,7 +46,7 @@ func TestManagementRegistrationHasOneMenuAndNoLooseRoutes(t *testing.T) {
 		}
 		seen[resource.Path] = true
 	}
-	for _, want := range []string{"/login", "/checkin", "/onboarding"} {
+	for _, want := range []string{"/status", "/login", "/checkin", "/onboarding"} {
 		if !seen[want] {
 			t.Errorf("resource %s is missing", want)
 		}

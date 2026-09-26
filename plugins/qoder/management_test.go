@@ -78,10 +78,10 @@ func TestWantsJSON(t *testing.T) {
 }
 
 // TestManagementRegistrationFollowsTheMountRules is the regression guard for the
-// silent-drop trap: a GET route WITH a Menu mounts only under
-// `/v0/resource/plugins/<id>/...`, while every other route mounts under
-// `/v0/management/<path>` in a GLOBAL namespace and must therefore carry the
-// provider prefix.
+// silent-drop trap: a Menu-less route mounts under `/v0/management/<path>` in a
+// GLOBAL namespace and must therefore carry the provider prefix, while the pages
+// mount under `/v0/resource/plugins/<id>/...`. No route of this plugin may carry
+// a Menu: the hub owns the repository's single sidebar entry.
 func TestManagementRegistrationFollowsTheMountRules(t *testing.T) {
 	value, errRegister := handleManagementRegister(nil, nil)
 	if errRegister != nil {
@@ -91,45 +91,26 @@ func TestManagementRegistrationFollowsTheMountRules(t *testing.T) {
 	if len(registration.Routes) == 0 {
 		t.Fatal("no management routes were registered")
 	}
-	menus := 0
 	apiOnly := 0
 	for _, route := range registration.Routes {
 		if route.Path == "" {
 			t.Error("a route with an empty path would collide with everything")
 		}
-		switch {
-		case route.Method == http.MethodGet && route.Menu != "":
-			menus++
-			if route.Description == "" {
-				t.Errorf("menu route %s has no description", route.Path)
-			}
-		default:
-			apiOnly++
-			if !strings.HasPrefix(route.Path, "/"+ProviderKey) {
-				t.Errorf("route %s %s lives in the global management namespace without the %q prefix",
-					route.Method, route.Path, ProviderKey)
-			}
+		if route.Menu != "" {
+			t.Errorf("route %s carries menu %q: the sidebar belongs to the hub plugin", route.Path, route.Menu)
 		}
-	}
-	// Exactly ONE sidebar entry: CPA-Manager-Plus renders one navigation item per
-	// menu route and does not group them by plugin, so extra menus look like
-	// duplicates. The status page carries it; login and check-in are reachable
-	// from that page (and from the manager's own OAuth page for login).
-	if menus != 1 {
-		t.Fatalf("menu routes = %d, want exactly 1 (the status page)", menus)
-	}
-	if menu, present := registration.Routes[0].Menu, true; !present || menu != "" {
-		_ = menu
+		apiOnly++
+		if !strings.HasPrefix(route.Path, "/"+ProviderKey) {
+			t.Errorf("route %s %s lives in the global management namespace without the %q prefix",
+				route.Method, route.Path, ProviderKey)
+		}
 	}
 	if apiOnly == 0 {
 		t.Fatal("no script-facing route was registered")
 	}
-	// The status page is the only menu route.
-	if registration.Routes[0].Path != "/status" || registration.Routes[0].Menu == "" {
-		t.Errorf("first route = %+v, want the /status menu route", registration.Routes[0])
-	}
-	// The embedded pages must stay reachable as GET resources even without a
-	// menu: CPA-Manager-Plus iframes any resource path, menu or not.
+	// The embedded pages must stay reachable as GET resources: CPA-Manager-Plus
+	// iframes any resource path, menu or not, and the hub's channel overview links
+	// straight at /status.
 	resourcePaths := map[string]bool{}
 	for _, route := range registration.Resources {
 		resourcePaths[route.Path] = true
@@ -137,7 +118,7 @@ func TestManagementRegistrationFollowsTheMountRules(t *testing.T) {
 			t.Errorf("resource route %s carries a menu and would become another sidebar entry", route.Path)
 		}
 	}
-	for _, wanted := range []string{"/login", "/checkin"} {
+	for _, wanted := range []string{"/status", "/login", "/checkin"} {
 		if !resourcePaths[wanted] {
 			t.Errorf("GET %s was not registered as a menu-less resource route", wanted)
 		}

@@ -147,11 +147,12 @@ func TestManagementRouteAndWantsJSON(t *testing.T) {
 }
 
 // TestManagementRegistrationMountRules guards the three mounts and the sidebar
-// budget: exactly ONE route may carry a Menu (the status page), because CPAMP
-// renders one sidebar entry per menu route and does not group them by plugin.
-// The login and check-in pages are ResourceRoutes with an empty Menu: still
-// reachable in the browser, but not a nav item. Everything else lands in the
-// global management namespace and must carry the plugin prefix.
+// budget: NO route of this plugin may carry a Menu, because CPAMP renders one
+// sidebar entry per menu route and does not group them by plugin, and the
+// repository spends its single entry on the hub's "Jet Hub" page — which links to
+// these pages. The status, login and check-in pages are ResourceRoutes with an
+// empty Menu: still reachable in the browser, but not a nav item. Everything else
+// lands in the global management namespace and must carry the plugin prefix.
 func TestManagementRegistrationMountRules(t *testing.T) {
 	value, errRegister := handleManagementRegister(nil, nil)
 	if errRegister != nil {
@@ -159,18 +160,13 @@ func TestManagementRegistrationMountRules(t *testing.T) {
 	}
 	response := value.(pluginapi.ManagementRegistrationResponse)
 
-	menus := map[string]string{}
 	for _, route := range response.Routes {
-		if route.Method == http.MethodGet && route.Menu != "" {
-			menus[route.Path] = route.Menu
-			continue
+		if route.Menu != "" {
+			t.Fatalf("management route %s carries menu %q, want none", route.Path, route.Menu)
 		}
 		if !strings.HasPrefix(route.Path, "/"+ProviderKey+"/") {
 			t.Fatalf("non-resource route %q must be prefixed with the plugin key", route.Path)
 		}
-	}
-	if len(menus) != 1 || menus["/status"] == "" {
-		t.Fatalf("menu routes = %v, want exactly the status page", menus)
 	}
 
 	pages := map[string]string{}
@@ -180,7 +176,7 @@ func TestManagementRegistrationMountRules(t *testing.T) {
 		}
 		pages[route.Path] = route.Description
 	}
-	for _, required := range []string{"/login", "/checkin"} {
+	for _, required := range []string{"/status", "/login", "/checkin"} {
 		if pages[required] == "" {
 			t.Fatalf("resource route %q is missing: %v", required, pages)
 		}

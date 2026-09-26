@@ -17,7 +17,7 @@ func TestNoFormInAnyRenderedPage(t *testing.T) {
 		FinishedAt: time.Now(),
 		Providers: []providerRun{
 			{
-				Target:   targetCatalogue()[5], // qoder
+				Target:   mustTarget(t, "qoder"),
 				Accounts: 1,
 				Rows: []row{{
 					Provider: "qoder", ProviderLabel: "Qoder",
@@ -30,9 +30,10 @@ func TestNoFormInAnyRenderedPage(t *testing.T) {
 	}
 
 	pages := map[string][]byte{
-		"status (no run)":   renderStatusPage(cfg, nil).Body,
-		"status (with run)": renderStatusPage(cfg, run).Body,
-		"status (disabled)": renderStatusPage(disabledConfig(), nil).Body,
+		"status (no run)":   renderStatusPage(nil, cfg, nil).Body,
+		"status (with run)": renderStatusPage(nil, cfg, run).Body,
+		"status (overview)": renderStatusPage(channelReports(nil, cfg), cfg, nil).Body,
+		"status (disabled)": renderStatusPage(nil, disabledConfig(), nil).Body,
 		"result":            renderResultPage(run).Body,
 		"disabled":          renderDisabledPage().Body,
 		"confirm":           renderConfirmPage().Body,
@@ -66,7 +67,7 @@ func TestResultPageRendersTheAggregatedTable(t *testing.T) {
 		FinishedAt: time.Now(),
 		Providers: []providerRun{
 			{
-				Target:   targetCatalogue()[5], // qoder
+				Target:   mustTarget(t, "qoder"),
 				Accounts: 2,
 				Reported: 2,
 				Rows: []row{
@@ -79,7 +80,7 @@ func TestResultPageRendersTheAggregatedTable(t *testing.T) {
 				},
 			},
 			{
-				Target: targetCatalogue()[9], // cline
+				Target: mustTarget(t, "cline"),
 				Rows: []row{{Provider: "cline", ProviderLabel: "Cline",
 					Result: kindUnsupported, ResultText: verdictText(kindUnsupported), Message: "上游没有签到接口"}},
 			},
@@ -109,7 +110,7 @@ func TestPagesEscapeProviderSuppliedText(t *testing.T) {
 		StartedAt:  time.Now(),
 		FinishedAt: time.Now(),
 		Providers: []providerRun{{
-			Target: targetCatalogue()[5],
+			Target: mustTarget(t, "qoder"),
 			Rows: []row{{
 				Provider: "qoder", ProviderLabel: "Qoder",
 				Account: `<script>alert(1)</script>`,
@@ -130,22 +131,45 @@ func TestPagesEscapeProviderSuppliedText(t *testing.T) {
 	}
 }
 
-// TestStatusPageListsEveryTargetIncludingUnsupported: the menu page must name
-// what it will drive and must show cline as 不支持 instead of hiding it.
-func TestStatusPageListsEveryTargetIncludingUnsupported(t *testing.T) {
-	page := string(renderStatusPage(DefaultConfig(), nil).Body)
+// TestStatusPageListsEveryChannelIncludingUnsupported: the overview page must
+// name every provider CPA could talk to — installed or not — and must show cline
+// as unsupported rather than hiding it.
+func TestStatusPageListsEveryChannelIncludingUnsupported(t *testing.T) {
+	page := string(renderStatusPage(channelReports(nil, DefaultConfig()), DefaultConfig(), nil).Body)
 	for _, entry := range targetCatalogue() {
 		if !strings.Contains(page, entry.ID) {
 			t.Fatalf("status page does not list %s", entry.ID)
 		}
+		if !strings.Contains(page, `<img src="data:image/`) {
+			t.Fatal("status page does not embed provider marks")
+		}
+		if !strings.Contains(page, entry.Label) {
+			t.Fatalf("status page does not label %s", entry.ID)
+		}
 	}
-	if !strings.Contains(page, "不支持") {
+	if !strings.Contains(page, "不支持签到") {
 		t.Fatal("status page does not mark unsupported providers")
 	}
 	if !strings.Contains(page, "href=\"?action=checkin\"") {
 		t.Fatal("status page does not link the one-click action as a GET query string")
 	}
-	if !strings.Contains(page, "尚未运行") {
-		t.Fatal("status page claims a count before any run")
+	// Every row links to the provider's own page on the SAME resource mount, so
+	// the link keeps working now that those pages carry no sidebar entry.
+	for _, entry := range targetCatalogue() {
+		want := `href="/v0/resource/plugins/` + entry.ID + `/status"`
+		if !strings.Contains(page, want) {
+			t.Fatalf("status page is missing the link %s", want)
+		}
 	}
+}
+
+// mustTarget resolves a catalogue entry by id, so a test that needs one provider
+// cannot silently follow a reordering of the catalogue to another provider.
+func mustTarget(t *testing.T, id string) target {
+	t.Helper()
+	entry, ok := targetByID(id)
+	if !ok {
+		t.Fatalf("provider %s is not in the catalogue", id)
+	}
+	return entry
 }

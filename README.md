@@ -67,7 +67,7 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
   - 它是唯一**不能续期**的：后端没有 refresh 端点，`auth.refresh` 只做有效性探测，失效即提示重新登录。这是如实标记，不是遗漏。
   - 积分是**两个池**（永久积分 + 每日赠送，消耗后不回补），分开显示；鉴权头也分两套——`/chat/completions` 用 `Bearer`，而 `/models`、`/points/*`、`/onboarding/*` **只认小写 `token` 头**，带错的那个返回 **HTTP 200** 加 `code:100002`，只看状态码会误判成功。
   它的账号接口用 HMAC-SHA1 签名，密钥是**参考实现内置的客户端凭据**（不是你的账号凭据）。若上游轮换该密钥，短信登录会失效而其余接口不受影响；配置项 `account_ak` / `account_sk` 可在不重新构建的情况下替换。
-- **`hub` 是怎么跨插件工作的**：CPA 里一个插件不能直接调用另一个插件，管理 API 又需要插件拿不到的密钥。但**插件的 resource 路由不受管理密钥保护且派发 GET**，于是 `hub` 通过宿主的 HTTP 客户端回环调用各 provider 自己的签到页，再汇总成一张表。两个前提：各 provider 页面支持 `?format=json`；以及 `host_base_url` 配置项——**宿主不向插件暴露自己的 HTTP 端口**（`HostConfigSummary` 没有 port 字段），所以只能配置，默认 `http://127.0.0.1:8317`。
+- **`hub` 是怎么跨插件工作的**：CPA 里一个插件不能直接调用另一个插件，管理 API 又需要插件拿不到的密钥。但**插件的 resource 路由不受管理密钥保护且派发 GET**，于是 `hub` 通过宿主的 HTTP 客户端回环读取各 provider 自己的 `status?format=json`（渲染侧边栏里那一行「Jet Hub」的渠道总览），并在显式点击一键签到时回环调用各 provider 自己的签到页，再汇总成一张表。两个前提：各 provider 页面支持 `?format=json`；以及 `host_base_url` 配置项——**宿主不向插件暴露自己的 HTTP 端口**（`HostConfigSummary` 没有 port 字段），所以只能配置，默认 `http://127.0.0.1:8317`。
   因为走的是宿主的 HTTP 客户端，它**会受 CPA 出站代理设置影响**：若代理拦截 `127.0.0.1`，回环调用会失败。
 - **Cline 的 `workos:` 前缀是承载语义的**：鉴权头是 `Authorization: Bearer workos:<token>`，前缀**不能剥离**——同一个凭据 `Bearer workos:eyJ…` 返回 200，剥掉前缀后返回 401，而且错误信息会误导成「请升级 Cline 客户端」。登录走 WorkOS **设备码轮询**，**不监听任何本地端口**，因此不受本文档前述容器回调问题的影响。
 - **Cline 的余额单位是推断值**：接口返回 `balance: 500000`，参考实现按 ÷100000 当作美元（微美元）展示，但这**没有任何来源证据**。本仓库把它做成配置项 `balance_divisor`，状态页同时显示原始值，用真实账号跑一次即可确定。
@@ -196,7 +196,7 @@ CPAMP 页面  /plugins/<id>/<menuIndex>
 
 三个后果：
 
-1. **一个插件只应声明一个带 `Menu` 的路由。** CPAMP 侧边栏是**扁平**的（`collectPluginResourceEntries` 把每个菜单直接 map 成一项，不分组），插件有几个菜单就占几行，还会与内置的「凭证管理」「OAuth 登录」并列。5 个插件各声明 2～3 个菜单，侧边栏就出现 13 行重复条目。因此：**主页用唯一的带 `Menu` 路由；登录页、签到页等子页面改成 `Menu` 为空字符串的 `Resources` 条目**——`registeredPluginMenus()` 会跳过空 `Menu` 的记录，路径照旧可访问，但侧边栏不再出现。
+1. **全仓库只有一个带 `Menu` 的路由，它属于 `hub`（"Jet Hub"）。** CPAMP 侧边栏是**扁平**的（`collectPluginResourceEntries` 把每个菜单直接 map 成一项，不分组），插件有几个菜单就占几行，还会与内置的「凭证管理」「OAuth 登录」并列；历史上 5 个插件各声明 2～3 个菜单，侧边栏出现 13 行重复条目。因此现在：**`hub` 用唯一的带 `Menu` 路由承载渠道总览与一键签到；每个 provider 插件的状态页、登录页、签到页全部改成 `Menu` 为空字符串的 `Resources` 条目**——`registeredPluginMenus()` 会跳过空 `Menu` 的记录，路径照旧可访问（`/v0/resource/plugins/<id>/status`），侧边栏只剩一行，总览页的每一行直接链接到对应 provider 的状态页。每个插件包的 `zz_menucheck_test.go` 都守着这条计数规则：provider 为 0，`hub` 为 1。
 2. **不带 `Menu` 的路由路径必须自带插件前缀**，例如 `/codearts/checkin` 而不是 `/checkin`。冲突时宿主只打一条 `management route ... was skipped` 警告就丢弃该路由——静默失效，很难排查。
 3. **带 `Menu` 的 GET 路由不会挂到管理 API 下。** 想同时提供网页和脚本接口时，网页用带 `Menu` 的 GET 路由，脚本接口用**不带 `Menu`** (`Resources`) 或非 GET 方法的路由。
 

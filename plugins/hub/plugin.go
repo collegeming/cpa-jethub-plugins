@@ -1,10 +1,15 @@
-// Package main is the CPA native plugin that reproduces Jet-Hub's 一键签到
-// (one-click daily check-in) across every provider plugin installed in the same
-// CPA process.
+// Package main is the CPA native plugin that reproduces the Jet Hub panel: ONE
+// sidebar entry that manages every channel, with a read-only overview of each
+// provider and the Jet-Hub 一键签到 (one-click daily check-in) across all of them.
 //
-// CPA gives each provider its own plugin, so the panel shows one sidebar entry
-// per provider and there is no built-in cross-provider button. A plugin cannot
-// call another plugin's Go code directly, and the management API
+// CPA gives each provider its own plugin, and a plugin's page becomes a sidebar
+// entry only when its route carries a Menu. Left alone that means one entry per
+// provider and no cross-provider button; so this repository gives the hub the
+// single Menu and registers every provider status page as a menu-less resource
+// route under the same mount. The hub links to those pages and this package
+// renders the overview that sits above them.
+//
+// A plugin cannot call another plugin's Go code directly, and the management API
 // (`/v0/management/...`) requires a key this plugin does not have. What IS
 // reachable is the host's unauthenticated resource mount:
 //
@@ -15,18 +20,20 @@
 // `management.register`). Every provider plugin already serves machine-readable
 // JSON from those pages when handed `format=json`, and every check-in action is
 // a query string on one of them. This plugin is therefore a thin orchestrator:
-// it reads the host's credential list, drives each provider's own resource
-// routes over loopback through `host.http.do`, and renders ONE aggregated table.
+// it reads the host's credential list, reads each provider's own status document
+// for the overview, drives each provider's own check-in route over loopback
+// through `host.http.do`, and renders ONE aggregated table.
 //
 // Three rules shape the implementation:
 //
 //   - the plugin writes ONLY when the caller asked for it (`?action=checkin`).
-//     A bare page load is a read-only report, and the tests assert no check-in
-//     request is issued without that parameter;
+//     A bare page load is a read-only overview, and the tests assert that no
+//     request it issues can claim;
 //   - nothing is invented. Each provider is idempotent and reports "claimed" vs
 //     "already claimed today" in its own vocabulary, so the verdict shown is the
 //     field the provider actually returned, with the provider's own message next
-//     to it. A provider without a check-in endpoint is shown as 不支持;
+//     to it. A provider without a check-in endpoint is shown as 不支持, and the
+//     overview prints only the status fields a provider's document carries;
 //   - all HTTP goes through the host (`host.http.do`). This package never
 //     constructs an http.Client, which also makes the whole run testable by
 //     swapping one package-level function.

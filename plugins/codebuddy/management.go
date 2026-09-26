@@ -10,9 +10,10 @@ package main
 //   - **其余**路由只挂在 `/v0/management/<path>`，那是**全局命名空间**，必须
 //     自带插件前缀（`/codebuddy/...`），否则与别的插件冲突会被宿主静默跳过。
 //
-// 因此这里的划分是：页面走带 Menu 的 GET 路由，脚本/API 走自命名空间的
-// GET/POST 路由，两种表示共用同一批处理函数（`?format=json` 或非 HTML Accept
-// 时输出 JSON）。
+// 侧边栏只有一条（hub 的 "Jet Hub"），所以本插件的页面全部注册为无 Menu 的
+// ResourceRoute：`/status` 由 hub 的渠道总览链接进入，`/login`、`/checkin`
+// 由状态页进入。脚本/API 仍走自命名空间的 GET/POST 路由，两种表示共用同一批
+// 处理函数（`?format=json` 或非 HTML Accept 时输出 JSON）。
 
 import (
 	"encoding/json"
@@ -78,18 +79,21 @@ func isResourceMount(path string) bool {
 	return strings.Contains(path, "/resource/plugins/")
 }
 
-// handleManagementRegister declares exactly ONE sidebar entry (the status page)
-// plus the browser pages and JSON endpoints behind it.
+// handleManagementRegister declares the status page as a Menu-less resource plus
+// the browser pages and JSON endpoints behind it. This plugin contributes NO
+// sidebar entry.
 //
 // Three mounts, all decided by the host:
 //   - a GET route carrying a Menu is registered ONLY under
 //     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
 //     CPA-Manager-Plus. The manager renders one nav item per menu route and does
-//     not group them by plugin, so every extra menu route looks like a duplicate
-//     entry. That is why only the status page carries one.
-//   - a ResourceRoute is registered under the same prefix but is listed in the
+//     not group them by plugin, so this repository gives that one entry to the
+//     hub plugin and none to any provider: the sidebar is a single "Jet Hub" row
+//     that links to `/v0/resource/plugins/<id>/status`.
+//   - a ResourceRoute is registered under the same prefix and is listed in the
 //     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
-//     browser-reachable (the status page links to it) without adding a nav item.
+//     browser-reachable — the hub and the login page link to it — without adding
+//     a nav item.
 //   - any other route is registered under `/v0/management/<path>`, a GLOBAL
 //     namespace, so its path must be prefixed with the provider key or a
 //     collision is skipped with a warning.
@@ -100,6 +104,7 @@ func isResourceMount(path string) bool {
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	product, _ := productByConfigValue(settings().Product)
 	resources := []pluginapi.ResourceRoute{
+		{Path: "/status", Description: "账号、凭据有效期与积分余额（由 hub 的渠道总览链接进入）"},
 		{Path: "/login", Description: "浏览器登录 CodeBuddy / WorkBuddy 账号（由状态页或 OAuth 登录页进入）"},
 	}
 	// 只有 CodeBuddy 国内版有签到接口（product.ts:366-367）。
@@ -110,10 +115,6 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	}
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			// The sidebar label comes from this menu string, not from the plugin name,
-			// so it has to follow the build identity — otherwise the China and
-			// international artifacts both read "CodeBuddy" and cannot be told apart.
-			{Method: http.MethodGet, Path: "/status", Menu: DisplayName, Description: "账号、凭据有效期与积分余额"},
 			// 脚本/API 用：不带 Menu，因此挂在全局管理命名空间下，必须自带前缀。
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status", Description: "账号状态（JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（JSON）"},

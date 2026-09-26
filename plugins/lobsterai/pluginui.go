@@ -15,10 +15,10 @@ import (
 
 // This file renders the management pages a user sees inside CPA-Manager-Plus.
 //
-// The host exposes every GET management route that carries a Menu on
-// `/v0/resource/plugins/<id>/<path>`, and CPAMP renders that route in a
-// same-origin iframe with the host theme injected as CSS custom properties. Two
-// consequences shape everything here:
+// This plugin declares no Menu route, so its pages are mounted on
+// `/v0/resource/plugins/<id>/<path>` as Menu-less ResourceRoutes and CPAMP renders
+// them in a same-origin iframe with the host theme injected as CSS custom
+// properties. Two consequences shape everything here:
 //
 //   - the host dispatches those routes as GET only, so every action is a
 //     `plugui.Action` link carrying a query string, never a form submission;

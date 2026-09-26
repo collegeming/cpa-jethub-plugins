@@ -14,9 +14,13 @@ const (
 	// ProviderKey is the plugin id CPA derives from the artifact name.
 	ProviderKey = "hub"
 	// DisplayName is the human-readable name shown by management clients.
-	DisplayName = "一键签到"
-	// MenuLabel is the sidebar entry. Exactly one route carries it.
-	MenuLabel = "一键签到"
+	DisplayName = "Jet Hub"
+	// MenuLabel is the sidebar entry, and the ONLY Menu any plugin in this
+	// repository declares: the manager's nav is flat and does not group entries
+	// by plugin, so every provider page lives in the resource list instead
+	// (README "挂载规则"). It names the whole hub — the channel overview and the
+	// one-click check-in are the same page — rather than the check-in action.
+	MenuLabel = "Jet Hub"
 	// Version is the plugin release version.
 	Version = "0.1.0"
 	// Author identifies the plugin author organization.

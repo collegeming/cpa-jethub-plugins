@@ -17,12 +17,12 @@ import (
 //   - a GET route carrying a Menu is registered ONLY under
 //     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
 //     CPA-Manager-Plus. The manager renders one nav item per menu route and does
-//     not group them by plugin, so every extra menu route looks like a duplicate
-//     entry. Exactly one route below carries a Menu.
+//     not group them by plugin, so this plugin declares exactly ONE — the
+//     channel overview — and every provider plugin in this repository declares
+//     none, which is what turns ten sidebar entries into one.
 //   - a ResourceRoute is mounted under the same prefix but is listed in the
 //     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
-//     browser-reachable — the status page links to it — without adding a nav
-//     item.
+//     browser-reachable — the overview links to it — without adding a nav item.
 //   - any other route would land in the GLOBAL `/v0/management/<path>`
 //     namespace. This plugin declares none: it owns no credentials and every
 //     machine caller can use `?format=json` on the resource routes instead,
@@ -36,9 +36,10 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
 			// The single Menu route. Its label is what the sidebar shows, so it
-			// names the feature rather than the plugin id.
+			// names the hub rather than the plugin id or the check-in action:
+			// the same page is the channel overview and the one-click entry.
 			{Method: http.MethodGet, Path: "/status", Menu: MenuLabel,
-				Description: "跨 provider 一键签到：目标、上次账号数与结果"},
+				Description: "跨 provider 渠道总览与一键签到：状态、账号数与上次结果"},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			// Script-facing mirror of `?action=checkin`, for callers that want
@@ -97,18 +98,20 @@ func actionOf(request pluginapi.ManagementRequest) string {
 	return strings.ToLower(strings.TrimSpace(request.Query.Get("action")))
 }
 
-// statusResponse serves the single menu route.
+// statusResponse serves the single menu route: the channel overview, or the one
+// click that claims.
 //
 // The write is gated on an EXPLICIT `action=checkin`. Everything else — a plain
-// page load, `?format=json`, a refresh — renders the targets and the last run's
-// numbers and performs no request to any provider at all. That is what makes the
-// page safe to embed in an iframe: opening it can never claim anything.
+// page load, `?format=json`, a refresh — renders the overview and performs no
+// write at all: the only requests it makes are each provider's own read-only
+// `status?format=json` (see channelReports). That is what makes the page safe to
+// embed in an iframe.
 func statusResponse(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	switch actionOf(request) {
 	case "checkin", "claim":
 		return checkinResponse(h, request)
 	case "":
-		// fall through to the read-only report
+		// fall through to the read-only overview
 	default:
 		if wantsJSON(request) {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{
@@ -122,10 +125,11 @@ func statusResponse(h *abiboot.Host, request pluginapi.ManagementRequest) plugin
 	}
 
 	cfg := settings()
+	reports := channelReports(h, cfg)
 	if wantsJSON(request) {
-		return jsonManagementResponse(http.StatusOK, statusDocument(cfg))
+		return jsonManagementResponse(http.StatusOK, statusDocument(cfg, reports))
 	}
-	return renderStatusPage(cfg, lastRun())
+	return renderStatusPage(reports, cfg, lastRun())
 }
 
 // checkinRouteResponse serves the script-facing resource route.
@@ -143,7 +147,10 @@ func checkinRouteResponse(h *abiboot.Host, request pluginapi.ManagementRequest) 
 			"action":   "confirm",
 			"claiming": false,
 			"hint":     "追加 &action=checkin 才会真正执行签到（写操作）；不带 action 时本路由只读",
-			"status":   statusDocument(settings()),
+			// No channel reports here on purpose: this route only has to answer
+			// "did I claim?" so an accidental link stays cheap. The overview
+			// lives on /status.
+			"status": statusDocument(settings(), nil),
 		})
 	}
 	return renderConfirmPage()
@@ -171,11 +178,18 @@ func checkinResponse(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	return renderResultPage(result)
 }
 
-// statusDocument is the machine-readable form of the status page. It reports
-// only observed facts: the configured targets, what each one offers, and the
-// numbers of the previous run (null when there was none).
-func statusDocument(cfg Config) map[string]any {
-	targets := make([]map[string]any, 0, len(selectTargets(cfg)))
+// statusDocument is the machine-readable form of the overview page.
+//
+// Each entry reports only observed facts: which state the probe reached, the
+// account counts, the provider's own one-line status, and the last run's numbers
+// when there was one. `reports` is nil when the caller did not probe (the
+// /checkin confirmation), in which case the document simply carries no channel
+// list instead of inventing an empty one.
+//
+// The icons the page shows are deliberately absent: they are data URLs of tens
+// of kilobytes each, they exist to be painted, and a machine caller that wants
+// one can read it from the plugin registration or the page itself.
+func statusDocument(cfg Config, reports []channelReport) map[string]any {
 	last := lastRun()
 	counts := map[string]int{}
 	ranAt := ""
@@ -183,23 +197,38 @@ func statusDocument(cfg Config) map[string]any {
 		counts = last.accountCounts()
 		ranAt = jsonTime(last.FinishedAt)
 	}
-	for _, entry := range selectTargets(cfg) {
+
+	channels := make([]map[string]any, 0, len(reports))
+	for _, report := range reports {
 		document := map[string]any{
-			"provider":  entry.ID,
-			"label":     entry.Label,
-			"supported": entry.supportsCheckin(),
-			"request":   entry.checkinDescription(),
+			"provider":  report.Target.ID,
+			"label":     report.Target.Label,
+			"supported": report.Target.supportsCheckin(),
+			"request":   report.Target.checkinDescription(),
+			"state":     string(report.State),
+			"installed": report.State != channelMissing,
+			"accounts":  report.Accounts,
+			"status":    report.Status,
+			"url":       report.URL(),
 		}
-		if entry.Note != "" {
-			document["note"] = entry.Note
+		if report.Reported >= 0 {
+			document["reported_accounts"] = report.Reported
+		} else {
+			document["reported_accounts"] = nil
 		}
-		if count, ok := counts[entry.ID]; ok {
+		if report.Error != "" {
+			document["error"] = report.Error
+		}
+		if report.Target.Note != "" {
+			document["note"] = report.Target.Note
+		}
+		if count, ok := counts[report.Target.ID]; ok {
 			document["last_account_count"] = count
 			document["last_run_at"] = ranAt
 		} else {
 			document["last_account_count"] = nil
 		}
-		targets = append(targets, document)
+		channels = append(channels, document)
 	}
 
 	providers := selectedProviders(cfg)
@@ -216,8 +245,13 @@ func statusDocument(cfg Config) map[string]any {
 		"timeout_ms":    cfg.TimeoutMS,
 		"providers":     providers,
 		"checkin_url":   "?action=checkin",
-		"targets":       targets,
 		"last_run":      nil,
+	}
+	if reports != nil {
+		body["channels"] = channels
+		// `targets` is the same list under the name the first release used, so a
+		// script written against it keeps working. One slice, one provider list.
+		body["targets"] = channels
 	}
 	if last != nil {
 		body["last_run"] = runDocument(last)

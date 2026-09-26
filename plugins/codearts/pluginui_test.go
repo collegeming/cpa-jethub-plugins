@@ -101,8 +101,9 @@ func TestRenderStatusPageWithoutAccountsOffersLogin(t *testing.T) {
 
 // TestManagementRegisteredRoutesFollowHostMountRules pins the three constraints
 // that decide whether a route is reachable at all and how the manager renders it:
-// menu routes are resource-only, non-menu routes must self-namespace because the
-// management path is global, and exactly one route may carry a menu.
+// no route may carry a menu (the hub plugin owns the single sidebar entry),
+// non-menu routes must self-namespace because the management path is global, and
+// the pages the hub links to must stay mounted on the resource path.
 func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 	value, errRegister := handleManagementRegister(nil, nil)
 	if errRegister != nil {
@@ -119,10 +120,7 @@ func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 			t.Errorf("route %q must be an absolute path", route.Path)
 		}
 		if route.Menu != "" {
-			if !strings.EqualFold(route.Method, "GET") {
-				t.Errorf("route %s carries a menu but is %s; only GET+menu mounts on the resource path", route.Path, route.Method)
-			}
-			continue
+			t.Errorf("route %s carries menu %q: the sidebar belongs to the hub plugin", route.Path, route.Menu)
 		}
 		plain++
 		// Without a menu the route lives in the global management namespace, so
@@ -136,35 +134,23 @@ func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 	}
 
 	// The manager turns every menu-carrying route into its own sidebar item and
-	// does not group them by plugin, so a second menu route is a second entry
-	// that looks like a duplicate. Only the status page may carry one.
-	menuPaths := make([]string, 0, 2)
-	for _, route := range registration.Routes {
-		if route.Menu != "" {
-			menuPaths = append(menuPaths, route.Path)
-		}
-	}
+	// does not group them by plugin. This repository gives that one item to the
+	// hub, so every page below must be a Menu-less resource route.
+	pages := map[string]bool{}
 	for _, resource := range registration.Resources {
 		if resource.Path == "" || !strings.HasPrefix(resource.Path, "/") {
 			t.Errorf("resource %q must be an absolute path", resource.Path)
 		}
 		if resource.Menu != "" {
-			menuPaths = append(menuPaths, resource.Path)
+			t.Errorf("resource %s carries menu %q, which would add a sidebar entry", resource.Path, resource.Menu)
 		}
+		pages[resource.Path] = true
 	}
-	if len(menuPaths) != 1 || menuPaths[0] != "/status" {
-		t.Fatalf("menu routes = %v, want exactly [/status]; every extra menu route becomes another sidebar entry", menuPaths)
-	}
-
-	// The login page must stay reachable from the status page while adding no
-	// sidebar entry of its own.
-	var loginResource bool
-	for _, resource := range registration.Resources {
-		if resource.Path == "/login" {
-			loginResource = true
+	// /status is what the hub's channel overview links to; /login is reached from
+	// the status page.
+	for _, want := range []string{"/status", "/login"} {
+		if !pages[want] {
+			t.Errorf("resource %s is not registered, so the page would 404", want)
 		}
-	}
-	if !loginResource {
-		t.Error("login page is not registered as a resource route, so the status page link would 404")
 	}
 }

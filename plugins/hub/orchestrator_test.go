@@ -97,14 +97,18 @@ func scriptedRoutes() []route {
 	return append(append(checkinRoutes(), providerStatusRoutes()...), catchAll())
 }
 
-// TestBareStatusLoadPerformsNoRequestAtAll is the safety property the panel
-// depends on: embedding the status page in an iframe must be unable to claim
-// anything. The fake host fails the test on ANY host.http.do, so a single
-// request — read or write — breaks it.
-func TestBareStatusLoadPerformsNoRequestAtAll(t *testing.T) {
+// TestBareStatusLoadNeverClaims is the safety property the panel depends on:
+// embedding the overview in an iframe must be unable to claim anything.
+//
+// The page DOES read every provider's status document — that is where the rows
+// come from — so the assertion is not "no request" but "no request that could
+// write": the probe is a plain `status?format=json`, and no URL a bare load
+// issues carries the `action` parameter that performs a claim.
+func TestBareStatusLoadNeverClaims(t *testing.T) {
 	resetLastRun(t)
 	fake := newFakeHost(allAccounts()...)
 	fake.install(t)
+	fake.serve(scriptedRoutes()...)
 	withSettings(t, testConfig())
 
 	// HTML page load.
@@ -113,7 +117,7 @@ func TestBareStatusLoadPerformsNoRequestAtAll(t *testing.T) {
 		t.Fatalf("status = %d, want 200", response.StatusCode)
 	}
 	page := string(response.Body)
-	for _, want := range []string{"一键签到", "签到目标", "Qoder", "Cline", "不支持", "尚未运行"} {
+	for _, want := range []string{"渠道总览", "一键签到", "Qoder", "Cline", "不支持签到", "data:image/"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("status page is missing %q", want)
 		}
@@ -132,15 +136,49 @@ func TestBareStatusLoadPerformsNoRequestAtAll(t *testing.T) {
 	if document["last_run"] != nil {
 		t.Fatalf("last_run = %v, want null before the first run", document["last_run"])
 	}
+	channels, okChannels := document["channels"].([]any)
+	if !okChannels || len(channels) != len(targetCatalogue()) {
+		t.Fatalf("channels = %#v, want one row per catalogue provider (%d)", document["channels"], len(targetCatalogue()))
+	}
 
 	// The script-facing route without the explicit action is not a write either.
 	dispatchManagement(t, managementRequest(http.MethodGet, "/v0/resource/plugins/hub/checkin", nil, "text/html"))
 	dispatchManagement(t, managementRequest(http.MethodGet, "/v0/resource/plugins/hub/checkin",
 		url.Values{"format": {"json"}}, "application/json"))
 
-	if requests := fake.requestURLs(); len(requests) != 0 {
-		t.Fatalf("read-only requests issued %d host.http.do calls, want 0: %v", len(requests), requests)
+	requests := fake.requestURLs()
+	if len(requests) == 0 {
+		t.Fatal("the overview did not probe any provider status document")
 	}
+	for _, rawURL := range requests {
+		if !strings.Contains(rawURL, "/status?") || !strings.Contains(rawURL, "format=json") {
+			t.Fatalf("a bare page load issued something other than a status read: %s", rawURL)
+		}
+	}
+	assertNoClaimRequest(t, fake)
+}
+
+// assertNoClaimRequest fails when any recorded request could write. A claim is
+// either the provider's /checkin route or the `action` parameter its status page
+// reads; a read-only probe may carry neither.
+func assertNoClaimRequest(t *testing.T, fake *fakeHost) {
+	t.Helper()
+	for _, rawURL := range fake.requestURLs() {
+		if strings.Contains(rawURL, "/checkin") || strings.Contains(rawURL, "action=") {
+			t.Fatalf("a read-only request could claim: %s", rawURL)
+		}
+	}
+}
+
+// countClaimRequests counts the recorded requests that carry the claim parameter.
+func countClaimRequests(fake *fakeHost) int {
+	count := 0
+	for _, rawURL := range fake.requestURLs() {
+		if strings.Contains(rawURL, "action=") {
+			count++
+		}
+	}
+	return count
 }
 
 // TestClaimIsOptInOnly asserts the write gate on both routes: no action, no
@@ -160,9 +198,7 @@ func TestClaimIsOptInOnly(t *testing.T) {
 	} {
 		dispatchManagement(t, probe)
 	}
-	if requests := fake.requestURLs(); len(requests) != 0 {
-		t.Fatalf("a request without action=checkin performed %d calls, want 0: %v", len(requests), requests)
-	}
+	assertNoClaimRequest(t, fake)
 
 	response := dispatchManagement(t, managementRequest(http.MethodGet, "/v0/resource/plugins/hub/status",
 		url.Values{"action": {"checkin"}, "format": {"json"}}, "application/json"))
@@ -604,7 +640,8 @@ func TestReportedAccountDisagreementIsVisible(t *testing.T) {
 }
 
 // TestStatusPageAfterRunShowsLastKnownCounts: the cached snapshot is what the
-// menu page reports, and it must be observable without new requests.
+// menu page reports, and re-rendering it must not claim anything again — the
+// overview probes before it renders, so the assertion is about CLAIM requests.
 func TestStatusPageAfterRunShowsLastKnownCounts(t *testing.T) {
 	resetLastRun(t)
 	fake := newFakeHost(account("qoder", "qd-1", "qoder-1.json"))
@@ -617,12 +654,12 @@ func TestStatusPageAfterRunShowsLastKnownCounts(t *testing.T) {
 
 	dispatchManagement(t, managementRequest(http.MethodGet, "/v0/resource/plugins/hub/status",
 		url.Values{"action": {"checkin"}, "format": {"json"}}, "application/json"))
-	before := len(fake.requestURLs())
+	before := countClaimRequests(fake)
 
 	response := dispatchManagement(t, managementRequest(http.MethodGet, "/v0/resource/plugins/hub/status",
 		url.Values{"format": {"json"}}, "application/json"))
-	if after := len(fake.requestURLs()); after != before {
-		t.Fatalf("status page issued %d extra requests, want 0", after-before)
+	if after := countClaimRequests(fake); after != before {
+		t.Fatalf("re-rendering the overview issued %d claim requests, want 0", after-before)
 	}
 	document := map[string]any{}
 	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
@@ -634,13 +671,20 @@ func TestStatusPageAfterRunShowsLastKnownCounts(t *testing.T) {
 	if document["last_run"] == nil {
 		t.Fatal("last_run is null after a completed run")
 	}
-	targets, okTargets := document["targets"].([]any)
-	if !okTargets || len(targets) != 1 {
-		t.Fatalf("targets = %#v, want one", document["targets"])
-	}
-	target, _ := targets[0].(map[string]any)
-	if target["last_account_count"] != float64(1) {
-		t.Fatalf("last_account_count = %v, want 1", target["last_account_count"])
+	// `channels` is the overview list; `targets` is the same list under the name
+	// the first release used, so both must carry the last run's numbers.
+	for _, key := range []string{"channels", "targets"} {
+		list, okList := document[key].([]any)
+		if !okList || len(list) != 1 {
+			t.Fatalf("%s = %#v, want one row", key, document[key])
+		}
+		row, _ := list[0].(map[string]any)
+		if row["last_account_count"] != float64(1) {
+			t.Fatalf("%s[0].last_account_count = %v, want 1", key, row["last_account_count"])
+		}
+		if row["state"] != string(channelReady) {
+			t.Fatalf("%s[0].state = %v, want %s", key, row["state"], channelReady)
+		}
 	}
 
 	page := dispatchManagement(t, managementRequest(http.MethodGet, "/v0/resource/plugins/hub/status", nil, "text/html"))

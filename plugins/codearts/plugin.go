@@ -196,10 +196,10 @@ func handleResponseTranslate(_ *abiboot.Host, raw json.RawMessage) (any, error) 
 
 // managementRoute reduces the request path to the route the plugin registered.
 //
-// The host passes the full incoming path, which differs between the two mounts:
-// `/v0/management/codearts/status` on the management API and
-// `/v0/resource/plugins/codearts/status` on the resource path that management
-// clients embed. Only the last segment identifies the route in both cases.
+// The host passes the full incoming path, which differs per mount:
+// `/v0/management/codearts/checkin` for the script route and
+// `/v0/resource/plugins/codearts/status` for the page the hub links to. Only the
+// last segment identifies the route in both cases.
 func managementRoute(path string) string {
 	trimmed := strings.TrimSuffix(strings.TrimSpace(path), "/")
 	if index := strings.LastIndex(trimmed, "/"); index >= 0 {
@@ -208,33 +208,36 @@ func managementRoute(path string) string {
 	return "/" + trimmed
 }
 
-// handleManagementRegister declares exactly ONE sidebar entry (the status page)
-// plus the browser pages and script endpoints behind it.
+// handleManagementRegister declares the status page as a Menu-less resource and
+// the script endpoint behind it. This plugin contributes NO sidebar entry.
 //
 // Three mounts, all decided by the host:
 //   - a GET route carrying a Menu is registered ONLY under
 //     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
-//     CPA-Manager-Plus. That is why only the status page carries one: the
-//     manager renders one nav item per menu route and does not group them by
-//     plugin, so every extra menu route is a duplicate-looking entry.
-//   - a ResourceRoute is registered under the same prefix but is listed in the
+//     CPA-Manager-Plus. The manager renders one nav item per menu route and does
+//     not group them by plugin, so this repository gives that one entry to the
+//     hub plugin and none to any provider: the sidebar is a single "Jet Hub" row
+//     that links to `/v0/resource/plugins/codearts/status`.
+//   - a ResourceRoute is registered under the same prefix and is listed in the
 //     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
-//     browser-reachable (the status page links to it) without adding a nav item.
+//     browser-reachable — the hub and the login page link to it — without adding
+//     a nav item.
 //   - any other route is registered under `/v0/management/<path>`, which is a
 //     GLOBAL namespace shared with every other plugin and with the host's own
 //     endpoints. A collision there is skipped with a warning, so those paths are
 //     prefixed with the provider key.
 //
-// Login deliberately has no sidebar entry: the manager's own "OAuth 登录" page
-// discovers every plugin that declares the auth-provider capability and drives
-// `auth.login.start` / `auth.login.poll` itself, then saves the credential.
+// Login deliberately has no sidebar entry either: the manager's own "OAuth 登录"
+// page discovers every plugin that declares the auth-provider capability and
+// drives `auth.login.start` / `auth.login.poll` itself, then saves the
+// credential.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/status", Menu: "CodeArts", Description: "账号、额度与签到状态"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用，返回 JSON）"},
 		},
 		Resources: []pluginapi.ResourceRoute{
+			{Path: "/status", Description: "账号、额度与签到状态（由 hub 的渠道总览链接进入）"},
 			{Path: "/login", Description: "浏览器登录 CodeArts 账号（由状态页或 OAuth 登录页进入）"},
 		},
 	}, nil

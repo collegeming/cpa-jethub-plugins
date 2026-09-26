@@ -16,7 +16,8 @@ import (
 // (`internal/pluginhost/management.go`, README "挂载规则"):
 //   - a GET route carrying a Menu is registered ONLY under
 //     `/v0/resource/plugins/<id>/<path>`, the path management clients embed in an
-//     iframe, and that mount is dispatched as GET ONLY;
+//     iframe, and that mount is dispatched as GET ONLY. The repository's ONE
+//     Menu belongs to the hub plugin, so this plugin declares none;
 //   - every other route is registered under `/v0/management/<path>`, a GLOBAL
 //     namespace shared with all other plugins and with the host's own endpoints.
 //     A collision is skipped with a warning, so those paths carry the provider
@@ -27,17 +28,14 @@ import (
 
 // handleManagementRegister declares the entries management clients show.
 //
-// Exactly ONE route carries a Menu. The manager renders one sidebar entry per
-// menu route and does not group them by plugin, so extra menu routes look like
-// duplicates (commit f697edd in this repository). The login page must stay
-// browser-reachable without adding a nav item, which is exactly what an empty
-// Menu on a ResourceRoute does: `registeredPluginMenus` skips empty-Menu entries
-// while the path remains served.
+// NO route carries a Menu: the hub plugin owns the repository's single sidebar
+// entry ("Jet Hub") and links to this provider's status page from its channel
+// overview. Keeping Menu empty on a ResourceRoute is what makes that possible —
+// `registeredPluginMenus` skips empty-Menu entries while the path stays served,
+// so the status and login pages remain browser-reachable without a nav item.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/status", Menu: "Cline",
-				Description: "账号、令牌前缀、余额与模型数量"},
 			// Script-facing routes: no Menu, therefore management-API only, and
 			// namespaced by the provider key.
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status",
@@ -46,6 +44,7 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 				Description: "续期当前账号的 Cline 令牌（JSON）"},
 		},
 		Resources: []pluginapi.ResourceRoute{
+			{Path: "/status", Description: "账号、令牌前缀、余额与模型数量（由 hub 的渠道总览链接进入）"},
 			{Path: "/login", Description: "WorkOS 设备码登录 Cline 账号（由状态页或 OAuth 登录页进入）"},
 		},
 	}, nil

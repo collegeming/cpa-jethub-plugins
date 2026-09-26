@@ -84,28 +84,23 @@ func TestManagementRegisterRoutes(t *testing.T) {
 		if route.Path == "" {
 			t.Errorf("route without a path: %+v", route)
 		}
-		switch {
-		case route.Menu != "":
+		if route.Menu != "" {
 			menus++
-			// Resource routes are dispatched as GET only, so a menu route must
-			// be a GET.
-			if route.Method != http.MethodGet {
-				t.Errorf("menu route %s uses %s, want GET", route.Path, route.Method)
-			}
-		default:
-			globalRoutes++
-			// The management namespace is global: every path must carry the
-			// provider prefix or a collision silently drops it.
-			if len(route.Path) < len(ProviderKey)+2 || route.Path[1:1+len(ProviderKey)] != ProviderKey {
-				t.Errorf("global route %s must be prefixed with /%s", route.Path, ProviderKey)
-			}
+			t.Errorf("menu route %s uses menu %q; the sidebar belongs to the hub plugin", route.Path, route.Menu)
+		}
+		globalRoutes++
+		// The management namespace is global: every path must carry the
+		// provider prefix or a collision silently drops it.
+		if len(route.Path) < len(ProviderKey)+2 || route.Path[1:1+len(ProviderKey)] != ProviderKey {
+			t.Errorf("global route %s must be prefixed with /%s", route.Path, ProviderKey)
 		}
 	}
 	// CPA-Manager-Plus renders ONE sidebar entry per menu route and does not
-	// group them by plugin, so only the status page may carry a menu. Login and
-	// check-in ride the menu-less resource list and are reached from the page.
-	if menus != 1 {
-		t.Errorf("menus = %d, want exactly the status page; extra menu routes duplicate sidebar entries", menus)
+	// group them by plugin. The repository gives that one entry to the hub, so
+	// this plugin declares none: the status page, login and check-in all ride the
+	// Menu-less resource list and are reached from the hub or from each other.
+	if menus != 0 {
+		t.Errorf("menus = %d, want zero; extra menu routes duplicate sidebar entries", menus)
 	}
 	if globalRoutes < 2 {
 		t.Errorf("script routes = %d, want the status and checkin JSON endpoints", globalRoutes)

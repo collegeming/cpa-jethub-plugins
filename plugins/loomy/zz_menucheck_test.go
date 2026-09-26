@@ -6,8 +6,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// One sidebar entry, no more: CPA-Manager-Plus renders a flat nav and does not
-// group entries by plugin, so a second Menu route looks like a duplicate.
+// No sidebar entry: CPA-Manager-Plus renders a flat nav and does not group
+// entries by plugin, and the repository's single entry is the hub's "Jet Hub"
+// page. The status page below stays reachable as a Menu-less resource route.
+
 func TestMenuCount(t *testing.T) {
 	value, err := handleManagementRegister(nil, nil)
 	if err != nil {
@@ -20,12 +22,20 @@ func TestMenuCount(t *testing.T) {
 			menus++
 		}
 	}
-	if menus != 1 {
-		t.Fatalf("menu routes = %d, want exactly 1", menus)
+	if menus != 0 {
+		t.Fatalf("menu routes = %d, want zero: the hub plugin owns the repository's only sidebar entry", menus)
 	}
+	// The status page must stay mounted on the resource path the hub links to.
+	statusMounted := false
 	for _, resource := range resp.Resources {
 		if resource.Menu != "" {
-			t.Fatalf("resource %s carries Menu %q; sub-pages must have an empty Menu", resource.Path, resource.Menu)
+			t.Fatalf("resource route %s carries menu %q, want empty", resource.Path, resource.Menu)
 		}
+		if resource.Path == "/status" {
+			statusMounted = true
+		}
+	}
+	if !statusMounted {
+		t.Fatal("the status page is not a Menu-less resource route, so /v0/resource/plugins/<id>/status would 404")
 	}
 }
