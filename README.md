@@ -260,6 +260,28 @@ services:
 `callback_public_host` / `callback_public_port` 用于反向代理等场景：前者是**浏览器实际访问的地址**，默认
 `127.0.0.1` 与绑定端口一致，所以发布端口与容器内端口相同时无需设置。
 
+### WSL2 + Podman：端口映射必须显式写 `0.0.0.0`
+
+在 WSL2 里用 rootless Podman（netavark）跑 CPA、而浏览器在 Windows 上时，有一个会直接表现成
+「回调失败」的陷阱：
+
+```
+ports:
+  - "18091:18091"          # ✗ WSL2 里绑成 *:18091（IPv6）
+  - "0.0.0.0:18091:18091"  # ✓ 绑成 0.0.0.0:18091（IPv4）
+```
+
+原因：省略主机地址时 Podman 把端口绑在 IPv6 通配地址上，WSL2 的 localhost 转发在 Windows 侧也只镜像出
+IPv6 监听。于是 Windows 浏览器访问 `http://127.0.0.1:<port>`（IPv4）会得到 `ERR_CONNECTION_REFUSED`，
+而 `http://localhost:<port>` 却能通——这非常有迷惑性，因为日常打开管理面板用的正是 `localhost`。
+
+偏偏厂商 portal 的回调地址是**硬编码 IPv4 字面量**（CodeArts 只接受 `port` 参数，自己拼出
+`http://127.0.0.1:<port>/oauth/callback`），改写不了。所以容器部署在 WSL2 下必须显式写 `0.0.0.0:`，
+管理面板端口也一样（否则同样只有 `localhost` 能打开）。
+
+排查方法：从 Windows 侧分别访问 `http://127.0.0.1:<port>/` 与 `http://localhost:<port>/`，若前者拒绝、
+后者正常，就是这个原因。也可以用 `ss -ltn` 在 WSL2 里看端口绑在 `0.0.0.0` 还是 `*`。
+
 ### 登录后这些凭据怎么用
 
 登录成功后凭据写入 `~/.cli-proxy-api/<provider>-*.json`（容器内为 `/root/.cli-proxy-api`，即 compose 里挂进去的 `auths` 目录），模型随之下线到 `/v1/models`。调用与内置 provider 完全一致，**不需要进「AI 提供商」页面**（那里只管 API-key 类条目）：
