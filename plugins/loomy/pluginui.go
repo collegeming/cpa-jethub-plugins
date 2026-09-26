@@ -46,8 +46,9 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	accounts := loomyAccounts(h)
 	if len(accounts) == 0 {
 		body = append(body, plugui.Card("尚未添加账号",
-			plugui.Notice("warning", "当前实例还没有 Loomy 账号。Loomy 只有手机验证码登录："+
-				"点下面的按钮进入登录页，先用链接发送验证码，再用键盘链接输入验证码。"),
+			plugui.Notice("warning", "当前实例还没有 Loomy 账号。登录以微信扫码为主："+
+				"点下面的按钮直接打开二维码页，用微信扫码确认即可，不需要手机号；"+
+				"同一页也提供手机验证码登录作为备用路径。"),
 			plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 		))
 		return pluguiPage("Loomy", body...)
@@ -209,17 +210,59 @@ func loginActionSession(request pluginapi.ManagementRequest) (*loginSession, boo
 	return startLoginSession(settings(), request.Query.Get("phone")), true
 }
 
-// renderLoginPage drives the SMS login.
+// truthyParam reports whether a query value means "yes".
+func truthyParam(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// loginPhoneFor resolves the number an SMS action works on: an explicit link
+// value wins, then the configured default, then the number the user typed on the
+// page's own keypad. The last step is what removes the old requirement to edit
+// plugin settings before an SMS login.
+func loginPhoneFor(cfg Config, session *loginSession, override string) string {
+	if phone := cfg.defaultPhone(override); validPhone(phone) {
+		return phone
+	}
+	if session == nil {
+		return ""
+	}
+	if draft := normalizePhone(session.phoneDraftValue()); validPhone(draft) {
+		return draft
+	}
+	return ""
+}
+
+// keypadActions renders the 0-9 links a form-free page uses to collect a number.
+// An input field would need a form, which the resource mount drops.
+func keypadActions(state, action, extra string) []plugui.Action {
+	actions := make([]plugui.Action, 0, 10)
+	for _, digit := range []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"} {
+		query := "action=" + action + "&state=" + state + "&digit=" + digit
+		if extra != "" {
+			query += "&" + extra
+		}
+		actions = append(actions, plugui.Action{Label: digit, Query: query})
+	}
+	return actions
+}
+
+// renderLoginPage drives both login paths.
 //
-// Every control is a link: `?action=start`, `?action=send&phone=…`,
-// `?action=code&digit=…` and `?action=verify&phone=…&code=…`. Nothing here blocks
-// waiting for the user, and nothing sends a form.
+// The page's own route IS the primary path: `/login` with no action is the
+// WeChat QR page, and `action=qr` spells that out. It shows a live QR code and
+// walks the scan → confirm → (bind a phone) → credential state machine with one
+// long-poll iteration per page load. The SMS flow stays available on the same
+// page as the clearly secondary alternative and needs no configuration: its
+// number is typed with the same digit links, and every control is a query-string
+// link, never a form.
 func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	cfg := settings()
 	action := strings.ToLower(strings.TrimSpace(request.Query.Get("action")))
-	if action == "" {
-		return loginIntroPage(cfg, request, nil)
-	}
 
 	var session *loginSession
 	created := false
@@ -235,15 +278,55 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	phone := cfg.defaultPhone(request.Query.Get("phone"))
 
 	switch action {
-	case "start":
-		return loginIntroPage(cfg, request, session)
+	case "", "qr":
+		return renderWechatQRPage(h, cfg, request, session, created)
+
+	case "sms":
+		return loginSMSPage(cfg, request, session, created)
+
+	case bindActionSend:
+		resolved := phone
+		if resolved == "" {
+			resolved = session.phoneDraftValue()
+		}
+		if errSend := sendWechatBindCode(h, cfg, session, resolved, time.Now()); errSend != nil {
+			return wechatBindPage(cfg, session, plugui.Notice("danger", "绑定验证码发送失败："+errSend.Error()))
+		}
+		return wechatBindPage(cfg, session, plugui.Notice("success", "绑定验证码已发送到 "+session.wechatStateValue().BindPhone))
+
+	case bindActionDigit:
+		session.appendBindDigit(request.Query.Get("digit"))
+		return wechatBindPage(cfg, session, "")
+
+	case bindActionClear:
+		session.clearBindDigits()
+		return wechatBindPage(cfg, session, "")
+
+	case bindActionVerify:
+		credential, errVerify := verifyWechatBindCode(h, cfg, session, request.Query.Get("code"), time.Now())
+		if errVerify != nil {
+			return wechatBindPage(cfg, session, plugui.Notice("danger", "绑定失败："+errVerify.Error()))
+		}
+		return loginSuccessPage(session, credential, "微信扫码 + 绑定手机号")
+
+	case bindActionRetry:
+		// Retry the exchange from whatever the session still holds: the rcode if
+		// bind/auth already succeeded, otherwise the one-time code.
+		current := session.wechatStateValue()
+		var outcome wechatOutcome
+		if strings.TrimSpace(current.RCode) == "" {
+			outcome = completeWechatCodeExchange(h, cfg, session, time.Now())
+		} else {
+			outcome = resumeWechatLogin(h, cfg, session, time.Now())
+		}
+		return wechatOutcomePage(cfg, request, session, outcome)
 
 	case "send":
-		errSend := sendLoginCode(h, cfg, session, phone, time.Now())
-		if errSend != nil {
-			return loginFailedPage(state, phone, "验证码发送失败", errSend.Error())
+		resolved := loginPhoneFor(cfg, session, request.Query.Get("phone"))
+		if errSend := sendLoginCode(h, cfg, session, resolved, time.Now()); errSend != nil {
+			return loginFailedPage(state, emptyText(resolved), "验证码发送失败", errSend.Error())
 		}
-		return loginCodePage(cfg, session, phone, created)
+		return loginCodePage(cfg, session, resolved, created)
 
 	case "code", "digit":
 		if !session.hasMsgID() {
@@ -263,75 +346,394 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 		if errVerify != nil {
 			return loginFailedPage(state, phone, "验证码校验失败", errVerify.Error())
 		}
-		return pluguiPage("Loomy 登录", plugui.Card("登录成功",
-			plugui.Group(
-				plugui.Notice("success", "账号已保存："+defaultAuthFileName(credential)),
-				plugui.Fields(
-					plugui.Field{Label: "手机号", Value: credential.maskedPhone()},
-					plugui.Field{Label: "用户 ID", Value: emptyText(credential.UserID)},
-					plugui.Field{Label: "有效期至", Value: formatExpiry(credential.Expiry())},
-					plugui.Field{Label: "每日额度", Value: "已尝试初始化（写接口 /points/first-login，失败不影响登录）"},
-				),
-			),
-			plugui.Action{Label: "查看状态", Path: "status", Kind: "primary"},
-			plugui.Action{Label: "再登一个账号", Query: "action=start"},
-		))
+		return loginSuccessPage(session, credential, "手机验证码")
+
+	case phoneActionDigit:
+		session.appendPhoneDigit(request.Query.Get("digit"))
+		return loginSMSPage(cfg, request, session, created)
+
+	case phoneActionClear:
+		session.clearPhoneDraft()
+		return loginSMSPage(cfg, request, session, created)
 	}
-	return loginIntroPage(cfg, request, session)
+	// An unknown action is not an error page: the primary path is the QR page, so
+	// that is where a stray link lands.
+	return renderWechatQRPage(h, cfg, request, session, created)
 }
 
-// addAccountNotice is the two-line caveat the SMS login page shows when it was
-// reached through 新建账号.
+// Page actions. They are query-string values on the one /login resource route;
+// the bind trio is prefixed so a page can never confuse the SMS keypad with the
+// phone-binding keypad.
+const (
+	// phoneActionDigit / phoneActionClear collect the phone number itself, for
+	// the SMS path, so no plugin setting has to be edited to log in.
+	phoneActionDigit = "phone"
+	phoneActionClear = "phoneclear"
+	// bindAction* drive the phone-binding sub-step a WeChat account without a
+	// bound number needs (`loomy-oauth.ts:249-295`).
+	bindActionSend   = "bindsend"
+	bindActionVerify = "bindverify"
+	bindActionDigit  = "binddigit"
+	bindActionClear  = "bindclear"
+	bindActionRetry  = "bindretry"
+)
+
+// addAccountNotice is the caveat a login page shows when it was reached through
+// 新建账号.
 //
-// Loomy identifies an account by its phone number (`defaultAuthFileName` uses
-// `displayLabel`, i.e. the full number), so "another account" only means
-// "another number": with the configured phone the flow would re-save the SAME
-// account instead of adding one.
+// Loomy identifies an account by its phone number or, for a WeChat login without
+// one, by the user id (`defaultAuthFileName`), so a second account needs a second
+// identity — a second WeChat account, or another number.
 func addAccountNotice(request pluginapi.ManagementRequest) template.HTML {
 	if !plugui.IsAddAccountRequest(request) {
 		return ""
 	}
 	return plugui.Group(
 		plugui.Notice("", plugui.AddAccountNotice),
-		plugui.Notice("", "新增账号要换一个手机号：改插件设置里的 phone，或在链接后追加 ?phone=13xxxxxxxxx。"),
+		plugui.Notice("", "新增账号要有另一个身份：用另一个微信号扫码即可；走短信路径时才需要另一个手机号，"+
+			"号码可以直接在本页用数字链接输入，不需要改插件设置。"),
 	)
 }
 
-// loginIntroPage is the entry page before a code has been requested. A session is
-// passed in when one already exists, so the send link keeps the state.
-func loginIntroPage(cfg Config, request pluginapi.ManagementRequest, session *loginSession) pluginapi.ManagementResponse {
+// loginAlternativeCard is the SMS path as it appears on the QR page: clearly
+// secondary, plainly worded, and always one click from a working entry point.
+//
+// It deliberately does NOT carry the digit keypad. That keypad lives on the SMS
+// page (`?action=sms`), which does not poll; a keypad on a page that reloads
+// itself every couple of seconds would make typing a number a race.
+func loginAlternativeCard(cfg Config, request pluginapi.ManagementRequest, session *loginSession) template.HTML {
+	state := session.stateValue()
+	phone := loginPhoneFor(cfg, session, request.Query.Get("phone"))
+	fields := []plugui.Field{
+		{Label: "说明", Value: "备用路径：需要一个 11 位大陆手机号，验证码用数字链接输入"},
+		{Label: "短信接口", Value: AccountBase + SendMsgCodePath},
+		{Label: "验证码有效期", Value: itoaInt(cfg.smsCodeTTL()) + " 秒（向服务端声明）"},
+	}
+	actions := []plugui.Action{}
+	if phone != "" {
+		fields = append(fields, plugui.Field{Label: "将发送到", Value: phone})
+		actions = append(actions, plugui.Action{Label: "发送验证码", Query: "action=send&state=" + state + "&phone=" + phone})
+	}
+	entry := "输入手机号并发送验证码"
+	if phone != "" {
+		entry = "改用手机验证码登录"
+	}
+	actions = append(actions, plugui.Action{Label: entry, Query: "action=sms&state=" + state})
+	return plugui.Card("手机验证码登录（备用）", plugui.Group(
+		addAccountNotice(request),
+		plugui.Fields(fields...),
+	), actions...)
+}
+
+// loginSMSPage is the SMS path's own page, reachable from the QR page and from a
+// failure page. It never polls: the user is typing.
+func loginSMSPage(cfg Config, request pluginapi.ManagementRequest, session *loginSession, created bool) pluginapi.ManagementResponse {
+	notice := ""
+	if created {
+		notice = "已建立新的登录会话（state=" + session.stateValue() + "）。"
+	}
+	body := []template.HTML{}
+	if notice != "" {
+		body = append(body, plugui.Notice("", notice))
+	}
+	body = append(body, loginSMSCard(cfg, request, session))
+	return pluguiPage("Loomy 手机验证码登录", body...)
+}
+
+// loginSMSCard renders the alternative path: a 11-digit number, then an SMS code,
+// both entered with digit links. A configured or `?phone=` number is offered
+// directly, but nothing forces the user to touch plugin settings.
+func loginSMSCard(cfg Config, request pluginapi.ManagementRequest, session *loginSession) template.HTML {
+	state := session.stateValue()
 	phone := cfg.defaultPhone(request.Query.Get("phone"))
-	stateQuery := ""
-	if session != nil {
-		stateQuery = "&state=" + session.stateValue()
+	if phone == "" {
+		phone = normalizePhone(session.phoneDraftValue())
 	}
 	fields := []plugui.Field{
-		{Label: "登录方式", Value: "手机短信验证码（Loomy 没有扫码回调，也没有 refresh_token）"},
-		{Label: "验证码有效期", Value: itoaInt(cfg.smsCodeTTL()) + " 秒（向服务端声明）"},
-		{Label: "会话有效期", Value: itoaInt(cfg.sessionTTL()) + " 秒（本地推算 expires_at）"},
+		{Label: "说明", Value: "备用路径：需要一个 11 位大陆手机号，短信验证码用数字链接输入"},
 		{Label: "短信接口", Value: AccountBase + SendMsgCodePath},
+		{Label: "验证码有效期", Value: itoaInt(cfg.smsCodeTTL()) + " 秒（向服务端声明）"},
 	}
-	if phone == "" {
-		return pluguiPage("Loomy 登录", plugui.Card("手机验证码登录",
-			plugui.Group(
-				addAccountNotice(request),
-				plugui.Notice("warning", "本页只接受 GET 链接，没有输入框。请在插件设置里填写 phone，"+
-					"或在链接上追加 ?phone=13800138000 后再发起登录。"),
-				plugui.Fields(fields...),
-			),
-			plugui.Action{Label: "返回状态", Path: "status"},
-		))
+	actions := []plugui.Action{}
+	if !validPhone(phone) {
+		draft := session.phoneDraftValue()
+		shown := draft
+		if shown == "" {
+			shown = "（尚未输入）"
+		}
+		fields = append(fields,
+			plugui.Field{Label: "待输入号码", Value: shown},
+			plugui.Field{Label: "输入方式", Value: "本页只有 GET 链接、没有输入框：点下面的数字键输入 11 位号码，" +
+				"也可以直接在链接后追加 ?phone=13800138000"},
+		)
+		actions = append(actions, keypadActions(state, phoneActionDigit, "")...)
+		if draft != "" {
+			actions = append(actions, plugui.Action{Label: "清空号码", Query: "action=" + phoneActionClear + "&state=" + state})
+		}
+		if validPhone(draft) {
+			actions = append([]plugui.Action{{
+				Label: "发送验证码", Kind: "primary",
+				Query: "action=send&state=" + state + "&phone=" + normalizePhone(draft),
+			}}, actions...)
+		}
+		actions = append(actions, plugui.Action{Label: "微信扫码登录", Query: "action=qr&state=" + state, Kind: "primary"})
+		return plugui.Card("手机验证码登录", plugui.Group(plugui.Fields(fields...), noticeForDraft(draft)), actions...)
 	}
 	fields = append(fields, plugui.Field{Label: "将发送到", Value: phone})
-	return pluguiPage("Loomy 登录", plugui.Card("手机验证码登录",
+	actions = append(actions,
+		plugui.Action{Label: "发送验证码", Query: "action=send&state=" + state + "&phone=" + phone, Kind: "primary"},
+		plugui.Action{Label: "换一个号码", Query: "action=" + phoneActionClear + "&state=" + state},
+		plugui.Action{Label: "微信扫码登录", Query: "action=qr&state=" + state},
+	)
+	return plugui.Card("手机验证码登录", plugui.Group(plugui.Fields(fields...)), actions...)
+}
+
+// noticeForDraft explains the state of the phone keypad without ever telling the
+// user to go and edit the plugin configuration.
+func noticeForDraft(draft string) template.HTML {
+	switch {
+	case draft == "":
+		return plugui.Notice("", "先用下面的数字键输入手机号；输满 11 位后会出现「发送验证码」。")
+	case len(draft) < 11:
+		return plugui.Notice("", "已输入 "+itoaInt(len(draft))+" 位，还需要 "+itoaInt(11-len(draft))+" 位。")
+	default:
+		return plugui.Notice("", "号码已输满，点「发送验证码」继续。")
+	}
+}
+
+// renderWechatQRPage is the primary login page: it shows the QR obtained from
+// WeChat and performs ONE long-poll iteration per load.
+func renderWechatQRPage(h *abiboot.Host, cfg Config, request pluginapi.ManagementRequest, session *loginSession, created bool) pluginapi.ManagementResponse {
+	if truthyParam(request.Query.Get("fresh")) {
+		// 换一张 / 重新开始: drop the old QR, its code and its binding context.
+		session.updateWechat(func(w *wechatState) { *w = wechatState{} })
+	}
+	outcome := advanceWechatQR(h, cfg, session, time.Now())
+	if created && outcome.Stage != stageWechatDone {
+		outcome.Message = "已建立新的登录会话（state=" + session.stateValue() + "）。" + outcome.Message
+	}
+	return wechatOutcomePage(cfg, request, session, outcome)
+}
+
+// wechatOutcomePage renders whatever the flow decided.
+func wechatOutcomePage(cfg Config, request pluginapi.ManagementRequest, session *loginSession, outcome wechatOutcome) pluginapi.ManagementResponse {
+	switch outcome.Stage {
+	case stageWechatDone:
+		return loginSuccessPage(session, outcome.Credential, "微信扫码")
+	case stageWechatBind:
+		return wechatBindPage(cfg, session, plugui.Notice("", outcome.Message))
+	case stageWechatFailed:
+		return wechatFailedPage(session, outcome.Message)
+	default:
+		return wechatQRCardPage(cfg, request, session, outcome)
+	}
+}
+
+// wechatQRCardPage renders the QR plus the notice for the current stage. It
+// reloads itself (meta refresh) exactly when the flow is still moving.
+func wechatQRCardPage(cfg Config, request pluginapi.ManagementRequest, session *loginSession, outcome wechatOutcome) pluginapi.ManagementResponse {
+	current := session.wechatStateValue()
+	tone := ""
+	switch outcome.Stage {
+	case wechatScanned:
+		tone = "success"
+	case wechatCancelled, wechatError:
+		tone = "warning"
+	case wechatExpired:
+		tone = "warning"
+	}
+	fields := []plugui.Field{
+		{Label: "二维码状态", Value: wechatStageText(outcome.Stage)},
+		{Label: "登录会话", Value: session.stateValue() + "（" + itoaInt(cfg.loginSessionTTL()/1000) + " 秒内有效）"},
+		{Label: "微信应用", Value: WechatAppID + "（微信开放平台网站应用）"},
+		{Label: "回调地址", Value: WechatRedirectURI +
+			"（微信域名白名单占位：它本身 404，授权码由长轮询取得，不经过回调页）"},
+		{Label: "状态接口", Value: WechatLongPollURL},
+	}
+	if current.Last != "" {
+		fields = append(fields, plugui.Field{Label: "上次返回码", Value: "wx_errcode=" + current.Last})
+	}
+	if current.Detail != "" {
+		fields = append(fields, plugui.Field{Label: "诊断", Value: current.Detail})
+	}
+	fields = append(fields,
+		plugui.Field{Label: "刷新方式", Value: refreshDescription(outcome.RefreshSeconds)},
+		plugui.Field{Label: "超时预算", Value: "授权页/二维码 " + itoaInt(WechatPageTimeoutMS/1000) + " 秒、" +
+			"长轮询 " + itoaInt(WechatPollTimeoutMS/1000) + " 秒（参考实现的预算；实际传输超时由宿主控制，" +
+			"微信长轮询自身约 25 秒返回）"},
+		plugui.Field{Label: "状态语义", Value: "408 待扫码 / 404 已扫码继续轮询 / 405 已确认（授权码在这一帧）" +
+			"/ 403 已取消 / 402 已过期"},
+	)
+	actions := []plugui.Action{
+		{Label: "换一张二维码", Query: "action=qr&fresh=1&state=" + session.stateValue()},
+		{Label: "返回状态", Path: "status"},
+	}
+	card := plugui.Card("微信扫码登录（推荐，不需要手机号）",
 		plugui.Group(
-			addAccountNotice(request),
-			plugui.Notice("", "点击「发送验证码」调用 "+SendMsgCodePath+"；收到短信后用下面的数字链接输入验证码，"+
-				"再点「提交验证」。整个流程都在这一个页面里完成。"),
+			plugui.Notice(tone, outcome.Message),
+			plugui.Image(current.Image, "微信扫码登录二维码", 220),
 			plugui.Fields(fields...),
 		),
-		plugui.Action{Label: "发送验证码", Query: "action=send&phone=" + phone + stateQuery, Kind: "primary"},
+		actions...,
+	)
+	alternative := loginAlternativeCard(cfg, request, session)
+	if outcome.RefreshSeconds > 0 {
+		return plugui.HTMLWithRefresh(outcome.RefreshSeconds, "Loomy 微信登录", card, alternative)
+	}
+	return pluguiPage("Loomy 微信登录", card, alternative)
+}
+
+// refreshDescription spells out what the browser is about to do.
+func refreshDescription(seconds int) string {
+	if seconds <= 0 {
+		return "本页不再自动刷新：流程已经结束，需要继续时点下面的按钮"
+	}
+	return "meta refresh 每 " + itoaInt(seconds) + " 秒重新加载本页；每次加载只做一次长轮询，" +
+		"长轮询本身会阻塞到微信返回或超时"
+}
+
+// wechatStageText renders a stage for humans.
+func wechatStageText(stage string) string {
+	switch stage {
+	case wechatWaiting:
+		return "等待扫码"
+	case wechatScanned:
+		return "已扫码，等待手机确认"
+	case wechatConfirmed:
+		return "已确认，正在换取会话"
+	case wechatCancelled:
+		return "已取消"
+	case wechatExpired:
+		return "已过期（已自动换新）"
+	case wechatError:
+		return "长轮询异常（会自动重试）"
+	case stageWechatBind:
+		return "需要绑定手机号"
+	case stageWechatFailed:
+		return "失败"
+	case stageWechatDone:
+		return "已完成"
+	default:
+		return emptyText(stage)
+	}
+}
+
+// wechatBindPage is the phone-binding sub-step: the WeChat account has no phone
+// on the 讯飞 side, so one SMS round binds it. The keypad is the same form-free
+// pattern the SMS path uses.
+func wechatBindPage(cfg Config, session *loginSession, notice template.HTML) pluginapi.ManagementResponse {
+	current := session.wechatStateValue()
+	state := session.stateValue()
+	fields := []plugui.Field{
+		{Label: "微信昵称", Value: emptyText(current.Nickname)},
+		{Label: "登录会话", Value: state},
+		{Label: "绑定接口", Value: AccountBase + BindSendMsgPath + " / " + BindCheckCodePath},
+	}
+	actions := []plugui.Action{}
+	cardTitle := "绑定手机号并登录"
+	switch {
+	case strings.TrimSpace(current.BindMsgID) == "":
+		draft := session.phoneDraftValue()
+		shown := draft
+		if shown == "" {
+			shown = "（尚未输入）"
+		}
+		fields = append(fields,
+			plugui.Field{Label: "待绑定号码", Value: shown},
+			plugui.Field{Label: "输入方式", Value: "点数字键输入 11 位号码（本页没有输入框），也可以直接在链接后追加 ?phone=13800138000"},
+		)
+		actions = append(actions, keypadActions(state, phoneActionDigit, "")...)
+		if draft != "" {
+			actions = append(actions, plugui.Action{Label: "清空号码", Query: "action=" + phoneActionClear + "&state=" + state})
+		}
+		actions = append([]plugui.Action{{
+			Label: "发送绑定验证码", Kind: "primary",
+			Query: "action=" + bindActionSend + "&state=" + state + "&phone=" + normalizePhone(draft),
+		}}, actions...)
+	default:
+		entered := current.BindDigits
+		if entered == "" {
+			entered = "（尚未输入）"
+		}
+		fields = append(fields,
+			plugui.Field{Label: "手机号", Value: current.BindPhone},
+			plugui.Field{Label: "已输入", Value: entered},
+			plugui.Field{Label: "脚本用法", Value: "?action=" + bindActionVerify + "&state=" + state + "&code=123456"},
+		)
+		actions = append(actions, keypadActions(state, bindActionDigit, "")...)
+		actions = append([]plugui.Action{
+			{Label: "提交绑定并登录", Kind: "primary", Query: "action=" + bindActionVerify + "&state=" + state},
+			{Label: "重新发送", Query: "action=" + bindActionSend + "&state=" + state + "&phone=" + current.BindPhone},
+			{Label: "清空", Query: "action=" + bindActionClear + "&state=" + state},
+		}, actions...)
+	}
+	actions = append(actions,
+		plugui.Action{Label: "重新扫码", Query: "action=qr&fresh=1&state=" + state},
 		plugui.Action{Label: "返回状态", Path: "status"},
+	)
+	body := []template.HTML{
+		plugui.Notice("", "这个微信号在讯飞侧还没有手机号，绑定一次即可（之后的扫码登录不再需要）。"),
+	}
+	if notice != "" {
+		body = append([]template.HTML{notice}, body...)
+	}
+	body = append(body, plugui.Fields(fields...))
+	return pluguiPage("Loomy 绑定手机号", plugui.Card(cardTitle, plugui.Group(body...), actions...))
+}
+
+// wechatFailedPage renders a terminal failure with the two ways forward.
+func wechatFailedPage(session *loginSession, message string) pluginapi.ManagementResponse {
+	state := session.stateValue()
+	current := session.wechatStateValue()
+	fields := []plugui.Field{{Label: "登录会话", Value: state}}
+	if current.RCode != "" {
+		fields = append(fields, plugui.Field{Label: "绑定上下文", Value: "已取得 rcode，可以重试，不必重新扫码"})
+	}
+	return pluguiPage("Loomy 微信登录", plugui.Card("微信登录未完成",
+		plugui.Group(
+			plugui.Notice("danger", message),
+			plugui.Fields(fields...),
+		),
+		plugui.Action{Label: "重试这一步", Query: "action=" + bindActionRetry + "&state=" + state, Kind: "primary"},
+		plugui.Action{Label: "重新获取二维码", Query: "action=qr&fresh=1&state=" + state},
+		plugui.Action{Label: "改用手机验证码", Query: "action=sms&state=" + state},
+		plugui.Action{Label: "返回状态", Path: "status"},
+	))
+}
+
+// loginSuccessPage reports a stored credential. It never auto-refreshes: the
+// login is over, and `auth.login.poll` may already have consumed the session.
+func loginSuccessPage(session *loginSession, credential *Credential, method string) pluginapi.ManagementResponse {
+	fileName := ""
+	if session != nil {
+		fileName = session.storedFileName()
+	}
+	if fileName == "" && credential != nil {
+		fileName = defaultAuthFileName(credential)
+	}
+	fields := []plugui.Field{
+		{Label: "登录方式", Value: method},
+		{Label: "凭据文件", Value: emptyText(fileName)},
+		{Label: "有效期至", Value: formatExpiry(credential.Expiry())},
+		{Label: "每日额度", Value: "已尝试初始化（写接口 /points/first-login，失败不影响登录）"},
+	}
+	if credential != nil {
+		fields = append([]plugui.Field{
+			{Label: "手机号", Value: credential.maskedPhone()},
+			{Label: "用户 ID", Value: emptyText(credential.UserID)},
+		}, fields...)
+	}
+	notice := "账号已保存"
+	if credential != nil && normalizePhone(credential.Phone) == "" {
+		notice = "账号已保存。这个账号在讯飞侧没有返回手机号（微信 bind/skip 的正常结果），凭据本身完全可用"
+	}
+	return pluguiPage("Loomy 登录", plugui.Card("登录成功",
+		plugui.Group(
+			plugui.Notice("success", notice),
+			plugui.Fields(fields...),
+		),
+		plugui.Action{Label: "查看状态", Path: "status", Kind: "primary"},
+		plugui.Action{Label: "再登一个账号", Path: "login", Query: plugui.AddAccountQuery},
 	))
 }
 

@@ -56,6 +56,21 @@ const (
 	SendMsgCodePath = "/login/phone/sendMsgCode"
 	// CheckCodePath exchanges the SMS code for a session (`loomy-oauth.ts:14`).
 	CheckCodePath = "/login/phone/checkCode"
+
+	// BindAuthPath exchanges the WeChat `code` for a binding context
+	// (`loomy-oauth.ts:214-242`). The WeChat code is SINGLE-USE; every later step
+	// uses the `rcode` this call returns.
+	BindAuthPath = "/login/thirdAccount/bind/auth"
+	// BindSendMsgPath sends the SMS code that binds a phone to the WeChat
+	// account (`loomy-oauth.ts:249-267`).
+	BindSendMsgPath = "/login/thirdAccount/bind/sendMsg"
+	// BindCheckCodePath submits that code and completes the login
+	// (`loomy-oauth.ts:274-295`).
+	BindCheckCodePath = "/login/thirdAccount/bind/checkCode"
+	// BindSkipPath is the `bind === 1` shortcut: the account already has a
+	// phone, so 讯飞 hands out a session without one
+	// (`loomy-oauth.ts:303-318`).
+	BindSkipPath = "/login/thirdAccount/bind/skip"
 )
 
 // iFlytek CAccount client envelope constants, sent in the `base` object of every
@@ -109,10 +124,10 @@ type Config struct {
 	Enabled  bool
 	Priority int
 
-	// Phone is the default mobile number the management login page offers. The
-	// page's actions are GET links (the resource mount is GET-only), so the
-	// number has to come from somewhere other than a form field; a user who
-	// wants another number passes `?phone=` in the link instead.
+	// Phone is the default mobile number the SMS login page offers. It is only a
+	// convenience: the primary login path is the WeChat QR code, which needs no
+	// number at all, and the SMS page can collect one itself with its digit links
+	// (the resource mount is GET-only, so there is no input field to type into).
 	Phone string
 
 	// AccountAK / AccountSK optionally override the client-distributed signing
@@ -268,7 +283,8 @@ func coerceString(value any, fallback string) string {
 func ConfigFields() []configField {
 	return []configField{
 		{Name: "phone", Type: "string",
-			Description: "登录页默认手机号（11 位，如 13800138000）。管理页只以 GET 链接派发，没有表单输入框，因此默认号来自这里；也可以在链接里用 ?phone= 覆盖"},
+			Description: "短信登录页的默认手机号（11 位，如 13800138000），可留空。登录以微信扫码为主，不需要手机号；" +
+				"走短信备用路径时号码也可以直接在登录页用数字链接输入，或用链接参数 ?phone= 覆盖，因此这一项只是省事的默认值"},
 		{Name: "discover_models", Type: "boolean",
 			Description: "是否用账号会话实时拉取 GET /models 目录（默认关闭）。关闭时只使用内置的 8 个兜底模型"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "实时模型目录的缓存时长，毫秒（默认 2 小时）"},

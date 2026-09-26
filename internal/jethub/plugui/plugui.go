@@ -25,6 +25,8 @@ import (
 	"bytes"
 	"html/template"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -38,7 +40,8 @@ const documentTemplate = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}}</title>
+{{if .Refresh}}<meta http-equiv="refresh" content="{{.Refresh}}">
+{{end}}<title>{{.Title}}</title>
 <style>
 :root {
   --ui-gap: 16px;
@@ -98,6 +101,10 @@ a { color: var(--primary-color, #1f6feb); }
 .notice.success { border-color: var(--success-color, #1a7f37); color: var(--success-color, #1a7f37); }
 .notice.warning { border-color: var(--warning-color, #9a6700); color: var(--warning-color, #9a6700); }
 .notice.danger  { border-color: var(--danger-color, #cf222e);  color: var(--danger-color, #cf222e); }
+/* qr: an inline data: URL image keeps its own white quiet zone, which a dark
+   host theme would otherwise swallow. */
+.qr { display: block; margin: 6px auto; padding: 8px; background: #ffffff; border-radius: var(--ui-radius); }
+.qr-missing { text-align: center; color: var(--text-secondary, #59636e); padding: 24px 0; }
 .badge {
   display: inline-block;
   border-radius: 999px;
@@ -199,12 +206,33 @@ func render(tmpl *template.Template, data any) template.HTML {
 
 // Document renders a complete page. body is composed from the helpers below.
 func Document(heading string, body ...template.HTML) []byte {
+	return renderDocument(0, heading, body)
+}
+
+// DocumentWithRefresh renders a page that reloads itself every seconds seconds.
+//
+// A resource route is dispatched as GET only, so a page that has to follow a
+// long-running flow has exactly two form-free ways to ask for the next step: a
+// link the user clicks, or `<meta http-equiv="refresh">`. The second one is what
+// a QR page uses — each load performs one server-side poll and re-renders, with
+// no form and no JavaScript involved.
+func DocumentWithRefresh(seconds int, heading string, body ...template.HTML) []byte {
+	return renderDocument(seconds, heading, body)
+}
+
+// renderDocument is the shared shell renderer; seconds <= 0 omits the refresh.
+func renderDocument(seconds int, heading string, body []template.HTML) []byte {
 	var buffer bytes.Buffer
+	refresh := 0
+	if seconds > 0 {
+		refresh = seconds
+	}
 	data := struct {
 		Title   string
 		Heading string
+		Refresh int
 		Body    template.HTML
-	}{Title: heading, Heading: heading, Body: template.HTML(join(body))}
+	}{Title: heading, Heading: heading, Refresh: refresh, Body: template.HTML(join(body))}
 	if errExecute := documentTmpl.Execute(&buffer, data); errExecute != nil {
 		return []byte("<!DOCTYPE html><html><body>failed to render page</body></html>")
 	}
@@ -217,6 +245,15 @@ func HTML(heading string, body ...template.HTML) pluginapi.ManagementResponse {
 		StatusCode: 200,
 		Headers:    map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
 		Body:       Document(heading, body...),
+	}
+}
+
+// HTMLWithRefresh renders a self-refreshing page as a management API response.
+func HTMLWithRefresh(seconds int, heading string, body ...template.HTML) pluginapi.ManagementResponse {
+	return pluginapi.ManagementResponse{
+		StatusCode: 200,
+		Headers:    map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
+		Body:       DocumentWithRefresh(seconds, heading, body...),
 	}
 }
 
@@ -285,6 +322,31 @@ func Notice(tone, message string) template.HTML {
 // Badge renders a small status pill.
 func Badge(tone, label string) template.HTML {
 	return render(badgeTmpl, struct{ Tone, Label string }{tone, label})
+}
+
+// dataImagePattern is the only shape Image accepts: a base64 image data URL.
+// Anything else is refused rather than escaped, because a page must never render
+// a URL a caller built out of upstream bytes.
+var dataImagePattern = regexp.MustCompile(`^data:image/(?:png|jpeg|gif);base64,[A-Za-z0-9+/]+={0,2}$`)
+
+// Image renders a base64 data: URL image inline, so the page needs no second
+// request and no external host.
+//
+// size is the rendered square edge in CSS pixels (a QR needs enough of them to
+// stay scannable); a non-positive value falls back to 220. A value that is not a
+// base64 image data URL renders a readable placeholder instead of a broken
+// image, which is what an upstream error page would otherwise look like.
+func Image(dataURL, alt string, size int) template.HTML {
+	if size <= 0 {
+		size = 220
+	}
+	if !dataImagePattern.MatchString(dataURL) {
+		return template.HTML(`<div class="qr-missing">` + template.HTMLEscapeString(alt) + `：图片不可用</div>`)
+	}
+	// The pattern above admits only base64 characters, so the data URL cannot
+	// break out of the attribute; the alt text is escaped as usual.
+	return template.HTML(`<img class="qr" src="` + dataURL + `" alt="` +
+		template.HTMLEscapeString(alt) + `" width="` + strconv.Itoa(size) + `" height="` + strconv.Itoa(size) + `">`)
 }
 
 // join concatenates fragments without letting html/template re-escape the

@@ -2,6 +2,7 @@ package plugui
 
 import (
 	"bytes"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -105,5 +106,60 @@ func TestIsAddAccountRequest(t *testing.T) {
 	}
 	if !strings.Contains(AddAccountNotice, "已有账号") {
 		t.Fatalf("AddAccountNotice = %q, want it to say the existing account survives", AddAccountNotice)
+	}
+}
+
+// A page that has to follow a long-running flow reloads itself with a meta
+// refresh: the resource mount is GET only, so the alternatives are a link the
+// user clicks or a form, and a form would never reach the plugin.
+func TestDocumentWithRefreshRendersTheMetaTag(t *testing.T) {
+	page := string(DocumentWithRefresh(3, "QR", Notice("", "等待扫码")))
+	if !strings.Contains(page, `<meta http-equiv="refresh" content="3">`) {
+		t.Fatalf("page has no meta refresh: %s", page)
+	}
+	if strings.Contains(strings.ToLower(page), "<script") {
+		t.Fatal("a self-refreshing page must not need JavaScript")
+	}
+	if strings.Contains(strings.ToLower(page), "<form") {
+		t.Fatal("a self-refreshing page must not contain a form")
+	}
+	// A non-positive interval means "do not reload": that is what a finished flow
+	// renders.
+	if plain := string(DocumentWithRefresh(0, "QR")); strings.Contains(plain, "http-equiv=\"refresh\"") {
+		t.Fatal("DocumentWithRefresh(0) must not reload")
+	}
+	if plain := string(Document("QR")); strings.Contains(plain, "http-equiv=\"refresh\"") {
+		t.Fatal("Document must not reload")
+	}
+}
+
+// Image inlines a base64 data URL and refuses anything else, so a value built
+// from upstream bytes can never become an attribute or markup.
+func TestImageRendersOnlyDataURLs(t *testing.T) {
+	dataURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString([]byte("qr-bytes"))
+	rendered := string(Image(dataURL, "微信二维码", 220))
+	if !strings.Contains(rendered, `src="`+dataURL+`"`) {
+		t.Fatalf("rendered = %s, want the inline data URL", rendered)
+	}
+	if !strings.Contains(rendered, `alt="微信二维码"`) || !strings.Contains(rendered, `width="220"`) {
+		t.Fatalf("rendered = %s, want the alt text and the size", rendered)
+	}
+	if !strings.Contains(string(Image(dataURL, "x", 0)), `width="220"`) {
+		t.Fatal("a non-positive size must fall back to a scannable default")
+	}
+
+	for name, hostile := range map[string]string{
+		"attribute escape": `data:image/jpeg;base64,AAAA" onerror="alert(1)`,
+		"remote url":       "https://evil.example/qr.png",
+		"html":             `<img src=x onerror=alert(1)>`,
+		"empty":            "",
+	} {
+		out := string(Image(hostile, "二维码", 0))
+		if strings.Contains(out, "<img") || strings.Contains(out, "onerror") {
+			t.Errorf("%s: rendered as markup: %s", name, out)
+		}
+		if !strings.Contains(out, "图片不可用") {
+			t.Errorf("%s: want a readable placeholder instead: %s", name, out)
+		}
 	}
 }

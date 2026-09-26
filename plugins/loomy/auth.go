@@ -183,7 +183,7 @@ func defaultAuthFileName(credential *Credential) string {
 }
 
 // credentialAdvice is appended to every dead-session answer: there is no refresh
-// token to rotate, so the only remedy is a fresh SMS login.
+// token to rotate, so the only remedy is a fresh login (WeChat scan, or SMS).
 func credentialAdvice() string {
-	return "（Loomy 没有 refresh_token，只能重新用手机验证码登录）"
+	return "（Loomy 没有 refresh_token，只能用微信扫码或手机验证码重新登录）"
 }

@@ -53,14 +53,14 @@ func pollLogin(t *testing.T, h *abiboot.Host, state string) pluginapi.AuthLoginP
 	return decodeResult[pluginapi.AuthLoginPollResponse](t, value)
 }
 
-// start must return a URL and a state immediately and must not touch the account
-// host: the phone number can only be collected on the plugin's own page, which is
-// the ordering deadlock the reference documents for `loginMode: 'sms'`
-// (`jet-hub-rpc.ts:937-941`).
+// start must return a URL and a state immediately and must not touch WeChat or
+// the account host: the returned URL opens the plugin's own page, and THAT page
+// load fetches and renders the QR code. Doing the fetch here would block the
+// host's own request for as long as WeChat takes and would still show nothing.
 func TestLoginStartReturnsURLWithoutNetwork(t *testing.T) {
 	fake := newFakeHost()
 	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
-		t.Fatalf("auth.login.start must not call the account host (%s)", request.URL)
+		t.Fatalf("auth.login.start must not call WeChat or the account host (%s)", request.URL)
 		return nil, nil
 	}
 	fake.install(t)
@@ -81,15 +81,17 @@ func TestLoginStartReturnsURLWithoutNetwork(t *testing.T) {
 			t.Fatalf("state %q contains %q, which the host's ValidateOAuthState rejects", response.State, character)
 		}
 	}
-	wantURL := "http://127.0.0.1:8317" + loginResourcePath + "?state=" + response.State
+	// The entry point leads straight to the QR page: parsing the URL must yield
+	// action=qr, so the very first page load shows a scannable code.
+	wantURL := "http://127.0.0.1:8317" + loginResourcePath + "?action=" + loginQRAction + "&state=" + response.State
 	if response.URL != wantURL {
 		t.Fatalf("url = %q, want %q", response.URL, wantURL)
 	}
 	if response.ExpiresAt.IsZero() {
 		t.Fatal("a login session must carry an expiry")
 	}
-	if response.Metadata["flow"] != "sms" {
-		t.Fatalf("metadata = %#v, want flow=sms", response.Metadata)
+	if response.Metadata["flow"] != "wechat" {
+		t.Fatalf("metadata = %#v, want flow=wechat", response.Metadata)
 	}
 	if len(fake.requests) != 0 {
 		t.Fatalf("issued %d requests, want 0", len(fake.requests))
@@ -102,8 +104,11 @@ func TestLoginStartWithoutBaseURLStaysRelative(t *testing.T) {
 	fake := newFakeHost()
 	fake.install(t)
 	response := startLogin(t, testHost(), "", nil)
-	if !strings.HasPrefix(response.URL, loginResourcePath+"?state=") {
+	if !strings.HasPrefix(response.URL, loginResourcePath+"?") {
 		t.Fatalf("url = %q, want the relative resource path", response.URL)
+	}
+	if !strings.Contains(response.URL, "action="+loginQRAction) || !strings.Contains(response.URL, "state="+response.State) {
+		t.Fatalf("url = %q, want the QR action and the state", response.URL)
 	}
 }
 

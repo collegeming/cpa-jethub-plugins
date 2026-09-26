@@ -92,7 +92,7 @@
     {
       "id": "loomy",
       "name": "Loomy（讯飞）",
-      "description": "讯飞 Loomy 办公助手接入：短信验证码登录、积分余额与每日额度初始化、新手任务一次性领取。",
+      "description": "讯飞 Loomy 办公助手接入：微信扫码登录（备用短信验证码）、积分余额与每日额度初始化、新手任务一次性领取。",
       "author": "collegeming",
       "repository": "https://github.com/collegeming/cpa-jethub-plugins",
       "homepage": "https://github.com/collegeming/cpa-jethub-plugins",

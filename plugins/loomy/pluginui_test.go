@@ -51,31 +51,100 @@ func TestNoPageContainsAForm(t *testing.T) {
 	}
 }
 
-// The login entry page explains the missing phone instead of offering a field,
-// and the configured phone becomes a send link.
-func TestLoginPageWithoutAndWithPhone(t *testing.T) {
+// The login route IS the WeChat QR page — no action parameter needed — and it
+// offers the SMS alternative up front, clearly secondary. Neither path ever asks
+// the user to edit plugin settings.
+func TestLoginPageOffersBothPaths(t *testing.T) {
+	transport := &wechatTransport{uuid: "001ZDsw64Vu7ll2E"}
 	fake := newFakeHost()
+	fake.do = transport.do
 	fake.install(t)
 	h := testHost()
 
-	without := renderPage(t, h, "/login", nil)
-	if !strings.Contains(without, "没有输入框") {
-		t.Fatalf("page = %s, want the no-input explanation", truncate(without, 300))
+	page := renderPage(t, h, "/login", nil)
+	if !strings.Contains(page, "微信扫码登录") {
+		t.Fatalf("page = %s, want the QR path named", truncate(page, 400))
 	}
-	if strings.Contains(without, "action=send") {
-		t.Fatal("without a phone there is nothing to send to")
+	if !strings.Contains(page, "data:image/jpeg;base64,") {
+		t.Fatalf("page = %s, want a QR image rendered inline", truncate(page, 400))
+	}
+	if !strings.Contains(page, "手机验证码登录") || !strings.Contains(page, "action=sms") {
+		t.Fatalf("page = %s, want the SMS alternative offered up front", truncate(page, 600))
+	}
+	if strings.Contains(page, "在插件设置里") {
+		t.Fatal("the page must not send the user into the plugin settings to log in")
 	}
 
+	// The SMS page collects the number itself: without a known number it offers
+	// its own keypad instead of a send link, and it does not poll.
+	sms := renderPage(t, h, "/login", url.Values{"action": {"sms"}})
+	if strings.Contains(sms, "action=send") {
+		t.Fatal("without a phone there is nothing to send to")
+	}
+	if !strings.Contains(sms, "action=phone") || !strings.Contains(sms, "digit=1") {
+		t.Fatalf("page = %s, want the phone keypad of the SMS path", truncate(sms, 600))
+	}
+
+	// A configured number becomes a send link, on the QR page as well.
 	withSettings(t, Config{Enabled: true, Phone: "13800138000"})
 	configured := renderPage(t, h, "/login", nil)
 	if !strings.Contains(configured, "action=send") || !strings.Contains(configured, "phone=13800138000") {
 		t.Fatalf("page = %s, want a send link carrying the configured phone", truncate(configured, 400))
+	}
+	if !strings.Contains(configured, "data:image/jpeg;base64,") {
+		t.Fatalf("page = %s, want the QR path to stay primary", truncate(configured, 400))
 	}
 
 	// ?phone= overrides the configured default.
 	override := renderPage(t, h, "/login", url.Values{"phone": {"13900139000"}})
 	if !strings.Contains(override, "phone=13900139000") {
 		t.Fatalf("page = %s, want the override phone in the link", truncate(override, 400))
+	}
+}
+
+// A number typed on the page's own keypad is enough to send a code: the SMS path
+// needs no configuration surgery, which is the whole point of the keypad.
+func TestLoginPagePhoneKeypadFeedsTheSmsPath(t *testing.T) {
+	fake := newFakeHost()
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		if strings.Contains(request.URL, SendMsgCodePath) {
+			return httpResponse(200, `{"code":"000000","data":{"msgid":"M-1"}}`), nil
+		}
+		return httpResponse(200, `{"code":"000000","data":{}}`), nil
+	}
+	fake.install(t)
+	h := testHost()
+
+	// Eleven keypad presses collect the number, one GET link each.
+	var state string
+	for _, digit := range strings.Split("13900139000", "") {
+		body := renderPage(t, h, "/login", url.Values{"action": {"phone"}, "state": {state}, "digit": {digit}})
+		if state == "" {
+			state = lastLoginState()
+		}
+		if len(digit) == 1 && !strings.Contains(body, "手机验证码登录") {
+			t.Fatalf("digit page = %s, want the SMS card to stay", truncate(body, 300))
+		}
+	}
+	session, found := lookupLoginSession(state)
+	if !found {
+		t.Fatal("the keypad must work on a login session")
+	}
+	if draft := session.phoneDraftValue(); draft != "13900139000" {
+		t.Fatalf("phone draft = %q, want the typed number", draft)
+	}
+	full := renderPage(t, h, "/login", url.Values{"action": {"phone"}, "state": {state}, "digit": {"0"}})
+	if !strings.Contains(full, "action=send") || !strings.Contains(full, "phone=13900139000") {
+		t.Fatalf("page = %s, want a send link once the number is complete", truncate(full, 600))
+	}
+
+	// The send action accepts the typed number without any ?phone= parameter.
+	sent := renderPage(t, h, "/login", url.Values{"action": {"send"}, "state": {state}})
+	if !strings.Contains(sent, "输入短信验证码") {
+		t.Fatalf("send page = %s, want the code keypad", truncate(sent, 300))
+	}
+	if calls := fake.callsFor(SendMsgCodePath); len(calls) != 1 {
+		t.Fatalf("issued %d sendMsgCode calls, want 1", len(calls))
 	}
 }
 
@@ -152,9 +221,9 @@ func TestStatusPageOffersAddAccount(t *testing.T) {
 	}
 }
 
-// The add-account flow says which account it will touch. Loomy identifies an
-// account by its phone number, so "another account" means "another number", and
-// without that line the flow would re-save the configured account instead.
+// The add-account flow says which account it will touch. A second Loomy account
+// needs a second identity — another WeChat account, or (on the SMS path) another
+// number — and without that line the flow would re-save the first account.
 func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
 	fake := newFakeHost()
 	fake.install(t)
@@ -168,8 +237,11 @@ func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
 	if !strings.Contains(adding, "已有账号的凭据不受影响") {
 		t.Fatalf("the add-account login page must state that the existing account survives:\n%s", truncate(adding, 600))
 	}
-	if !strings.Contains(adding, "换一个手机号") {
-		t.Fatalf("the add-account login page must say that a second number is required:\n%s", truncate(adding, 600))
+	if !strings.Contains(adding, "另一个微信号") || !strings.Contains(adding, "另一个手机号") {
+		t.Fatalf("the add-account login page must say what a second identity means:\n%s", truncate(adding, 600))
+	}
+	if strings.Contains(adding, "在插件设置里") {
+		t.Fatalf("adding an account must not require editing plugin settings:\n%s", truncate(adding, 600))
 	}
 }
 

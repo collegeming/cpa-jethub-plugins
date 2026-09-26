@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +58,198 @@ type checkCodeParam struct {
 	MCode  string `json:"mcode"`
 	MsgID  string `json:"msgid"`
 	Expire int    `json:"expire"`
+}
+
+// ── WeChat binding: the four account endpoints of `loomy-oauth.ts:182-318` ──
+//
+// Field order is fixed by the structs because the request bytes are both signed
+// and sent (trap #4), and it matches the reference's own order.
+
+// bindAuthParam is `/login/thirdAccount/bind/auth`:
+// `{ "tcode": { "code": "<wx code>" }, "type": "wx" }`.
+type bindAuthParam struct {
+	TCode bindAuthCode `json:"tcode"`
+	Type  string       `json:"type"`
+}
+
+// bindAuthCode is the single-use WeChat code wrapper.
+type bindAuthCode struct {
+	Code string `json:"code"`
+}
+
+// bindSendMsgParam is `/login/thirdAccount/bind/sendMsg`; `expire` is the SMS
+// code TTL, not the session TTL.
+type bindSendMsgParam struct {
+	RCode  string `json:"rcode"`
+	Phone  string `json:"phone"`
+	CCode  string `json:"ccode"`
+	Expire int    `json:"expire"`
+}
+
+// bindCheckCodeParam is `/login/thirdAccount/bind/checkCode`.
+type bindCheckCodeParam struct {
+	RCode  string `json:"rcode"`
+	MCode  string `json:"mcode"`
+	MsgID  string `json:"msgid"`
+	Expire int    `json:"expire"`
+}
+
+// bindSkipParam is `/login/thirdAccount/bind/skip`; the account already has a
+// bound phone, so no number is involved.
+type bindSkipParam struct {
+	RCode  string `json:"rcode"`
+	Expire int    `json:"expire"`
+}
+
+// wechatBindAuth is the usable part of the `bind/auth` answer
+// (`loomy-oauth.ts:198-242`).
+type wechatBindAuth struct {
+	// Bind is 1 ONLY when the server literally answered the number 1; anything
+	// else (0, a string, a missing field) is treated as 0. The conservative
+	// direction matters: skipping the phone binding for an account that has none
+	// would produce a credential that can never be recovered, while an extra
+	// binding step only costs one SMS.
+	Bind int
+	// RCode is the context every later step needs. Empty rcode aborts the flow
+	// immediately instead of failing halfway through.
+	RCode    string
+	Nickname string
+}
+
+// wechatBindLogin is what the two session-producing bind steps return.
+type wechatBindLogin struct {
+	Session string
+	UserID  string
+	Phone   string
+}
+
+// bindThirdAccountAuth exchanges the one-time WeChat code for a binding context
+// (`loomy-oauth.ts:214-242`).
+func bindThirdAccountAuth(h *abiboot.Host, cfg Config, code string, now time.Time) (wechatBindAuth, error) {
+	trimmed := strings.TrimSpace(code)
+	if trimmed == "" {
+		return wechatBindAuth{}, statusError(false, "missing_code", http.StatusBadRequest, "微信授权码为空")
+	}
+	parsed, errCall := accountCall(h, cfg, BindAuthPath, bindAuthParam{
+		TCode: bindAuthCode{Code: trimmed},
+		Type:  "wx",
+	}, now)
+	if errCall != nil {
+		return wechatBindAuth{}, errCall
+	}
+	var data struct {
+		Bind     json.RawMessage `json:"bind"`
+		RCode    string          `json:"rcode"`
+		Nickname string          `json:"nickname"`
+	}
+	if errDecode := parsed.decodeData(&data); errDecode != nil {
+		return wechatBindAuth{}, errDecode
+	}
+	rcode := strings.TrimSpace(data.RCode)
+	if rcode == "" {
+		// Without an rcode none of the next three steps can run, so the failure
+		// is raised here rather than halfway through (`loomy-oauth.ts:226-229`).
+		return wechatBindAuth{}, transportError("missing_rcode", "微信授权响应缺少 rcode")
+	}
+	bind := 0
+	if raw := strings.TrimSpace(string(data.Bind)); raw != "" {
+		if value, errParse := strconv.ParseFloat(raw, 64); errParse == nil && value == 1 {
+			bind = 1
+		}
+	}
+	return wechatBindAuth{Bind: bind, RCode: rcode, Nickname: strings.TrimSpace(data.Nickname)}, nil
+}
+
+// bindSendMsg requests the SMS code that binds a phone to the WeChat account
+// (`loomy-oauth.ts:249-267`).
+func bindSendMsg(h *abiboot.Host, cfg Config, rcode, phone string, now time.Time) (string, error) {
+	normalized := normalizePhone(phone)
+	if !phonePattern.MatchString(normalized) {
+		return "", statusError(false, "invalid_phone", http.StatusBadRequest,
+			"手机号格式不正确：%q（需要 11 位大陆手机号）", strings.TrimSpace(phone))
+	}
+	parsed, errCall := accountCall(h, cfg, BindSendMsgPath, bindSendMsgParam{
+		RCode:  strings.TrimSpace(rcode),
+		Phone:  normalized,
+		CCode:  accountCountryCode,
+		Expire: cfg.smsCodeTTL(),
+	}, now)
+	if errCall != nil {
+		return "", errCall
+	}
+	var data struct {
+		MsgID string `json:"msgid"`
+	}
+	if errDecode := parsed.decodeData(&data); errDecode != nil {
+		return "", errDecode
+	}
+	if strings.TrimSpace(data.MsgID) == "" {
+		return "", transportError("missing_msgid", "绑定手机号响应缺少 msgid")
+	}
+	return strings.TrimSpace(data.MsgID), nil
+}
+
+// bindCheckCode submits the binding code and returns the session
+// (`loomy-oauth.ts:274-295`). The phone in the ANSWER wins: it is the number the
+// account is actually bound to.
+func bindCheckCode(h *abiboot.Host, cfg Config, rcode, mcode, msgid string, now time.Time) (wechatBindLogin, error) {
+	if strings.TrimSpace(mcode) == "" {
+		return wechatBindLogin{}, statusError(false, "missing_code", http.StatusBadRequest, "请填写短信验证码")
+	}
+	parsed, errCall := accountCall(h, cfg, BindCheckCodePath, bindCheckCodeParam{
+		RCode:  strings.TrimSpace(rcode),
+		MCode:  strings.TrimSpace(mcode),
+		MsgID:  strings.TrimSpace(msgid),
+		Expire: cfg.sessionTTL(),
+	}, now)
+	if errCall != nil {
+		return wechatBindLogin{}, errCall
+	}
+	var data struct {
+		Session string `json:"session"`
+		UserID  string `json:"userid"`
+		Phone   string `json:"phone"`
+	}
+	if errDecode := parsed.decodeData(&data); errDecode != nil {
+		return wechatBindLogin{}, errDecode
+	}
+	if strings.TrimSpace(data.Session) == "" {
+		return wechatBindLogin{}, transportError("missing_session", "绑定登录响应缺少 session")
+	}
+	if strings.TrimSpace(data.UserID) == "" {
+		return wechatBindLogin{}, transportError("missing_userid", "绑定登录响应缺少 userid")
+	}
+	return wechatBindLogin{
+		Session: strings.TrimSpace(data.Session),
+		UserID:  strings.TrimSpace(data.UserID),
+		Phone:   strings.TrimSpace(data.Phone),
+	}, nil
+}
+
+// bindSkip is the `bind === 1` path: 讯飞 skips the phone binding and hands out
+// a session directly (`loomy-oauth.ts:303-318`).
+func bindSkip(h *abiboot.Host, cfg Config, rcode string, now time.Time) (wechatBindLogin, error) {
+	parsed, errCall := accountCall(h, cfg, BindSkipPath, bindSkipParam{
+		RCode:  strings.TrimSpace(rcode),
+		Expire: cfg.sessionTTL(),
+	}, now)
+	if errCall != nil {
+		return wechatBindLogin{}, errCall
+	}
+	var data struct {
+		Session string `json:"session"`
+		UserID  string `json:"userid"`
+	}
+	if errDecode := parsed.decodeData(&data); errDecode != nil {
+		return wechatBindLogin{}, errDecode
+	}
+	if strings.TrimSpace(data.Session) == "" {
+		return wechatBindLogin{}, transportError("missing_session", "微信登录响应缺少 session")
+	}
+	if strings.TrimSpace(data.UserID) == "" {
+		return wechatBindLogin{}, transportError("missing_userid", "微信登录响应缺少 userid")
+	}
+	return wechatBindLogin{Session: strings.TrimSpace(data.Session), UserID: strings.TrimSpace(data.UserID)}, nil
 }
 
 // randomTraceID is `base.traceid`: `randomUUID()` with the dashes stripped, i.e.

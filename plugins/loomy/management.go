@@ -40,7 +40,7 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 		Routes: []pluginapi.ManagementRoute{},
 		Resources: []pluginapi.ResourceRoute{
 			{Path: "/status", Description: "账号、模型目录与积分余额（由 hub 的渠道总览链接进入）"},
-			{Path: "/login", Description: "手机验证码登录 Loomy 账号（由状态页或 OAuth 登录页进入）"},
+			{Path: "/login", Description: "微信扫码登录 Loomy 账号（auth.login.start 直接打开二维码页）；手机验证码登录作为备用路径在同一页提供"},
 			{Path: "/checkin", Description: "初始化 Loomy 每日赠送额度（由状态页进入）"},
 			{Path: "/onboarding", Description: "领取 Loomy 一次性新手任务积分（由状态页进入）"},
 		},
@@ -240,10 +240,20 @@ func loginJSON(request pluginapi.ManagementRequest) pluginapi.ManagementResponse
 	return jsonManagementResponse(http.StatusOK, map[string]any{
 		"action": strings.TrimSpace(request.Query.Get("action")),
 		"state":  state,
-		"hint": "GET ?action=start 建立登录会话；GET ?action=send&state=…&phone=13800138000 发送验证码；" +
-			"GET ?action=verify&state=…&phone=…&code=123456 提交验证码并保存凭据。" +
-			"Loomy 只有手机验证码登录，没有回调端口也没有 refresh_token",
-		"phone_gate": "^1[3-9]\\d{9}$",
+		"primary": "微信扫码：GET ?action=qr&state=… 返回二维码页（data: URL 图片 + meta refresh），" +
+			"每次加载做一次长轮询（408 待扫码 / 404 已扫码 / 405 已确认并携带授权码 / 403 取消 / 402 过期）；" +
+			"405 之后自动 bind/auth → bind===1 走 bind/skip，否则用 ?action=bindsend&phone=… 与 " +
+			"?action=bindverify&code=… 绑定手机号。凭据存好后 auth.login.poll 由 pending 变为 success",
+		"backup": "手机验证码：GET ?action=send&state=…&phone=13800138000 发送验证码；" +
+			"?action=code&state=…&digit=5 用数字链接输入；?action=verify&state=…&phone=…&code=123456 提交并保存凭据。" +
+			"号码也可以在本页用 ?action=phone&digit=… 输入，不需要改插件设置",
+		"phone_gate":  "^1[3-9]\\d{9}$",
+		"wechat_app":  WechatAppID,
+		"redirect":    WechatRedirectURI,
+		"poll_url":    WechatLongPollURL,
+		"no_forms":    "resource 路由只派发 GET：所有动作都是查询串链接，页面没有表单也没有脚本",
+		"no_refresh":  "Loomy 没有 refresh_token：auth.refresh 只做有效性探测",
+		"callback404": "微信回调页是白名单占位、本身 404；授权码由长轮询取得，不经过回调页",
 	})
 }
 
