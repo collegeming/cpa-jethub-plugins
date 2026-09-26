@@ -110,7 +110,10 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	}
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/status", Menu: "CodeBuddy", Description: "账号、凭据有效期与积分余额"},
+			// The sidebar label comes from this menu string, not from the plugin name,
+			// so it has to follow the build identity — otherwise the China and
+			// international artifacts both read "CodeBuddy" and cannot be told apart.
+			{Method: http.MethodGet, Path: "/status", Menu: DisplayName, Description: "账号、凭据有效期与积分余额"},
 			// 脚本/API 用：不带 Menu，因此挂在全局管理命名空间下，必须自带前缀。
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status", Description: "账号状态（JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（JSON）"},

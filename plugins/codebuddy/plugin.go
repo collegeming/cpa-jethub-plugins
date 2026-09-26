@@ -138,13 +138,11 @@ func configFieldsForHost() []pluginapi.ConfigField {
 	return out
 }
 
-// productLogoURL is the favicon of the product this build serves. It follows the
-// configured API domain so the international variants link to their own site
-// instead of the China one, falling back to that home when a product declares no
-// domain.
+// productLogoURL is the mark of the product this build serves, so each variant
+// shows its own icon rather than all of them sharing the China site's.
 func productLogoURL() string {
-	if domain := strings.TrimSpace(ProductDefault().APIDomain); domain != "" {
-		return "https://" + domain + "/favicon.ico"
+	if logo := strings.TrimSpace(ProductDefault().LogoURL); logo != "" {
+		return logo
 	}
 	return WebsiteHome + "/favicon.ico"
 }

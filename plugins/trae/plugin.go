@@ -98,10 +98,9 @@ func (p *plugin) Registration() abiboot.Registration {
 		Version:          PluginVersion,
 		Author:           "cpa-jethub",
 		GitHubRepository: "https://github.com/collegeming/cpa-jethub-plugins",
-		// No favicon is shipped: the source material (jethub-src/src/trae*.ts)
-		// declares no logo asset, and inventing a URL is worse than leaving it
-		// empty.
-		Logo:         "",
+		// The reference sources declare no logo asset. This is the icon the TRAE
+		// site itself links, so it is the vendor's own mark rather than a guess.
+		Logo:         "https://lf-cdn.trae.com.cn/obj/trae-com-cn/trae_website_prod_cn/favicon.png",
 		ConfigFields: configFieldsForHost(),
 	}
 	capabilities := abiboot.Capabilities{

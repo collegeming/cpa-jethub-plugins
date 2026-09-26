@@ -81,8 +81,10 @@ func (p *plugin) Registration() abiboot.Registration {
 		Version:          PluginVersion,
 		Author:           "cpa-jethub",
 		GitHubRepository: "https://github.com/collegeming/cpa-jethub-plugins",
-		Logo:             "https://www.huaweicloud.com/favicon.ico",
-		ConfigFields:     configFieldsForHost(),
+		// The site root favicon answers with HTML, not an image; the portal's own
+		// /favicon.ico is the one that actually serves an icon.
+		Logo:         "https://codearts.huaweicloud.com/favicon.ico",
+		ConfigFields: configFieldsForHost(),
 	}
 	capabilities := abiboot.Capabilities{
 		ModelRegistrar:        true,

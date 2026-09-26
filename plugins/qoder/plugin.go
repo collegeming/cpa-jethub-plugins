@@ -97,7 +97,7 @@ func (p *plugin) Registration() abiboot.Registration {
 		Version:          Version,
 		Author:           Author,
 		GitHubRepository: Repository,
-		Logo:             "",
+		Logo:             "https://qoder.com/favIcon.svg",
 		ConfigFields:     configFieldsForHost(),
 	}
 	capabilities := abiboot.Capabilities{

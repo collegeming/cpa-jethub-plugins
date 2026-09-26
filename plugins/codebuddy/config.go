@@ -183,6 +183,10 @@ type productConfig struct {
 	PluginVersion string
 	// FallbackModels is the built-in catalog (product.ts:136). See models.go.
 	FallbackModels []fallbackModel
+	// LogoURL is the product's own mark, taken from the icon the vendor site
+	// links. The obvious `<domain>/favicon.ico` is a 404 on every Tencent
+	// product domain, which is why the icon never rendered.
+	LogoURL string
 }
 
 // Config value names for the `product` setting. These are the four names the
@@ -200,6 +204,7 @@ const (
 var Products = []productConfig{
 	{
 		ID:          "buddy",
+		LogoURL:     "https://download.codebuddy.cn/web/website/2323ea5befd8bcf62c88b96b44fc8f6c83815612/assets/logo.svg",
 		ConfigValue: ProductCodeBuddy,
 		Platform:    "ide",
 		Endpoint:    APIEndpoint,
@@ -218,6 +223,7 @@ var Products = []productConfig{
 	},
 	{
 		ID:          "buddy-intl",
+		LogoURL:     "https://codebuddy-1328495429.cos.accelerate.myqcloud.com/web/ide/logo.svg",
 		ConfigValue: ProductCodeBuddyIntl,
 		Platform:    "ide",
 		Endpoint:    "https://www.codebuddy.ai",
@@ -236,6 +242,7 @@ var Products = []productConfig{
 	},
 	{
 		ID:          "workbuddy-cn",
+		LogoURL:     "https://download.codebuddy.ai/web/workbuddy/ea2a61614c71b7bed74ab35460e918796a083362/assets/logo.svg",
 		ConfigValue: ProductWorkBuddyCN,
 		Platform:    "workbuddy",
 		Endpoint:    APIEndpoint,
@@ -255,6 +262,7 @@ var Products = []productConfig{
 	},
 	{
 		ID:          "workbuddy",
+		LogoURL:     "https://download.codebuddy.ai/web/workbuddy/ea2a61614c71b7bed74ab35460e918796a083362/assets/logo.svg",
 		ConfigValue: ProductWorkBuddy,
 		Platform:    "workbuddy-ai",
 		Endpoint:    "https://www.workbuddy.ai",
