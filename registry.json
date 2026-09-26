@@ -102,6 +102,20 @@
         "iFlytek",
         "Loomy"
       ]
+    },
+    {
+      "id": "hub",
+      "name": "Jet Hub（一键签到）",
+      "description": "跨渠道统一面板：读取各 provider 插件的状态并以一次点击完成全部每日签到，逐账号如实区分「已领取／领取成功／无账号／不支持」。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Management",
+        "Hub",
+        "Checkin"
+      ]
     }
   ]
 }
