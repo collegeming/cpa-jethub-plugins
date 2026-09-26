@@ -18,8 +18,39 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.MaxCompletionTokens != DefaultMaxCompletionTokens || cfg.MaxHistoryChars != DefaultMaxHistoryChars {
 		t.Fatalf("numeric defaults = %#v", cfg)
 	}
-	if cfg.DefaultChannel != DefaultFunction || cfg.CallbackPort != DefaultCallbackPort {
-		t.Fatalf("channel/port defaults = %#v", cfg)
+	if cfg.DefaultChannel != DefaultFunction {
+		t.Fatalf("channel defaults = %#v", cfg)
+	}
+	// The callback port defaults to 0, meaning "prefer 18080, accept any free port
+	// at or above it". Pinning it by default would fail the whole login on a
+	// workstation where 18080 happens to be busy, which the reference
+	// implementation explicitly tolerates (trae-oauth.ts:508-535).
+	if cfg.CallbackPort != 0 {
+		t.Fatalf("callback port default = %d, want 0 (unpinned)", cfg.CallbackPort)
+	}
+}
+
+// TestConfigCallbackPortPinsListener pins the container contract: an explicit
+// callback_port is taken literally, because it has to match a published docker
+// port mapping. A silent fallback to another port would hand the browser a URL
+// nothing is listening on.
+func TestConfigCallbackPortPinsListener(t *testing.T) {
+	cfg := ConfigFromYAML([]byte("callback_port: 28080\ncallback_bind_host: 0.0.0.0\n"))
+	if cfg.CallbackPort != 28080 {
+		t.Fatalf("callback_port = %d, want 28080", cfg.CallbackPort)
+	}
+	if cfg.CallbackBindHost != "0.0.0.0" {
+		t.Fatalf("callback_bind_host = %q, want 0.0.0.0", cfg.CallbackBindHost)
+	}
+
+	// A quoted number is what a user writing YAML by hand often produces, and the
+	// host hands the subtree back in whichever style it was written.
+	quoted := ConfigFromYAML([]byte("callback_port: \"28081\"\ncallback_public_port: 443\n"))
+	if quoted.CallbackPort != 28081 {
+		t.Fatalf("quoted callback_port = %d, want 28081", quoted.CallbackPort)
+	}
+	if quoted.CallbackPublicPort != 443 {
+		t.Fatalf("callback_public_port = %d, want 443", quoted.CallbackPublicPort)
 	}
 }
 

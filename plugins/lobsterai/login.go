@@ -125,9 +125,20 @@ func startLoginSession(now time.Time) (*loginSession, error) {
 		status:        pluginapi.AuthLoginStatusPending,
 	}
 
+	// LobsterAI takes a full `redirect_uri` and echoes the `state` we generate,
+	// so the port is ours to choose (lobsterai-oauth.ts:95-114). That still does
+	// not make an ephemeral port work in a container: it cannot be published in
+	// advance, and the container's 127.0.0.1 is not the browser's. Such a
+	// deployment pins the port and binds 0.0.0.0, which is what the host's own
+	// callback forwarder does.
+	cfg := settings()
 	callback, errListen := oauthcb.Start(oauthcb.Options{
 		Path:        CallbackPath,
 		MinPort:     MinCallbackPort,
+		Port:        cfg.CallbackPort,
+		BindHost:    cfg.CallbackBindHost,
+		PublicHost:  cfg.CallbackPublicHost,
+		PublicPort:  cfg.CallbackPublicPort,
 		TTL:         LoginTimeout,
 		SuccessHTML: callbackSuccessHTML,
 	})

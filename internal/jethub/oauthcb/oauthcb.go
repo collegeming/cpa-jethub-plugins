@@ -28,6 +28,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +44,16 @@ const (
 	// DefaultBindAttempts is how many ephemeral ports Start tries before giving
 	// up. Ports below MinPort are rejected and retried.
 	DefaultBindAttempts = 32
+	// DefaultBindHost is the loopback address. It is correct on a workstation,
+	// where the browser and this process share a loopback interface, and wrong
+	// in a container, where they do not: a published container port is
+	// forwarded to the container's own address, so a 127.0.0.1-only listener is
+	// unreachable through `-p`. Container deployments set "0.0.0.0".
+	DefaultBindHost = "127.0.0.1"
+	// DefaultPublicHost is the host placed in RedirectURI(). The browser always
+	// dials the machine it runs on, so this stays "127.0.0.1" even when the
+	// listener binds "0.0.0.0".
+	DefaultPublicHost = "127.0.0.1"
 	// readHeaderTimeout bounds a slow-loris callback request.
 	readHeaderTimeout = 10 * time.Second
 	// resultBuffer is the number of callbacks retained before the oldest is
@@ -76,6 +88,7 @@ type Options struct {
 	// "/oauth/callback". Required; every other path returns 404.
 	Path string
 	// MinPort rejects ephemeral ports below it. Defaults to DefaultMinPort.
+	// Ignored when Port is set.
 	MinPort int
 	// TTL bounds the wait for a callback. Defaults to DefaultTTL.
 	TTL time.Duration
@@ -84,11 +97,36 @@ type Options struct {
 	// instead.
 	RedirectURL string
 	// BindAttempts is the number of ephemeral ports to try before failing.
-	// Defaults to DefaultBindAttempts.
+	// Defaults to DefaultBindAttempts. Ignored when Port is set.
 	BindAttempts int
 	// SuccessHTML overrides the 200 page body served when RedirectURL is empty.
 	// The built-in page is used when empty.
 	SuccessHTML string
+	// BindHost is the local address the listener binds, e.g. "0.0.0.0".
+	// Defaults to DefaultBindHost ("127.0.0.1"), which only works when the
+	// browser and this process share a loopback interface — never the case when
+	// CPA runs in a container. A container deployment must bind "0.0.0.0" (the
+	// same choice the host's own callback forwarder makes) and publish the port.
+	BindHost string
+	// Port pins the listener to an exact TCP port instead of an ephemeral one.
+	// A published port is only reachable from the browser when it is known in
+	// advance, so a container deployment must set it. Zero means ephemeral.
+	//
+	// A pinned port is a single attempt: if it is taken, Start fails rather than
+	// silently moving to a port the browser was not told about.
+	Port int
+	// PreferredPort is tried before falling back to an ephemeral port. Use it
+	// for a vendor's documented port when a different port is still acceptable,
+	// which is how the reference implementations treat 18080: preferred, with a
+	// random fallback on EADDRINUSE/EACCES. Ignored when Port is set.
+	PreferredPort int
+	// PublicHost and PublicPort are the address placed in RedirectURI(), i.e.
+	// the address the BROWSER must use. They default to BindHost and the bound
+	// port. They exist because the bind address and the browser-visible address
+	// differ: a container binds "0.0.0.0" but the browser still dials
+	// "127.0.0.1" on the host side of the published port.
+	PublicHost string
+	PublicPort int
 }
 
 // Server is one loopback callback listener. It is safe for concurrent use.
@@ -97,6 +135,10 @@ type Server struct {
 	redirectURL string
 	successHTML string
 	expiresAt   time.Time
+
+	bindHost   string
+	publicHost string
+	publicPort int
 
 	port       int
 	listener   net.Listener
@@ -108,7 +150,14 @@ type Server struct {
 	closeErr  error
 }
 
-// Start binds 127.0.0.1 on a port >= MinPort and begins serving.
+// Start binds the callback listener and begins serving.
+//
+// With no Options.Port it behaves like the original implementation: bind
+// 127.0.0.1 on an ephemeral port >= MinPort. That only works when the browser
+// and this process share a loopback interface, which is never true when CPA
+// runs in a container — there the container's 127.0.0.1 is not the host's and
+// an ephemeral port cannot be published in advance. Such a deployment sets
+// Port (publish the same port) and BindHost ("0.0.0.0").
 //
 // The returned server owns its listener; callers must Close it (directly or via
 // a session lifetime) to release the port.
@@ -128,12 +177,19 @@ func Start(opts Options) (*Server, error) {
 	if attempts <= 0 {
 		attempts = DefaultBindAttempts
 	}
+	bindHost := strings.TrimSpace(opts.BindHost)
+	if bindHost == "" {
+		bindHost = DefaultBindHost
+	}
 
 	server := &Server{
 		path:        opts.Path,
 		redirectURL: opts.RedirectURL,
 		successHTML: opts.SuccessHTML,
 		expiresAt:   time.Now().Add(ttl),
+		bindHost:    bindHost,
+		publicHost:  strings.TrimSpace(opts.PublicHost),
+		publicPort:  opts.PublicPort,
 		results:     make(chan Result, resultBuffer),
 		closed:      make(chan struct{}),
 	}
@@ -141,9 +197,32 @@ func Start(opts Options) (*Server, error) {
 		server.successHTML = defaultSuccessHTML
 	}
 
+	// A pinned port is a single attempt: retrying would silently move the
+	// listener off the port the browser was told to call.
+	if opts.Port > 0 {
+		listener, errListen := net.Listen("tcp", net.JoinHostPort(bindHost, strconv.Itoa(opts.Port)))
+		if errListen != nil {
+			return nil, fmt.Errorf("bind callback listener on %s:%d: %w", bindHost, opts.Port, errListen)
+		}
+		return server.serve(listener)
+	}
+
+	// A preferred port keeps the vendor's documented value when it is free but
+	// still falls back, which is what the reference implementations do for 18080
+	// (EADDRINUSE/EACCES → random port, trae-oauth.ts:508-535). A failure here is
+	// not fatal: the ephemeral loop below covers it.
+	var preferredErr error
+	if opts.PreferredPort > 0 {
+		listener, errListen := net.Listen("tcp", net.JoinHostPort(bindHost, strconv.Itoa(opts.PreferredPort)))
+		if errListen == nil {
+			return server.serve(listener)
+		}
+		preferredErr = errListen
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		listener, errListen := net.Listen("tcp", "127.0.0.1:0")
+		listener, errListen := net.Listen("tcp", net.JoinHostPort(bindHost, "0"))
 		if errListen != nil {
 			lastErr = errListen
 			break
@@ -159,34 +238,61 @@ func Start(opts Options) (*Server, error) {
 			_ = listener.Close()
 			continue
 		}
-
-		server.port = addr.Port
-		server.listener = listener
-		mux := http.NewServeMux()
-		mux.HandleFunc("/", server.handleCallback)
-		server.httpServer = &http.Server{
-			Handler:           mux,
-			ReadHeaderTimeout: readHeaderTimeout,
-		}
-		go func() {
-			// Serve returns http.ErrServerClosed after Close; nothing to report.
-			_ = server.httpServer.Serve(listener)
-		}()
-		return server, nil
+		return server.serve(listener)
 	}
 
 	if lastErr == nil {
-		lastErr = errors.New("no loopback port available")
+		lastErr = errors.New("no callback port available")
 	}
-	return nil, fmt.Errorf("bind loopback callback listener: %w", lastErr)
+	if preferredErr != nil {
+		lastErr = fmt.Errorf("%w (preferred port %d also unavailable: %v)", lastErr, opts.PreferredPort, preferredErr)
+	}
+	return nil, fmt.Errorf("bind callback listener: %w", lastErr)
 }
 
-// Port is the bound loopback port.
+// serve wires the accepted listener into the HTTP server and records its port.
+// A listener whose address is not a TCP address is unusable, so it is closed
+// and reported rather than returned as a partially built server.
+func (s *Server) serve(listener net.Listener) (*Server, error) {
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = listener.Close()
+		return nil, fmt.Errorf("unexpected listener address %T", listener.Addr())
+	}
+	s.port = addr.Port
+	s.listener = listener
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleCallback)
+	s.httpServer = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: readHeaderTimeout,
+	}
+	go func() {
+		// Serve returns http.ErrServerClosed after Close; nothing to report.
+		_ = s.httpServer.Serve(listener)
+	}()
+	return s, nil
+}
+
+// Port is the bound port.
 func (s *Server) Port() int { return s.port }
 
-// RedirectURI is the loopback URL the portal must call back.
+// RedirectURI is the URL the portal must call back.
+//
+// The host defaults to 127.0.0.1 because vendor portals require a loopback
+// redirect. Under Docker the published port makes the HOST's 127.0.0.1 reach
+// the container listener, so this stays correct as long as the published port
+// equals the bound port.
 func (s *Server) RedirectURI() string {
-	return fmt.Sprintf("http://127.0.0.1:%d%s", s.port, s.path)
+	host := s.publicHost
+	if host == "" {
+		host = DefaultPublicHost
+	}
+	port := s.publicPort
+	if port <= 0 {
+		port = s.port
+	}
+	return fmt.Sprintf("http://%s:%d%s", host, port, s.path)
 }
 
 // ExpiresAt is the instant Wait stops accepting callbacks.

@@ -242,9 +242,25 @@ type Config struct {
 	RotateMachineID bool
 	// ModelCacheTTLMS is how long a discovered catalog is reused.
 	ModelCacheTTLMS int
-	// CallbackPort is the preferred loopback callback port (the floor passed to
-	// the shared callback listener).
+	// CallbackPort pins the loopback callback listener to an exact port. The
+	// TRAE portal echoes `auth_callback_url` verbatim, so the port is ours to
+	// choose.
+	//
+	// Zero (the default) keeps the reference behaviour: prefer 18080 and fall
+	// back to any free port at or above it. An explicit value pins the listener
+	// and fails if the port is taken — which is what a container deployment
+	// needs, because the port must match the published mapping and a silent
+	// fallback would hand the browser an unroutable URL.
 	CallbackPort int
+	// CallbackBindHost is the local address the listener binds. Defaults to
+	// 127.0.0.1; a container deployment must use 0.0.0.0 so the published port
+	// reaches it.
+	CallbackBindHost string
+	// CallbackPublicHost and CallbackPublicPort describe the address the
+	// BROWSER dials. Defaults to 127.0.0.1 and the bound port, which is correct
+	// for a published container port.
+	CallbackPublicHost string
+	CallbackPublicPort int
 	// LoginTimeoutMS bounds an interactive sign-in.
 	LoginTimeoutMS int
 	// RequestTimeoutMS bounds the control-plane requests (chat streams are not
@@ -265,7 +281,7 @@ func DefaultConfig() Config {
 		MaxHistoryChars:     DefaultMaxHistoryChars,
 		RotateMachineID:     false,
 		ModelCacheTTLMS:     DefaultModelCacheTTLMS,
-		CallbackPort:        DefaultCallbackPort,
+		CallbackPort:        0,
 		LoginTimeoutMS:      DefaultLoginTimeoutMS,
 		RequestTimeoutMS:    DefaultRequestTimeoutMS,
 	}
@@ -312,6 +328,9 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.RotateMachineID = coerceBool(raw["rotate_machine_id"], cfg.RotateMachineID)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
 	cfg.CallbackPort = coerceInt(raw["callback_port"], cfg.CallbackPort)
+	cfg.CallbackBindHost = coerceString(raw["callback_bind_host"], cfg.CallbackBindHost)
+	cfg.CallbackPublicHost = coerceString(raw["callback_public_host"], cfg.CallbackPublicHost)
+	cfg.CallbackPublicPort = coerceInt(raw["callback_public_port"], cfg.CallbackPublicPort)
 	cfg.LoginTimeoutMS = coerceInt(raw["login_timeout_ms"], cfg.LoginTimeoutMS)
 	cfg.RequestTimeoutMS = coerceInt(raw["request_timeout_ms"], cfg.RequestTimeoutMS)
 	return cfg
@@ -442,7 +461,13 @@ func ConfigFields() []configField {
 		{Name: "model_cache_ttl_ms", Type: "integer",
 			Description: "远端模型目录缓存时长，毫秒（默认 30000）"},
 		{Name: "callback_port", Type: "integer",
-			Description: "登录回调端口下限（默认 18080）。端口会被写入 auth_callback_url，因此实际端口不同也能完成登录"},
+			Description: "登录回调端口：留空=优先 18080 并自动改用其它空闲端口（仅本机部署可用）；容器部署填固定端口并在 compose 中发布同名端口"},
+		{Name: "callback_bind_host", Type: "string",
+			Description: "回调监听绑定的本机地址（容器部署填 0.0.0.0，默认 127.0.0.1）"},
+		{Name: "callback_public_host", Type: "string",
+			Description: "浏览器访问回调时使用的主机名（默认 127.0.0.1）"},
+		{Name: "callback_public_port", Type: "integer",
+			Description: "浏览器访问回调时使用的端口（默认与 callback_port 相同，仅当宿主机映射端口不同时填写）"},
 		{Name: "login_timeout_ms", Type: "integer",
 			Description: "交互式登录的等待上限，毫秒（默认 600000）"},
 		{Name: "request_timeout_ms", Type: "integer",

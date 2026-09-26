@@ -75,17 +75,33 @@ func startLoginSession(cfg Config) (*loginSession, error) {
 	if ttl <= 0 {
 		ttl = DefaultLoginTimeoutMS * time.Millisecond
 	}
-	// TRAE's portal prefers 127.0.0.1:18080 (trae-oauth.ts:40). oauthcb allocates
-	// an ephemeral port and only offers a floor, so the configured port is passed
-	// as MinPort: the callback URL travels inside the login URL as
-	// `auth_callback_url`, which is why a different bound port still works
-	// (trae-oauth.ts:508-535).
-	minPort := cfg.CallbackPort
-	callback, errListen := oauthcb.Start(oauthcb.Options{
-		Path:    CallbackPath,
-		MinPort: minPort,
-		TTL:     ttl,
-	})
+	// TRAE's portal accepts a full `auth_callback_url` and echoes it verbatim
+	// (trae-oauth.ts:115, :508-535), so the port is ours to choose. 18080 is the
+	// vendor's documented preference, not a constraint — the source falls back to
+	// a random port on EADDRINUSE/EACCES.
+	//
+	// An explicit callback_port pins the listener, which is what a container
+	// deployment needs: the port must match the published mapping, so silently
+	// moving to a random one would hand the browser an unroutable URL. Left at 0
+	// the historical behaviour stands — prefer 18080, otherwise any port >= it.
+	//
+	// Either way a container deployment also sets callback_bind_host=0.0.0.0,
+	// because the container's 127.0.0.1 is not the browser's. That is the same
+	// choice the host's own callback forwarder makes.
+	options := oauthcb.Options{
+		Path:       CallbackPath,
+		MinPort:    DefaultCallbackPort,
+		BindHost:   cfg.CallbackBindHost,
+		PublicHost: cfg.CallbackPublicHost,
+		PublicPort: cfg.CallbackPublicPort,
+		TTL:        ttl,
+	}
+	if cfg.CallbackPort > 0 {
+		options.Port = cfg.CallbackPort
+	} else {
+		options.PreferredPort = DefaultCallbackPort
+	}
+	callback, errListen := oauthcb.Start(options)
 	if errListen != nil {
 		return nil, abiboot.Errorf("callback_listen",
 			"TRAE 回调端口无法监听（%v）；端口可能已被其它程序占用，请释放后重试", errListen)

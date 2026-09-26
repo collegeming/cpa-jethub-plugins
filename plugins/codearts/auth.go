@@ -54,8 +54,8 @@ func authDataFor(credential *Credential, fileName string) (pluginapi.AuthData, e
 		Attributes: map[string]string{
 			"access_key_id": credential.AccessKeyID,
 			"account":       label,
-			"credential":  ProviderKey,
-			"refreshable": boolString(credential.Refreshable()),
+			"credential":    ProviderKey,
+			"refreshable":   boolString(credential.Refreshable()),
 		},
 		NextRefreshAfter: credential.Expiry().Add(-refreshLead),
 	}, nil

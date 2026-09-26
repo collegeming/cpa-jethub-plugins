@@ -92,10 +92,21 @@ func startLoginSession(flow string) (*loginSession, error) {
 		session.KeyPair = keyPair
 	}
 
+	// The CodeArts portal derives host and path from the `port` parameter we
+	// send, so there is no way to point the browser at the host's own callback
+	// endpoint: this listener is the only option. That makes the bind address a
+	// deployment concern — under Docker the container's 127.0.0.1 is not the
+	// browser's, and an ephemeral port cannot be published in advance, so such a
+	// deployment pins the port and binds 0.0.0.0.
+	cfg := settings()
 	options := oauthcb.Options{
-		Path:    LegacyCallbackPath,
-		MinPort: minCallbackPort,
-		TTL:     loginTTL,
+		Path:       LegacyCallbackPath,
+		MinPort:    minCallbackPort,
+		TTL:        loginTTL,
+		Port:       cfg.CallbackPort,
+		BindHost:   cfg.CallbackBindHost,
+		PublicHost: cfg.CallbackPublicHost,
+		PublicPort: cfg.CallbackPublicPort,
 	}
 	if flow == LoginFlowOAuth {
 		options.Path = OAuthRedirectPath

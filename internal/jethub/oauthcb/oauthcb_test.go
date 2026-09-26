@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -209,6 +210,129 @@ func TestStartAcceptsZeroMinPortAndTTL(t *testing.T) {
 	}
 	if remaining := time.Until(server.ExpiresAt()); remaining < DefaultTTL-time.Second {
 		t.Fatalf("ExpiresAt - now = %v, want about %v", remaining, DefaultTTL)
+	}
+}
+
+// busyPort returns a TCP port that is currently held open, plus a release
+// function. Tests use it to prove how a pinned and a preferred port react to a
+// conflict.
+func busyPort(t *testing.T) (int, func()) {
+	t.Helper()
+	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
+	if errListen != nil {
+		t.Fatalf("reserve port: %v", errListen)
+	}
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = listener.Close()
+		t.Fatalf("reserve port: unexpected addr %T", listener.Addr())
+	}
+	return addr.Port, func() { _ = listener.Close() }
+}
+
+// TestPinnedPortBindsExactly is the container contract. A container deployment
+// can only reach the callback through a published port, so the bound port has to
+// be the one the user mapped — not merely a floor.
+func TestPinnedPortBindsExactly(t *testing.T) {
+	port, release := busyPort(t)
+	release() // Start needs it free; the port number stays known.
+
+	server, err := Start(Options{
+		Path:     "/oauth/callback",
+		Port:     port,
+		BindHost: "0.0.0.0",
+		TTL:      5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start with pinned port %d: %v", port, err)
+	}
+	defer func() { _ = server.Close() }()
+
+	if server.Port() != port {
+		t.Fatalf("Port() = %d, want the pinned %d", server.Port(), port)
+	}
+
+	// The browser still dials loopback even though the listener binds the
+	// wildcard address: a published port forwards to the container, and the
+	// vendor portals only accept a loopback redirect. Getting this wrong is the
+	// whole bug being fixed, so it is asserted rather than assumed.
+	want := "http://127.0.0.1:" + itoa(port) + "/oauth/callback"
+	if got := server.RedirectURI(); got != want {
+		t.Fatalf("RedirectURI() = %q, want %q", got, want)
+	}
+
+	response, errGet := noRedirectClient().Get(want + "?code=PINNED")
+	if errGet != nil {
+		t.Fatalf("GET pinned callback: %v", errGet)
+	}
+	_ = response.Body.Close()
+	result, errWait := server.Wait(context.Background())
+	if errWait != nil {
+		t.Fatalf("Wait: %v", errWait)
+	}
+	if result.Code != "PINNED" {
+		t.Fatalf("Code = %q, want PINNED", result.Code)
+	}
+}
+
+// TestPinnedPortFailsLoudlyWhenTaken proves a pinned port is a single attempt. A
+// silent fallback would leave the login page advertising a URL that nothing is
+// listening on, which is far harder to diagnose than a bind error.
+func TestPinnedPortFailsLoudlyWhenTaken(t *testing.T) {
+	port, release := busyPort(t)
+	defer release()
+
+	if _, err := Start(Options{Path: "/oauth/callback", Port: port}); err == nil {
+		t.Fatalf("Start on busy pinned port %d succeeded, want error", port)
+	}
+}
+
+// TestPreferredPortFallsBackWhenTaken is the workstation contract: the vendor's
+// documented port is a preference, and the reference implementation falls back
+// to a random port on EADDRINUSE (trae-oauth.ts:508-535).
+func TestPreferredPortFallsBackWhenTaken(t *testing.T) {
+	port, release := busyPort(t)
+	defer release()
+
+	server, err := Start(Options{
+		Path:          "/oauth/callback",
+		PreferredPort: port,
+		MinPort:       1,
+		TTL:           5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start with busy preferred port %d: %v", port, err)
+	}
+	defer func() { _ = server.Close() }()
+
+	if server.Port() == port {
+		t.Fatalf("Port() = %d, want a fallback port distinct from the busy %d", server.Port(), port)
+	}
+	if server.Port() <= 0 {
+		t.Fatalf("Port() = %d, want a real port", server.Port())
+	}
+}
+
+// TestPublicAddressOverridesRedirectURI covers the split between where the
+// listener binds and what the browser dials, e.g. a host that maps 443 onto an
+// unprivileged container port.
+func TestPublicAddressOverridesRedirectURI(t *testing.T) {
+	server, err := Start(Options{
+		Path:       "/auth/callback",
+		Port:       0,
+		BindHost:   "0.0.0.0",
+		PublicHost: "auth.example.test",
+		PublicPort: 443,
+		TTL:        5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = server.Close() }()
+
+	want := "http://auth.example.test:443/auth/callback"
+	if got := server.RedirectURI(); got != want {
+		t.Fatalf("RedirectURI() = %q, want %q", got, want)
 	}
 }
 

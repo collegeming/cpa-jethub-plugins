@@ -119,6 +119,24 @@ type Config struct {
 	RequestTimeoutMS int
 	// DailyCheckin enables the management check-in routes.
 	DailyCheckin bool
+
+	// CallbackPort pins the loopback callback listener to an exact port. The
+	// LobsterAI portal takes a full `redirect_uri` and echoes `state`, so the
+	// port is ours to choose. Zero (the default) keeps the reference behaviour:
+	// any free ephemeral port.
+	//
+	// A container deployment MUST set this, because an ephemeral port cannot be
+	// published in advance and the container's 127.0.0.1 is not the browser's.
+	CallbackPort int
+	// CallbackBindHost is the local address the listener binds. Defaults to
+	// 127.0.0.1; a container deployment must use 0.0.0.0 so the published port
+	// reaches it.
+	CallbackBindHost string
+	// CallbackPublicHost and CallbackPublicPort describe the address the BROWSER
+	// dials. Defaults to 127.0.0.1 and the bound port, which is correct for a
+	// published container port.
+	CallbackPublicHost string
+	CallbackPublicPort int
 }
 
 // DefaultConfig returns the settings used when the user provides nothing.
@@ -163,6 +181,10 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.DefaultMaxTokens = coerceInt(raw["max_tokens"], cfg.DefaultMaxTokens)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
 	cfg.RequestTimeoutMS = coerceInt(raw["request_timeout_ms"], cfg.RequestTimeoutMS)
+	cfg.CallbackPort = coerceInt(raw["callback_port"], cfg.CallbackPort)
+	cfg.CallbackBindHost = coerceString(raw["callback_bind_host"], cfg.CallbackBindHost)
+	cfg.CallbackPublicHost = coerceString(raw["callback_public_host"], cfg.CallbackPublicHost)
+	cfg.CallbackPublicPort = coerceInt(raw["callback_public_port"], cfg.CallbackPublicPort)
 	return cfg
 }
 
@@ -242,5 +264,9 @@ func ConfigFields() []configField {
 		{Name: "max_tokens", Type: "integer", Description: "请求未指定 max_tokens 且远端模型未声明 maxTokens 时使用的默认值（0 = 不下发该字段）"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "动态模型列表缓存时长，毫秒"},
 		{Name: "daily_checkin", Type: "boolean", Description: "启用每日签到（/api/client-activities 领取积分）与状态页签到入口"},
+		{Name: "callback_port", Type: "integer", Description: "登录回调固定端口（容器部署必填，并需在 compose 中发布同名端口；0=随机端口，仅本机部署可用）"},
+		{Name: "callback_bind_host", Type: "string", Description: "回调监听绑定的本机地址（容器部署填 0.0.0.0，默认 127.0.0.1）"},
+		{Name: "callback_public_host", Type: "string", Description: "浏览器访问回调时使用的主机名（默认 127.0.0.1）"},
+		{Name: "callback_public_port", Type: "integer", Description: "浏览器访问回调时使用的端口（默认与 callback_port 相同，仅当宿主机映射端口不同时填写）"},
 	}
 }
