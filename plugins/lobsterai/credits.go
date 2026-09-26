@@ -70,6 +70,135 @@ type creditBalance struct {
 	ExpiredTotal float64
 }
 
+// accountQuota is ONE LobsterAI account's own credit and check-in state.
+//
+// A quota field is nil when the provider did not publish it, and the matching
+// error says why. A failed read must render as 未知, never as 0 — 0 would read
+// like "the credits are spent".
+type accountQuota struct {
+	// Entry is the host credential this quota belongs to.
+	Entry pluginapi.HostAuthFileEntry
+	// Credential is nil when the credential itself could not be read;
+	// CredentialErr then explains why and no upstream call was made.
+	Credential    *Credential
+	CredentialErr error
+	// Balance is the account's own credit aggregate, or nil with BalanceErr set.
+	Balance    *creditBalance
+	BalanceErr error
+	// Activity is the account's own daily-activity slot. CheckinDisabled marks
+	// the configured case where check-in is turned off, which is a fact and not
+	// a failure; ActivityErr carries a failed read.
+	Activity        *activitySlot
+	ActivityErr     error
+	CheckinDisabled bool
+}
+
+// collectAccountQuotas reads the credits and activity slot of every account, in
+// host order, one account at a time.
+//
+// Sequential on purpose: each account costs two upstream requests, and the
+// reference panel queries balances one account at a time for the same reason
+// (parallel balance reads are what the provider's risk control reacts to). One
+// account's failure never stops the sweep and never hides another's figures.
+func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntry, cfg Config, clientVersion string) []accountQuota {
+	out := make([]accountQuota, 0, len(accounts))
+	for _, entry := range accounts {
+		quota := accountQuota{Entry: entry}
+		credential, errCredential := credentialOf(h, entry)
+		if errCredential != nil {
+			quota.CredentialErr = errCredential
+			out = append(out, quota)
+			continue
+		}
+		quota.Credential = credential
+		if balance, errBalance := fetchCreditBalance(h, credential); errBalance != nil {
+			quota.BalanceErr = errBalance
+			out = append(out, quota)
+			continue
+		} else {
+			quota.Balance = balance
+		}
+		if !cfg.DailyCheckin {
+			quota.CheckinDisabled = true
+		} else if slot, errSlot := fetchActivitySlot(h, credential, clientVersion); errSlot != nil {
+			quota.ActivityErr = errSlot
+		} else {
+			quota.Activity = slot
+		}
+		out = append(out, quota)
+	}
+	return out
+}
+
+// quotaOf picks one account's quota out of a collected list.
+func quotaOf(quotas []accountQuota, entry pluginapi.HostAuthFileEntry) (accountQuota, bool) {
+	for _, quota := range quotas {
+		if quota.Entry.AuthIndex == entry.AuthIndex && quota.Entry.Name == entry.Name {
+			return quota, true
+		}
+	}
+	return accountQuota{}, false
+}
+
+// quotaJSON renders one account's own figures.
+//
+// The keys are exactly the ones the selected account already publishes under
+// `selected` (credit / credit_error / activity / activity_error), lifted to the
+// entry level, so a consumer that reads the flat document can read one entry of
+// `accounts` with the same code. A failed read emits the reason and NO number.
+func quotaJSON(quota accountQuota) map[string]any {
+	item := map[string]any{
+		"auth_index": quota.Entry.AuthIndex,
+		"name":       quota.Entry.Name,
+		"status":     statusText(quota.Entry),
+	}
+	if label := strings.TrimSpace(quota.Entry.Label); label != "" {
+		item["label"] = label
+	}
+	if quota.CredentialErr != nil {
+		item["error"] = quota.CredentialErr.Error()
+		return item
+	}
+	item["uid"] = quota.Credential.UID
+	item["nickname"] = quota.Credential.Nickname
+	item["refreshable"] = quota.Credential.Refreshable()
+	if expiry, ok := quota.Credential.Expiry(); ok {
+		item["expires_at"] = expiry.UTC().Format(time.RFC3339)
+		item["expired"] = quota.Credential.Expired(0)
+	}
+	switch {
+	case quota.BalanceErr != nil:
+		item["credit_error"] = quota.BalanceErr.Error()
+	case quota.Balance != nil:
+		item["credit"] = map[string]any{
+			"total":         quota.Balance.Total,
+			"expired_total": quota.Balance.ExpiredTotal,
+			"packages":      quota.Balance.Packages,
+		}
+	}
+	switch {
+	case quota.CheckinDisabled:
+		item["checkin_state"] = "disabled"
+	case quota.ActivityErr != nil:
+		item["activity_error"] = quota.ActivityErr.Error()
+	case quota.Activity != nil:
+		item["activity"] = map[string]any{
+			"slot_state":    quota.Activity.SlotState,
+			"activity_code": quota.Activity.ActivityCode,
+		}
+	}
+	return item
+}
+
+// quotaListJSON renders every account's figures, in host order.
+func quotaListJSON(quotas []accountQuota) []map[string]any {
+	out := make([]map[string]any, 0, len(quotas))
+	for _, quota := range quotas {
+		out = append(out, quotaJSON(quota))
+	}
+	return out
+}
+
 // requestJSON performs an authenticated request and parses the JSON body. A
 // non-JSON body is reported with its status and a short snippet instead of a
 // JSON parse error, which is what the reference does and what an operator can

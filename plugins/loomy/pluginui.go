@@ -60,73 +60,85 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		return pluguiPage("Loomy", body...)
 	}
 
-	accountFields := []plugui.Field{
-		{Label: "名称", Value: entry.Name},
-		{Label: "状态", Value: statusText(entry)},
+	// One sweep, one card per account: each card carries that account's own
+	// points, never the selected account's repeated.
+	quotas := collectAccountQuotas(h, accounts, cfg)
+	for _, quota := range quotas {
+		body = append(body, renderQuotaCard(quota, quota.Entry.AuthIndex == entry.AuthIndex))
 	}
-	if entry.AuthIndex != "" {
-		accountFields = append(accountFields, plugui.Field{Label: "索引", Value: entry.AuthIndex})
-	}
+	body = append(body, renderAccountList(accounts, entry.AuthIndex))
 
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		accountFields = append(accountFields, plugui.Field{Label: "凭据", Value: "无法读取：" + errCredential.Error()})
-		body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
-			plugui.Action{Label: "重新登录", Path: "login"},
-			plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery}))
-		return pluguiPage("Loomy", body...)
-	}
-	accountFields = append(accountFields,
-		plugui.Field{Label: "手机号", Value: credential.maskedPhone()},
-		plugui.Field{Label: "用户 ID", Value: emptyText(credential.UserID)},
-		plugui.Field{Label: "有效期至", Value: formatExpiry(credential.Expiry())},
-		plugui.Field{Label: "可自动续期", Value: "否（无 refresh_token，过期只能重新登录）"},
-	)
-	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
-		plugui.Action{Label: "重新登录", Path: "login"},
-		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
-		plugui.Action{Label: "刷新每日额度", Path: "checkin"},
-		plugui.Action{Label: "一次性任务", Path: "onboarding"},
-	))
-
-	body = append(body, pointsCard(h, credential, cfg))
-	body = append(body, catalogueCard(h, credential, cfg))
-
-	if switcher := renderAccountList(accounts, entry.AuthIndex); switcher != "" {
-		body = append(body, switcher)
+	// The catalogue is a property of the selected account's credential, so it
+	// stays a single card for the selected one.
+	if credential, errCredential := credentialOf(h, entry); errCredential == nil {
+		body = append(body, catalogueCard(h, credential, cfg))
 	}
 	return pluguiPage("Loomy", body...)
 }
 
-// pointsCard renders the two point pools.
+// renderQuotaCard renders one account: its identity, its OWN point pools and its
+// own actions.
 //
-// The pools are displayed separately by explicit user requirement
-// (`README.md:1471-1474`); a failed read is shown as a failure and never as 0
-// (trap #11).
-func pointsCard(h *abiboot.Host, credential *Credential, cfg Config) template.HTML {
-	snapshot, errPoints := fetchPoints(h, credential, cfg)
-	switch {
-	case errPoints != nil:
-		return plugui.Card("积分", plugui.Notice("danger", "查询失败："+errPoints.Error()))
-	case snapshot == nil:
-		return plugui.Card("积分", plugui.Notice("warning", "服务端未返回 balance 字段，无法给出积分数字（不显示 0）"))
+// The card title names the account, so ten cards stay tellable apart, and every
+// number shown belongs to the account in the title. The two pools are displayed
+// separately (an explicit user requirement, `README.md:1471-1474`), and a failed
+// read is stated as such — the card never falls back to 0 (trap #11).
+func renderQuotaCard(quota accountQuota, current bool) template.HTML {
+	entry := quota.Entry
+	fields := []plugui.Field{{Label: "状态", Value: statusText(entry)}}
+	if entry.AuthIndex != "" {
+		fields = append(fields, plugui.Field{Label: "索引", Value: entry.AuthIndex})
 	}
-	fields := []plugui.Field{
-		{Label: "永久积分", Value: trimAmount(snapshot.Balance)},
-		{Label: "每日赠送", Value: trimAmount(snapshot.DailyBalance)},
-		{Label: "可用合计", Value: trimAmount(snapshot.Available)},
+	if quota.CredentialErr != nil {
+		fields = append(fields, plugui.Field{Label: "凭据", Value: "无法读取：" + quota.CredentialErr.Error()})
+	} else {
+		fields = append(fields,
+			plugui.Field{Label: "手机号", Value: quota.Credential.maskedPhone()},
+			plugui.Field{Label: "用户 ID", Value: emptyText(quota.Credential.UserID)},
+			plugui.Field{Label: "有效期至", Value: formatExpiry(quota.Credential.Expiry())},
+			plugui.Field{Label: "可自动续期", Value: "否（无 refresh_token，过期只能重新登录）"},
+		)
+		switch {
+		case quota.PointsErr != nil:
+			fields = append(fields, plugui.Field{Label: "积分", Value: "查询失败：" + quota.PointsErr.Error()})
+		case quota.PointsNone:
+			fields = append(fields, plugui.Field{Label: "积分", Value: "服务端未返回 balance 字段，无法给出积分数字（不显示 0）"})
+		default:
+			snapshot := quota.Snapshot
+			fields = append(fields,
+				plugui.Field{Label: "永久积分", Value: trimAmount(snapshot.Balance)},
+				plugui.Field{Label: "每日赠送", Value: trimAmount(snapshot.DailyBalance)},
+				plugui.Field{Label: "可用合计", Value: trimAmount(snapshot.Available)},
+			)
+			if snapshot.DailyQuota != nil {
+				fields = append(fields, plugui.Field{Label: "每日额度", Value: trimAmount(*snapshot.DailyQuota) + "（" + dailyQuotaDescription + "）"})
+			}
+			if snapshot.DailyConsumed != nil {
+				fields = append(fields, plugui.Field{Label: "今日已用", Value: trimAmount(*snapshot.DailyConsumed)})
+			}
+			if snapshot.DailyCycleDate != "" {
+				fields = append(fields, plugui.Field{Label: "额度日期", Value: snapshot.DailyCycleDate})
+			}
+		}
 	}
-	if snapshot.DailyQuota != nil {
-		fields = append(fields, plugui.Field{Label: "每日额度", Value: trimAmount(*snapshot.DailyQuota) + "（" + dailyQuotaDescription + "）"})
+	title := "积分 · " + entry.Name
+	if current {
+		title += "（当前）"
 	}
-	if snapshot.DailyConsumed != nil {
-		fields = append(fields, plugui.Field{Label: "今日已用", Value: trimAmount(*snapshot.DailyConsumed)})
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "刷新每日额度", Path: "checkin", Query: accountQuery(entry), Kind: "primary"},
+		plugui.Action{Label: "一次性任务", Path: "onboarding", Query: accountQuery(entry)},
+		plugui.Action{Label: "重新登录", Path: "login", Query: accountQuery(entry)},
+	)
+}
+
+// accountQuery names one account in a link. It is empty when the host gave the
+// entry no runtime index, so a link never carries a dangling selector.
+func accountQuery(entry pluginapi.HostAuthFileEntry) string {
+	if strings.TrimSpace(entry.AuthIndex) == "" {
+		return ""
 	}
-	if snapshot.DailyCycleDate != "" {
-		fields = append(fields, plugui.Field{Label: "额度日期", Value: snapshot.DailyCycleDate})
-	}
-	return plugui.Card("积分", plugui.Fields(fields...),
-		plugui.Action{Label: "刷新每日额度", Path: "checkin"})
+	return "auth_index=" + entry.AuthIndex
 }
 
 // catalogueCard renders the model catalogue currently in use.
@@ -156,10 +168,11 @@ func catalogueCard(h *abiboot.Host, credential *Credential, cfg Config) template
 }
 
 // renderAccountList renders the switcher across accounts.
+// renderAccountList renders the switcher across accounts.
+//
+// It is rendered for a single account as well, because it carries 新建账号 —
+// the only way to add a SECOND account from this page.
 func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) template.HTML {
-	if len(accounts) < 2 {
-		return ""
-	}
 	fields := make([]plugui.Field, 0, len(accounts))
 	for _, entry := range accounts {
 		marker := ""
@@ -168,7 +181,13 @@ func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) t
 		}
 		fields = append(fields, plugui.Field{Label: entry.Name + marker, Value: statusText(entry)})
 	}
-	return plugui.Card("全部账号（在地址后追加 ?auth_index=<索引> 可切换）", plugui.Fields(fields...))
+	title := "全部账号"
+	if len(accounts) > 1 {
+		title += "（在地址后追加 ?auth_index=<索引> 可切换）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
+	)
 }
 
 // loginActionSession resolves the session a login-page action applies to.

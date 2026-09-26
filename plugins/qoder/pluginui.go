@@ -86,68 +86,91 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		return pluguiPage("Qoder", body...)
 	}
 
-	accountFields := []plugui.Field{
-		{Label: "名称", Value: entry.Name},
-		{Label: "状态", Value: statusText(entry)},
+	// One sweep, one card per account: each card carries that account's own
+	// figures, never the selected account's repeated.
+	quotas := collectAccountQuotas(h, accounts, cfg)
+	for _, quota := range quotas {
+		body = append(body, renderQuotaCard(quota, quota.Entry.AuthIndex == entry.AuthIndex))
 	}
-	if entry.AuthIndex != "" {
-		accountFields = append(accountFields, plugui.Field{Label: "索引", Value: entry.AuthIndex})
-	}
-
-	creditFields := []plugui.Field{}
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		creditFields = append(creditFields, plugui.Field{Label: "凭据", Value: "无法读取：" + errCredential.Error()})
-	} else {
-		accountFields = append(accountFields,
-			plugui.Field{Label: "区域", Value: regionText(credential.regionOr(activeRegion()))},
-			plugui.Field{Label: "有效期至", Value: formatExpiry(credential.ExpiresAt())},
-			plugui.Field{Label: "可自动续期", Value: yesNo(credential.Refreshable())},
-			plugui.Field{Label: "含 uid（加密推理必需）", Value: yesNo(strings.TrimSpace(credential.UID) != "")},
-		)
-		if credential.Nickname != "" {
-			accountFields = append(accountFields, plugui.Field{Label: "用户", Value: credential.Nickname})
-		}
-
-		balance, errBalance := fetchCreditBalance(h, credential, cfg)
-		switch {
-		case errBalance != nil:
-			creditFields = append(creditFields, plugui.Field{Label: "额度", Value: "查询失败：" + errBalance.Error()})
-		case balance == nil:
-			creditFields = append(creditFields, plugui.Field{Label: "额度", Value: "企业版账号不下发额度数字"})
-		default:
-			for _, pkg := range balance.Packages {
-				creditFields = append(creditFields, plugui.Field{
-					Label: pkg.Name,
-					Value: fmt.Sprintf("%s / %s %s", trimNumber(pkg.Remaining), trimNumber(pkg.Total), pkg.Unit),
-				})
-			}
-			creditFields = append(creditFields, plugui.Field{Label: "剩余合计", Value: trimNumber(balance.Total) + " credits"})
-		}
-		if parsed, errCampaigns := loadCampaigns(h, credential, cfg); errCampaigns == nil {
-			creditFields = append(creditFields, plugui.Field{Label: "今日签到", Value: checkinText(parsed)})
-		}
-	}
-
-	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
-		plugui.Action{Label: "领取每日积分", Path: "checkin", Kind: "primary"},
-		plugui.Action{Label: "重新登录", Path: "login"},
-		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
-	))
-	if len(creditFields) > 0 {
-		body = append(body, plugui.Card("额度", plugui.Fields(creditFields...)))
-	}
-	if switcher := renderAccountList(accounts, entry.AuthIndex); switcher != "" {
-		body = append(body, switcher)
-	}
+	body = append(body, renderAccountList(accounts, entry.AuthIndex))
 	return pluguiPage("Qoder", body...)
 }
 
-// renderAccountList renders the switcher across accounts.
-func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) template.HTML {
-	if len(accounts) < 2 {
+// renderQuotaCard renders one account: its identity, its OWN credits and its OWN
+// check-in state, with the two per-account actions.
+//
+// The card title names the account, so ten cards stay tellable apart, and every
+// number shown belongs to the account in the title. An unreadable credential or
+// balance is stated as such — the card never falls back to 0.
+func renderQuotaCard(quota accountQuota, current bool) template.HTML {
+	entry := quota.Entry
+	fields := []plugui.Field{{Label: "状态", Value: statusText(entry)}}
+	if entry.AuthIndex != "" {
+		fields = append(fields, plugui.Field{Label: "索引", Value: entry.AuthIndex})
+	}
+	switch {
+	case quota.CredentialErr != nil:
+		fields = append(fields, plugui.Field{Label: "凭据", Value: "无法读取：" + quota.CredentialErr.Error()})
+	default:
+		fields = append(fields,
+			plugui.Field{Label: "区域", Value: regionText(quota.Credential.regionOr(activeRegion()))},
+			plugui.Field{Label: "有效期至", Value: formatExpiry(quota.Credential.ExpiresAt())},
+			plugui.Field{Label: "可自动续期", Value: yesNo(quota.Credential.Refreshable())},
+			plugui.Field{Label: "含 uid（加密推理必需）", Value: yesNo(strings.TrimSpace(quota.Credential.UID) != "")},
+		)
+		if quota.Credential.Nickname != "" {
+			fields = append(fields, plugui.Field{Label: "用户", Value: quota.Credential.Nickname})
+		}
+		switch {
+		case quota.BalanceErr != nil:
+			// Unknown, not zero: the read failed, so no number is shown.
+			fields = append(fields, plugui.Field{Label: "额度", Value: "查询失败：" + quota.BalanceErr.Error()})
+		case quota.BalanceNone:
+			fields = append(fields, plugui.Field{Label: "额度", Value: "企业版账号不下发额度数字"})
+		default:
+			for _, pkg := range quota.Balance.Packages {
+				label := pkg.Name
+				if strings.TrimSpace(label) == "" {
+					label = "额度包"
+				}
+				fields = append(fields, plugui.Field{
+					Label: label,
+					Value: fmt.Sprintf("%s / %s %s", trimNumber(pkg.Remaining), trimNumber(pkg.Total), pkg.Unit),
+				})
+			}
+			fields = append(fields, plugui.Field{Label: "剩余合计", Value: trimNumber(quota.Balance.Total) + " credits"})
+		}
+		switch {
+		case quota.CampaignsErr != nil:
+			fields = append(fields, plugui.Field{Label: "今日签到", Value: "查询失败：" + quota.CampaignsErr.Error()})
+		case quota.Campaigns != nil:
+			fields = append(fields, plugui.Field{Label: "今日签到", Value: checkinText(quota.Campaigns)})
+		}
+	}
+	title := "额度 · " + entry.Name
+	if current {
+		title += "（当前）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "领取每日积分", Path: "checkin", Query: accountQuery(entry), Kind: "primary"},
+		plugui.Action{Label: "重新登录", Path: "login", Query: accountQuery(entry)},
+	)
+}
+
+// accountQuery names one account in a link. It is empty when the host gave the
+// entry no runtime index, so a link never carries a dangling selector.
+func accountQuery(entry pluginapi.HostAuthFileEntry) string {
+	if strings.TrimSpace(entry.AuthIndex) == "" {
 		return ""
 	}
+	return "auth_index=" + entry.AuthIndex
+}
+
+// renderAccountList renders the switcher across accounts.
+//
+// It is rendered for a single account as well, because it carries 新建账号 —
+// the only way to add a SECOND account from this page.
+func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) template.HTML {
 	fields := make([]plugui.Field, 0, len(accounts))
 	for _, entry := range accounts {
 		marker := ""
@@ -156,7 +179,13 @@ func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) t
 		}
 		fields = append(fields, plugui.Field{Label: entry.Name + marker, Value: statusText(entry)})
 	}
-	return plugui.Card("全部账号（在地址后追加 ?auth_index=<索引> 可切换）", plugui.Fields(fields...))
+	title := "全部账号"
+	if len(accounts) > 1 {
+		title += "（在地址后追加 ?auth_index=<索引> 可切换）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
+	)
 }
 
 // renderLoginPage renders the two-step device-code login.

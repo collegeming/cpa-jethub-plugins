@@ -40,6 +40,11 @@ type httpRoute struct {
 	Headers http.Header
 	// Err makes the transport itself fail instead of answering.
 	Err error
+	// HeaderName/HeaderValue additionally require a request header to contain a
+	// value, which is how a route is bound to ONE account when a test holds
+	// several (the credential travels in the Authorization header).
+	HeaderName  string
+	HeaderValue string
 }
 
 // savedAuth is one host.auth.save call.
@@ -172,6 +177,9 @@ func (f *fakeHost) handleHTTPDo(payload []byte) (any, error) {
 			continue
 		}
 		if route.Match != "" && !strings.Contains(request.URL, route.Match) {
+			continue
+		}
+		if route.HeaderName != "" && !strings.Contains(request.Headers.Get(route.HeaderName), route.HeaderValue) {
 			continue
 		}
 		if route.Err != nil {

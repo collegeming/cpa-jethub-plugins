@@ -255,11 +255,13 @@ func TestHandleManagementStatusPage(t *testing.T) {
 			t.Fatalf("status page does not contain %q:\n%s", want, firstLines(body, 40))
 		}
 	}
-	// Actions must be GET links carrying a query string, not POST forms.
+	// Actions must be GET links carrying a query string, not POST forms. The
+	// per-account actions name their account, so the check-in link is
+	// `checkin?auth_index=…`.
 	if strings.Contains(body, "<form") {
 		t.Fatalf("the page must not rely on forms; the host dispatches resource routes as GET only")
 	}
-	if !strings.Contains(body, `href="checkin"`) && !strings.Contains(body, `href="?`) {
+	if !strings.Contains(body, `href="checkin?`) && !strings.Contains(body, `href="?`) {
 		t.Fatalf("no action links found in:\n%s", firstLines(body, 40))
 	}
 	if strings.Contains(body, `method="post"`) {

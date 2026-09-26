@@ -16,6 +16,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -56,18 +57,23 @@ func supportsCheckin(product productConfig) bool {
 }
 
 // checkinStatus mirrors `CheckinStatus` (credits.ts:64-87).
+//
+// The JSON names are the upstream field names, which is also what a consumer of
+// the status document reads (`checkin.today_checked_in`, `checkin.streak_days`);
+// without the tags the struct would serialise as `TodayCheckedIn` and the hub's
+// documented reader would silently find nothing.
 type checkinStatus struct {
-	Active         bool
-	TodayCheckedIn bool
-	StreakDays     float64
-	DailyCredit    float64
-	TodayCredit    float64
-	IsStreakDay    bool
-	TotalCredits   float64
-	CheckinDates   []string
-	ActivityName   string
-	ThemeName      string
-	EndTime        string
+	Active         bool     `json:"active"`
+	TodayCheckedIn bool     `json:"today_checked_in"`
+	StreakDays     float64  `json:"streak_days"`
+	DailyCredit    float64  `json:"daily_credit"`
+	TodayCredit    float64  `json:"today_credit"`
+	IsStreakDay    bool     `json:"is_streak_day"`
+	TotalCredits   float64  `json:"total_credits"`
+	CheckinDates   []string `json:"checkin_dates"`
+	ActivityName   string   `json:"activity_name"`
+	ThemeName      string   `json:"theme_name"`
+	EndTime        string   `json:"end_time"`
 }
 
 // creditPackage mirrors `CreditPackage` (credits.ts:120-145).
@@ -214,16 +220,28 @@ func truthy(value any) bool {
 // available" and must be distinguished from "no check-in today".
 // credits.ts:298-323.
 func fetchCheckinStatus(h *abiboot.Host, credential *Credential, product productConfig) *checkinStatus {
+	status, _ := fetchCheckinStatusReason(h, credential, product)
+	return status
+}
+
+// fetchCheckinStatusReason is fetchCheckinStatus with the reason a status could
+// not be read. The per-account status document must report WHY an account has no
+// check-in state instead of showing a bare "查询失败".
+func fetchCheckinStatusReason(h *abiboot.Host, credential *Credential, product productConfig) (*checkinStatus, string) {
 	body, errMessage := postJSON(h, CheckinActivityStatusPath, credential, product)
 	if errMessage != "" {
-		return nil
+		return nil, errMessage
 	}
-	if readNumber(body, "code") != 0 {
-		return nil
+	if code := readNumber(body, "code"); code != 0 {
+		message := readString(body, "msg")
+		if message == "" {
+			message = fmt.Sprintf("上游返回 code=%v", code)
+		}
+		return nil, message
 	}
 	data, ok := body["data"].(map[string]any)
 	if !ok {
-		return nil
+		return nil, "签到状态响应缺少 data 字段"
 	}
 	return &checkinStatus{
 		Active:         readBool(data, "active"),
@@ -237,7 +255,7 @@ func fetchCheckinStatus(h *abiboot.Host, credential *Credential, product product
 		ActivityName:   readString(data, "activity_name"),
 		ThemeName:      readString(data, "theme_name"),
 		EndTime:        readString(data, "end_time"),
-	}
+	}, ""
 }
 
 // claimDailyCheckin claims the daily credits. Idempotence is a body field, not
@@ -354,28 +372,40 @@ func roundCredits(value float64) float64 {
 // `data.Response.Data.Accounts[]` — two levels deeper than the check-in
 // endpoint, which is the easiest thing to get wrong here (credits.ts:436-438).
 func fetchCreditBalance(h *abiboot.Host, credential *Credential, product productConfig) *creditBalance {
+	balance, _ := fetchCreditBalanceReason(h, credential, product)
+	return balance
+}
+
+// fetchCreditBalanceReason is fetchCreditBalance with the reason a balance could
+// not be read: a nil balance must never be rendered as 0 credits, and the reason
+// is what the per-account document and page show instead.
+func fetchCreditBalanceReason(h *abiboot.Host, credential *Credential, product productConfig) (*creditBalance, string) {
 	body, errMessage := postJSON(h, UserResourcePath, credential, product)
 	if errMessage != "" {
-		return nil
+		return nil, errMessage
 	}
-	if readNumber(body, "code") != 0 {
-		return nil
+	if code := readNumber(body, "code"); code != 0 {
+		message := readString(body, "msg")
+		if message == "" {
+			message = fmt.Sprintf("上游返回 code=%v", code)
+		}
+		return nil, message
 	}
 	outer, okOuter := body["data"].(map[string]any)
 	if !okOuter {
-		return nil
+		return nil, "积分响应缺少 data 字段"
 	}
 	response, okResponse := outer["Response"].(map[string]any)
 	if !okResponse {
-		return nil
+		return nil, "积分响应缺少 data.Response 字段"
 	}
 	inner, okInner := response["Data"].(map[string]any)
 	if !okInner {
-		return nil
+		return nil, "积分响应缺少 data.Response.Data 字段"
 	}
 	accounts, okAccounts := inner["Accounts"].([]any)
 	if !okAccounts {
-		return nil
+		return nil, "积分响应缺少 Accounts 列表"
 	}
 	packages := make([]creditPackage, 0, len(accounts))
 	for _, item := range accounts {
@@ -394,7 +424,140 @@ func fetchCreditBalance(h *abiboot.Host, credential *Credential, product product
 		}
 		expiredTotal += pkg.Remaining
 	}
-	return &creditBalance{Total: roundCredits(total), Packages: packages, ExpiredTotal: roundCredits(expiredTotal)}
+	return &creditBalance{Total: roundCredits(total), Packages: packages, ExpiredTotal: roundCredits(expiredTotal)}, ""
+}
+
+// ── Per-account quota ──
+
+// accountQuota is ONE CodeBuddy/WorkBuddy account's own credit and check-in
+// state.
+//
+// A quota field is nil when the provider did not publish it, and the matching
+// reason says why. A failed read must render as 未知, never as 0 — 0 would read
+// like "the credits are spent".
+type accountQuota struct {
+	// Entry is the host credential this quota belongs to.
+	Entry pluginapi.HostAuthFileEntry
+	// Credential is nil when the credential itself could not be read;
+	// CredentialErr then explains why and no upstream call was made.
+	Credential    *Credential
+	CredentialErr error
+	// Product is the product THIS account was created against; it decides the
+	// endpoint and whether a check-in endpoint exists at all.
+	Product productConfig
+	// Balance is the account's own credit aggregate, or nil with BalanceErr set.
+	Balance    *creditBalance
+	BalanceErr string
+	// Checkin is the account's own daily check-in state. CheckinSupported is
+	// false for the products whose backend has no check-in endpoint (国际版),
+	// which is a fact about the product rather than a failure; CheckinErr then
+	// carries a failed read.
+	Checkin          *checkinStatus
+	CheckinErr       string
+	CheckinSupported bool
+}
+
+// collectAccountQuotas reads the credits and check-in state of every account, in
+// host order, one account at a time.
+//
+// Sequential on purpose: each account costs up to two upstream requests, and the
+// reference panel queries balances one account at a time for the same reason
+// (parallel balance reads are what the provider's risk control reacts to). One
+// account's failure never stops the sweep and never hides another's figures.
+func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntry) []accountQuota {
+	out := make([]accountQuota, 0, len(accounts))
+	for _, entry := range accounts {
+		quota := accountQuota{Entry: entry}
+		credential, errCredential := credentialOf(h, entry)
+		if errCredential != nil {
+			quota.CredentialErr = errCredential
+			out = append(out, quota)
+			continue
+		}
+		quota.Credential = credential
+		product := productForCredential(credential)
+		quota.Product = product
+		quota.CheckinSupported = supportsCheckin(product)
+		balance, balanceErr := fetchCreditBalanceReason(h, credential, product)
+		quota.Balance, quota.BalanceErr = balance, balanceErr
+		if quota.CheckinSupported {
+			status, statusErr := fetchCheckinStatusReason(h, credential, product)
+			quota.Checkin, quota.CheckinErr = status, statusErr
+		}
+		out = append(out, quota)
+	}
+	return out
+}
+
+// quotaOf picks one account's quota out of a collected list.
+func quotaOf(quotas []accountQuota, entry pluginapi.HostAuthFileEntry) (accountQuota, bool) {
+	for _, quota := range quotas {
+		if quota.Entry.AuthIndex == entry.AuthIndex && quota.Entry.Name == entry.Name {
+			return quota, true
+		}
+	}
+	return accountQuota{}, false
+}
+
+// quotaJSON renders one account's own figures.
+//
+// The keys are exactly the ones the selected account already publishes at the
+// top level (credits / checkin / status / expires_at / refreshable), so a
+// consumer that reads the flat document can read one entry of `accounts` with
+// the same code. A failed read emits the reason under credit_error /
+// checkin_error and NO number at all.
+func quotaJSON(quota accountQuota) map[string]any {
+	item := map[string]any{
+		"auth_index": quota.Entry.AuthIndex,
+		"name":       quota.Entry.Name,
+		"status":     statusText(quota.Entry),
+		"disabled":   quota.Entry.Disabled,
+	}
+	if label := strings.TrimSpace(quota.Entry.Label); label != "" {
+		item["label"] = label
+	}
+	if quota.CredentialErr != nil {
+		item["error"] = quota.CredentialErr.Error()
+		return item
+	}
+	item["account_product"] = quota.Product.ConfigValue
+	if expiry := quota.Credential.Expiry(); !expiry.IsZero() {
+		item["expires_at"] = expiry.UTC().Format(time.RFC3339)
+	}
+	item["refreshable"] = quota.Credential.Refreshable()
+	if quota.Balance != nil {
+		item["credits"] = map[string]any{
+			"total":         quota.Balance.Total,
+			"expired_total": quota.Balance.ExpiredTotal,
+			"packages":      quota.Balance.Packages,
+		}
+	}
+	if quota.BalanceErr != "" {
+		item["credit_error"] = quota.BalanceErr
+	}
+	switch {
+	case !quota.CheckinSupported:
+		// The product's backend has no check-in endpoint: say so instead of
+		// leaving the field to look like a failure (or inventing an inactive
+		// activity).
+		item["checkin_supported"] = false
+	case quota.Checkin != nil:
+		item["checkin"] = quota.Checkin
+		item["checkin_supported"] = true
+	case quota.CheckinErr != "":
+		item["checkin_error"] = quota.CheckinErr
+		item["checkin_supported"] = true
+	}
+	return item
+}
+
+// quotaListJSON renders every account's figures, in host order.
+func quotaListJSON(quotas []accountQuota) []map[string]any {
+	out := make([]map[string]any, 0, len(quotas))
+	for _, quota := range quotas {
+		out = append(out, quotaJSON(quota))
+	}
+	return out
 }
 
 // ── quota.* 方法 ──

@@ -56,6 +56,12 @@ type channelReport struct {
 	// when its document does not carry one. A disagreement between the two
 	// numbers is shown rather than hidden.
 	Reported int
+	// AccountDetail is the per-account list the provider's own document carried,
+	// each entry with that account's own figures. It is what turns "one balance
+	// per channel" into one line per account: a provider that reports its full
+	// account list shows every balance it knows, and a provider that reports
+	// none contributes no lines instead of a fabricated one.
+	AccountDetail []channelAccount
 	// Status is the one-line summary of the provider's own document, or the
 	// reason there is none: every row carries text, so a failed probe can never
 	// render as a blank cell. Error holds the detail behind that reason.
@@ -63,6 +69,44 @@ type channelReport struct {
 	// Error explains a state other than channelReady.
 	Error string
 }
+
+// channelAccount is one account as the provider's OWN status document reported
+// it: its identity plus the figures that provider published for that account.
+type channelAccount struct {
+	AuthIndex string
+	Name      string
+	Label     string
+	// Figures is the account's own numbers, already phrased in the provider's
+	// own vocabulary ("剩余 1739.5 / 2500", "积分 120"), in a fixed order. It is
+	// empty when the document published no figure this page knows how to read —
+	// which is reported as no line, never as a zero.
+	Figures []string
+}
+
+// display is the name the overview shows for one account. It walks down to the
+// auth index and finally to the position, so a provider entry without a name
+// still gets a row instead of collapsing into a blank cell.
+func (a channelAccount) display(position int) string {
+	switch {
+	case strings.TrimSpace(a.Name) != "":
+		return strings.TrimSpace(a.Name)
+	case strings.TrimSpace(a.Label) != "":
+		return strings.TrimSpace(a.Label)
+	case strings.TrimSpace(a.AuthIndex) != "":
+		return strings.TrimSpace(a.AuthIndex)
+	default:
+		return fmt.Sprintf("账号 %d", position+1)
+	}
+}
+
+// accountFigureCount is how many facts one account line may carry. Two is what
+// every provider needs (a balance and a check-in state); the third is the
+// provider's own error, which must never be crowded out.
+const accountFigureCap = 3
+
+// accountLinesPerChannel bounds how many accounts one row lists. Ten accounts
+// must not turn a row into a wall of text: the rest are counted.
+const accountLinesPerChannel = 5
 
 // URL is the full page of this channel.
 //
@@ -161,8 +205,54 @@ func probeChannel(r *runner, entry target, ledger []accountRef) channelReport {
 	if reported, _, ok := reportedAccounts(document); ok {
 		report.Reported = reported
 	}
+	report.AccountDetail = accountDetails(document)
 	report.Status = channelStatusLine(document)
 	return report
+}
+
+// accountDetails extracts the per-account entries a provider's status document
+// carries, in document order.
+//
+// Every provider in this repository now publishes `accounts` as an array whose
+// entries repeat the provider's own field names (see each plugin's statusJSON),
+// so the figures are read with the SAME readers the flat document is read with —
+// there is no per-provider table here and nothing is derived. A document whose
+// `accounts` is still a bare number (an older provider build) yields no lines:
+// the count is still reported, the figures are simply not available.
+func accountDetails(document map[string]any) []channelAccount {
+	items, ok := arrayAt(document, "accounts")
+	if !ok {
+		return nil
+	}
+	out := make([]channelAccount, 0, len(items))
+	for _, item := range items {
+		object, okObject := item.(map[string]any)
+		if !okObject {
+			continue
+		}
+		account := channelAccount{
+			AuthIndex: stringAt(object, "auth_index"),
+			Name:      stringAt(object, "name"),
+			Label:     stringAt(object, "label"),
+		}
+		account.Figures = accountFigures(object)
+		out = append(out, account)
+	}
+	return out
+}
+
+// accountFigures renders ONE account's own figures, using the provider-specific
+// readers below.
+//
+// The order is the channel line's order and for the same reason: the provider's
+// own error first (it explains why a figure is missing), then the balance, then
+// the check-in state. The cap keeps one account to one short line.
+func accountFigures(entry map[string]any) []string {
+	facts := make([]string, 0, accountFigureCap)
+	facts = append(facts, upstreamErrorFacts(entry)...)
+	facts = append(facts, creditFacts(entry)...)
+	facts = append(facts, checkinStateFacts(entry)...)
+	return dedupeFacts(facts, accountFigureCap)
 }
 
 // ── The one-line summary ──
@@ -236,7 +326,8 @@ func modelCountFacts(document map[string]any) []string {
 //	codearts    daily_checkin.{claimable,status}
 //	qoder       daily_checkin.claimable
 //	codebuddy   checkin.{today_checked_in,streak_days}
-//	lobsterai   selected.activity.slot_state
+//	lobsterai   selected.activity.slot_state, and activity.slot_state inside one
+//	            entry of the provider's own per-account list
 func checkinStateFacts(document map[string]any) []string {
 	facts := make([]string, 0, 2)
 	if checked, ok := flagAt(document, "daily_checkin.checked_in"); ok {
@@ -257,6 +348,8 @@ func checkinStateFacts(document map[string]any) []string {
 		facts = append(facts, fmt.Sprintf("连续签到 %d 天", int(streak)))
 	}
 	if slot := stringAt(document, "selected.activity.slot_state"); slot != "" {
+		facts = append(facts, "签到时段 "+slot)
+	} else if slot := stringAt(document, "activity.slot_state"); slot != "" {
 		facts = append(facts, "签到时段 "+slot)
 	}
 	return facts
@@ -284,7 +377,8 @@ func claimableText(claimable bool) string {
 //
 //	codebuddy    credits.total
 //	qoder        credits.total
-//	lobsterai    selected.credit.total
+//	lobsterai    selected.credit.total, and credit.total inside one entry of the
+//	             provider's own per-account list (the same object, unwrapped)
 //	trae         credits                      (a bare number, not an object)
 //	codearts     remaining / total
 //	loomy        points.balance / points.daily_quota
@@ -293,6 +387,8 @@ func creditFacts(document map[string]any) []string {
 	if total, ok := numberAt(document, "credits.total"); ok {
 		facts = append(facts, "积分 "+trimFloat(total))
 	} else if total, ok := numberAt(document, "selected.credit.total"); ok {
+		facts = append(facts, "积分 "+trimFloat(total))
+	} else if total, ok := numberAt(document, "credit.total"); ok {
 		facts = append(facts, "积分 "+trimFloat(total))
 	} else if total, ok := numberAt(document, "credits"); ok {
 		facts = append(facts, "积分 "+trimFloat(total))

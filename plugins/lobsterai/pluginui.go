@@ -134,66 +134,87 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	}
 
 	body := make([]template.HTML, 0, 5)
+	cfg := settings()
 
-	accountFields := []plugui.Field{
-		{Label: "名称", Value: entry.Name},
-		{Label: "状态", Value: statusText(entry)},
-	}
-	if entry.AuthIndex != "" {
-		accountFields = append(accountFields, plugui.Field{Label: "索引", Value: entry.AuthIndex})
-	}
-
-	creditFields := []plugui.Field{}
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		creditFields = append(creditFields, plugui.Field{Label: "凭据", Value: "无法读取：" + errCredential.Error()})
-	} else {
-		accountFields = append(accountFields,
-			plugui.Field{Label: "有效期至", Value: formatCredentialExpiry(credential)},
-			plugui.Field{Label: "可自动续期", Value: yesNo(credential.Refreshable())},
-		)
-		if credential.Nickname != "" {
-			accountFields = append(accountFields, plugui.Field{Label: "昵称", Value: credential.Nickname})
-		}
-		accountFields = append(accountFields,
-			plugui.Field{Label: "uid", Value: orPlaceholder(credential.UID)},
-			plugui.Field{Label: "安装 uuid", Value: orPlaceholder(credential.UUID)},
-			plugui.Field{Label: "first_keyfrom", Value: orPlaceholder(credential.FirstKeyfrom)},
-			plugui.Field{Label: "latest_keyfrom", Value: orPlaceholder(credential.LatestKeyfrom)},
-		)
-
-		cfg := settings()
-		if !cfg.DailyCheckin {
-			creditFields = append(creditFields, plugui.Field{Label: "签到", Value: "已在配置中关闭"})
-		} else if balance, errBalance := fetchCreditBalance(h, credential); errBalance != nil {
-			creditFields = append(creditFields, plugui.Field{Label: "积分", Value: "查询失败：" + errBalance.Error()})
-		} else {
-			creditFields = append(creditFields,
-				plugui.Field{Label: "剩余积分", Value: fmt.Sprintf("%.2f", balance.Total)},
-				plugui.Field{Label: "积分包", Value: fmt.Sprintf("%d 个", len(balance.Packages))},
-			)
-			if balance.ExpiredTotal > 0 {
-				creditFields = append(creditFields, plugui.Field{Label: "已失效积分", Value: fmt.Sprintf("%.2f", balance.ExpiredTotal)})
-			}
-			if slot, errSlot := fetchActivitySlot(h, credential, resolveClientVersion(h, cfg)); errSlot == nil {
-				creditFields = append(creditFields, plugui.Field{Label: "今日签到", Value: slotText(slot)})
-			}
-		}
-	}
-
-	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
-		plugui.Action{Label: "签到", Path: "checkin", Kind: "primary"},
-		plugui.Action{Label: "重新登录", Path: "login"},
-		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
-	))
-	if len(creditFields) > 0 {
-		body = append(body, plugui.Card("积分", plugui.Fields(creditFields...)))
+	// One sweep, one card per account: each card carries that account's own
+	// credits and activity slot, never the selected account's repeated.
+	quotas := collectAccountQuotas(h, accounts, cfg, resolveClientVersion(h, cfg))
+	for _, quota := range quotas {
+		body = append(body, renderQuotaCard(quota, quota.Entry.AuthIndex == entry.AuthIndex))
 	}
 	body = append(body, renderModelCard())
-	if switcher := renderAccountList(accounts, entry.AuthIndex); switcher != "" {
-		body = append(body, switcher)
-	}
+	body = append(body, renderAccountList(accounts, entry.AuthIndex))
 	return plugui.HTML("LobsterAI (有道)", body...)
+}
+
+// renderQuotaCard renders one account: its identity, its OWN credits and its own
+// activity state, with the two per-account actions.
+//
+// The card title names the account, so ten cards stay tellable apart, and every
+// number shown belongs to the account in the title. An unreadable credential or
+// balance is stated as such — the card never falls back to 0.
+func renderQuotaCard(quota accountQuota, current bool) template.HTML {
+	entry := quota.Entry
+	fields := []plugui.Field{{Label: "状态", Value: statusText(entry)}}
+	if entry.AuthIndex != "" {
+		fields = append(fields, plugui.Field{Label: "索引", Value: entry.AuthIndex})
+	}
+	switch {
+	case quota.CredentialErr != nil:
+		fields = append(fields, plugui.Field{Label: "凭据", Value: "无法读取：" + quota.CredentialErr.Error()})
+	default:
+		fields = append(fields,
+			plugui.Field{Label: "有效期至", Value: formatCredentialExpiry(quota.Credential)},
+			plugui.Field{Label: "可自动续期", Value: yesNo(quota.Credential.Refreshable())},
+		)
+		if quota.Credential.Nickname != "" {
+			fields = append(fields, plugui.Field{Label: "昵称", Value: quota.Credential.Nickname})
+		}
+		fields = append(fields,
+			plugui.Field{Label: "uid", Value: orPlaceholder(quota.Credential.UID)},
+			plugui.Field{Label: "安装 uuid", Value: orPlaceholder(quota.Credential.UUID)},
+			plugui.Field{Label: "first_keyfrom", Value: orPlaceholder(quota.Credential.FirstKeyfrom)},
+			plugui.Field{Label: "latest_keyfrom", Value: orPlaceholder(quota.Credential.LatestKeyfrom)},
+		)
+		switch {
+		case quota.BalanceErr != nil:
+			// Unknown, not zero: the read failed, so no number is shown.
+			fields = append(fields, plugui.Field{Label: "积分", Value: "查询失败：" + quota.BalanceErr.Error()})
+		case quota.Balance != nil:
+			fields = append(fields,
+				plugui.Field{Label: "剩余积分", Value: fmt.Sprintf("%.2f", quota.Balance.Total)},
+				plugui.Field{Label: "积分包", Value: fmt.Sprintf("%d 个", len(quota.Balance.Packages))},
+			)
+			if quota.Balance.ExpiredTotal > 0 {
+				fields = append(fields, plugui.Field{Label: "已失效积分", Value: fmt.Sprintf("%.2f", quota.Balance.ExpiredTotal)})
+			}
+		}
+		switch {
+		case quota.CheckinDisabled:
+			fields = append(fields, plugui.Field{Label: "签到", Value: "已在配置中关闭"})
+		case quota.ActivityErr != nil:
+			fields = append(fields, plugui.Field{Label: "今日签到", Value: "查询失败：" + quota.ActivityErr.Error()})
+		case quota.Activity != nil:
+			fields = append(fields, plugui.Field{Label: "今日签到", Value: slotText(quota.Activity)})
+		}
+	}
+	title := "积分 · " + entry.Name
+	if current {
+		title += "（当前）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "签到", Path: "checkin", Query: accountQuery(entry), Kind: "primary"},
+		plugui.Action{Label: "重新登录", Path: "login", Query: accountQuery(entry)},
+	)
+}
+
+// accountQuery names one account in a link. It is empty when the host gave the
+// entry no runtime index, so a link never carries a dangling selector.
+func accountQuery(entry pluginapi.HostAuthFileEntry) string {
+	if strings.TrimSpace(entry.AuthIndex) == "" {
+		return ""
+	}
+	return "auth_index=" + entry.AuthIndex
 }
 
 // renderModelCard lists the catalog with the remote model parameters this
@@ -259,10 +280,10 @@ func modelParameterSummary(model remoteModel) string {
 }
 
 // renderAccountList renders the switcher across accounts.
+//
+// It is rendered for a single account as well, because it carries 新建账号 —
+// the only way to add a SECOND account from this page.
 func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) template.HTML {
-	if len(accounts) < 2 {
-		return ""
-	}
 	fields := make([]plugui.Field, 0, len(accounts))
 	for _, entry := range accounts {
 		marker := ""
@@ -271,7 +292,13 @@ func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) t
 		}
 		fields = append(fields, plugui.Field{Label: entry.Name + marker, Value: statusText(entry)})
 	}
-	return plugui.Card("全部账号（在地址后追加 ?auth_index=<索引> 可切换）", plugui.Fields(fields...))
+	title := "全部账号"
+	if len(accounts) > 1 {
+		title += "（在地址后追加 ?auth_index=<索引> 可切换）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
+	)
 }
 
 // renderLoginPage renders the two-step browser login. The first request hands
@@ -467,13 +494,23 @@ func pollLoginForManagement(h *abiboot.Host, state string) (pluginapi.AuthLoginP
 
 // statusJSON is the machine-readable form of the status page, served when the
 // caller asks for `?format=json` or does not accept HTML.
+//
+// The document reports EVERY account this plugin owns: `accounts` carries one
+// entry per account, in host order, each with that account's own credit and
+// activity state — the same keys `selected` publishes, lifted to the entry
+// level. The selected account's fields stay under `selected` for the consumers
+// that read them there.
+//
+// A failed read is reported as an error field on the entry that failed and never
+// as a zero: `credit` is simply absent when it could not be read.
 func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	accounts := lobsteraiAccounts(h)
 	cfg := settings()
 	version, source := versionResolver.resolve(h, cfg, time.Now())
 	body := map[string]any{
 		"provider":       ProviderKey,
-		"accounts":       summariseAccounts(accounts),
+		"account_count":  len(accounts),
+		"accounts":       []map[string]any{},
 		"client_version": map[string]any{"version": version, "source": source},
 		"config": map[string]any{
 			"discover_models": cfg.DiscoverModels,
@@ -488,60 +525,63 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		body["selected"] = nil
 		return jsonManagementResponse(http.StatusOK, body)
 	}
+
+	quotas := collectAccountQuotas(h, accounts, cfg, version)
+	body["accounts"] = quotaListJSON(quotas)
+
+	current, okCurrent := quotaOf(quotas, entry)
+	if !okCurrent {
+		// Unreachable while accounts and quotas come from the same listing.
+		body["selected"] = nil
+		body["error"] = "无法定位该账号的积分记录"
+		return jsonManagementResponse(http.StatusOK, body)
+	}
+
 	selected := map[string]any{
 		"auth_index": entry.AuthIndex,
 		"name":       entry.Name,
 		"status":     statusText(entry),
 	}
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		selected["error"] = errCredential.Error()
-		body["selected"] = selected
-		return jsonManagementResponse(http.StatusOK, body)
-	}
-	selected["uid"] = credential.UID
-	selected["nickname"] = credential.Nickname
-	selected["refreshable"] = credential.Refreshable()
-	if expiry, ok := credential.Expiry(); ok {
-		selected["expires_at"] = expiry.UTC().Format(time.RFC3339)
-		selected["expired"] = credential.Expired(0)
-	}
-	if balance, errBalance := fetchCreditBalance(h, credential); errBalance != nil {
-		selected["credit_error"] = errBalance.Error()
-	} else {
-		selected["credit"] = map[string]any{
-			"total":         balance.Total,
-			"expired_total": balance.ExpiredTotal,
-			"packages":      balance.Packages,
-		}
-	}
-	if cfg.DailyCheckin {
-		if slot, errSlot := fetchActivitySlot(h, credential, version); errSlot != nil {
-			selected["activity_error"] = errSlot.Error()
-		} else {
-			selected["activity"] = map[string]any{
-				"slot_state":    slot.SlotState,
-				"activity_code": slot.ActivityCode,
-			}
-		}
+	if label := strings.TrimSpace(entry.Label); label != "" {
+		selected["label"] = label
 	}
 	body["selected"] = selected
-	return jsonManagementResponse(http.StatusOK, body)
-}
-
-// summariseAccounts renders the account list for JSON clients.
-func summariseAccounts(accounts []pluginapi.HostAuthFileEntry) []map[string]any {
-	out := make([]map[string]any, 0, len(accounts))
-	for _, entry := range accounts {
-		out = append(out, map[string]any{
-			"auth_index": entry.AuthIndex,
-			"name":       entry.Name,
-			"label":      entry.Label,
-			"status":     statusText(entry),
-			"disabled":   entry.Disabled,
-		})
+	if current.CredentialErr != nil {
+		selected["error"] = current.CredentialErr.Error()
+		return jsonManagementResponse(http.StatusOK, body)
 	}
-	return out
+	selected["uid"] = current.Credential.UID
+	selected["nickname"] = current.Credential.Nickname
+	selected["refreshable"] = current.Credential.Refreshable()
+	if expiry, ok := current.Credential.Expiry(); ok {
+		selected["expires_at"] = expiry.UTC().Format(time.RFC3339)
+		selected["expired"] = current.Credential.Expired(0)
+	}
+	switch {
+	case current.BalanceErr != nil:
+		// The document is still served: the other accounts' figures and the
+		// account count are exactly what the hub needs, and this account's
+		// credits are reported as unknown rather than as 0.
+		selected["credit_error"] = current.BalanceErr.Error()
+	case current.Balance != nil:
+		selected["credit"] = map[string]any{
+			"total":         current.Balance.Total,
+			"expired_total": current.Balance.ExpiredTotal,
+			"packages":      current.Balance.Packages,
+		}
+	}
+	switch {
+	case current.CheckinDisabled:
+		selected["checkin_state"] = "disabled"
+	case current.ActivityErr != nil:
+		selected["activity_error"] = current.ActivityErr.Error()
+	case current.Activity != nil:
+		selected["activity"] = map[string]any{
+			"slot_state":    current.Activity.SlotState,
+			"activity_code": current.Activity.ActivityCode,
+		}
+	}
+	return jsonManagementResponse(http.StatusOK, body)
 }
 
 // summariseModels renders the catalog for JSON clients, including every remote

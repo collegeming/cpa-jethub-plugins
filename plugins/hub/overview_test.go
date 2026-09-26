@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -74,6 +75,7 @@ func TestChannelOverviewOrderAndIcons(t *testing.T) {
 func TestChannelOverviewReportsProviderStatePerShape(t *testing.T) {
 	fake := newFakeHost(
 		account("codearts", "ca-1", "codearts-1.json"),
+		account("codearts", "ca-2", "codearts-2.json"),
 		account("codebuddy", "cb-1", "codebuddy-1.json"),
 		account("lobsterai", "lb-1", "lobster-1.json"),
 		account("qoder", "qd-1", "qoder-1.json"),
@@ -83,20 +85,38 @@ func TestChannelOverviewReportsProviderStatePerShape(t *testing.T) {
 	)
 	fake.install(t)
 	fake.serve(
-		jsonRoute("/codearts/status?", `{"auth_index":"ca-1","name":"codearts-1.json","credit_package":true,`+
-			`"remaining":10,"used":5,"total":15,"daily_checkin":{"campaign_id":"c-1","claimable":false,"status":"CLAIMED"}}`),
-		jsonRoute("/codebuddy/status?", `{"product":"codebuddy","account_count":1,"accounts":[{"auth_index":"cb-1","name":"codebuddy-1.json"}],`+
+		// codearts reports BOTH of its accounts, each with its own figures: the
+		// channel-level fields below are the first account's, for the consumers
+		// that read them there.
+		jsonRoute("/codearts/status?", `{"account_count":2,"accounts":[`+
+			`{"auth_index":"ca-1","name":"codearts-1.json","status":"正常","credit_package":true,`+
+			`"remaining":1739.5,"used":760.5,"total":2500,"daily_checkin":{"campaign_id":"c-1","claimable":false,"status":"CLAIMED"}},`+
+			`{"auth_index":"ca-2","name":"codearts-2.json","status":"正常","credit_package":true,`+
+			`"remaining":7,"used":93,"total":100,"daily_checkin":{"campaign_id":"c-1","claimable":true,"status":null}}],`+
+			`"auth_index":"ca-1","name":"codearts-1.json","status":"正常","credit_package":true,`+
+			`"remaining":1739.5,"used":760.5,"total":2500,"daily_checkin":{"campaign_id":"c-1","claimable":false,"status":"CLAIMED"}}`),
+		jsonRoute("/codebuddy/status?", `{"product":"codebuddy","account_count":1,"accounts":[{"auth_index":"cb-1","name":"codebuddy-1.json",`+
+			`"status":"正常","credits":{"total":120},"checkin":{"today_checked_in":true,"streak_days":3}}],`+
 			`"auth_index":"cb-1","status":"正常","expires_at":"2026-01-02T03:04:05Z","credits":{"total":120},`+
 			`"checkin":{"today_checked_in":true,"streak_days":3}}`),
-		jsonRoute("/lobsterai/status?", `{"provider":"lobsterai","accounts":[{"auth_index":"lb-1","name":"lobster-1.json"}],`+
+		jsonRoute("/lobsterai/status?", `{"provider":"lobsterai","accounts":[{"auth_index":"lb-1","name":"lobster-1.json",`+
+			`"status":"正常","credit":{"total":50},"activity":{"slot_state":"OPEN","activity_code":"daily"}}],`+
 			`"selected":{"auth_index":"lb-1","status":"正常","expires_at":"2026-02-03T04:05:06Z",`+
 			`"credit":{"total":50},"activity":{"slot_state":"OPEN","activity_code":"daily"}}}`),
-		jsonRoute("/qoder/status?", `{"provider":"qoder","accounts":2,"account":{"auth_index":"qd-1","status":"正常","expires_at":"2026-03-04T05:06:07Z"},`+
+		// qoder's document reports two accounts where the host ledger holds one:
+		// the row must show BOTH — the disagreement is the point of the check.
+		jsonRoute("/qoder/status?", `{"provider":"qoder","account_count":2,"accounts":[`+
+			`{"auth_index":"qd-1","name":"qoder-1.json","credits":{"total":9},"daily_checkin":{"claimable":true}},`+
+			`{"auth_index":"qd-2","name":"qoder-2.json","credits":{"total":4},"daily_checkin":{"claimable":false}}],`+
+			`"account":{"auth_index":"qd-1","name":"qoder-1.json","status":"正常","expires_at":"2026-03-04T05:06:07Z"},`+
 			`"credits":{"total":9,"packages":[]},"daily_checkin":{"claimable":true,"show":true,"campaigns":1}}`),
-		jsonRoute("/trae/status?", `{"region":"cn","account_count":1,"accounts":[{"auth_index":"tr-1","expires_at_ms":1767225845000}],`+
+		jsonRoute("/trae/status?", `{"region":"cn","account_count":1,"accounts":[{"auth_index":"tr-1","name":"trae-1.json",`+
+			`"expires_at_ms":1767225845000,"credits":42,"daily_checkin":{"checked_in":true,"credits":10,"streak_days":2}}],`+
 			`"credits":42,"daily_checkin":{"checked_in":true,"credits":10,"streak_days":2}}`),
 		jsonRoute("/cline/status?", `{"provider":"cline","accounts":1,"account":{"auth_index":"cl-1","status":"正常","email":"a@b.c","expires_at":"2026-04-05T06:07:08Z"}}`),
-		jsonRoute("/loomy/status?", `{"provider":"loomy","accounts":1,"account":{"auth_index":"lo-1","status":"正常","expires_at":"2026-05-06T07:08:09Z"},`+
+		jsonRoute("/loomy/status?", `{"provider":"loomy","account_count":1,"accounts":[{"auth_index":"lo-1","name":"loomy-1.json",`+
+			`"status":"正常","points":{"balance":300,"daily_balance":10,"available":300,"daily_quota":50}}],`+
+			`"account":{"auth_index":"lo-1","status":"正常","expires_at":"2026-05-06T07:08:09Z"},`+
 			`"points":{"balance":300,"daily_balance":10,"available":300,"daily_quota":50}}`),
 		catchAll(),
 	)
@@ -108,15 +128,29 @@ func TestChannelOverviewReportsProviderStatePerShape(t *testing.T) {
 		byID[report.Target.ID] = report
 	}
 
-	// codearts reports the claim state and a credit balance at the top level.
+	// codearts reports the claim state and a credit balance at the top level,
+	// and now also both accounts with their own balances. Two ledger accounts
+	// and two reported accounts agree, so no disagreement is claimed.
 	codearts := byID["codearts"]
-	if codearts.State != channelReady || codearts.Accounts != 1 || codearts.Reported != 1 {
+	if codearts.State != channelReady || codearts.Accounts != 2 || codearts.Reported != 2 {
 		t.Fatalf("codearts row = %+v", codearts)
 	}
-	for _, want := range []string{"今日不可领取", "剩余 10 / 15"} {
+	for _, want := range []string{"今日不可领取", "剩余 1739.5 / 2500"} {
 		if !strings.Contains(codearts.Status, want) {
 			t.Fatalf("codearts status = %q, want %q", codearts.Status, want)
 		}
+	}
+	codeartsCell := string(channelAccountsCell(codearts))
+	for _, want := range []string{
+		"codearts-1.json：剩余 1739.5 / 2500 · 今日不可领取",
+		"codearts-2.json：剩余 7 / 100 · 今日可领取",
+	} {
+		if !strings.Contains(codeartsCell, want) {
+			t.Fatalf("codearts account cell = %q, want %q", codeartsCell, want)
+		}
+	}
+	if strings.Contains(codeartsCell, "provider 报告") {
+		t.Fatalf("codearts account cell = %q, must not claim a disagreement when both counts are 2", codeartsCell)
 	}
 
 	// codebuddy nests the claim state, the account state and the credit total.
@@ -126,6 +160,9 @@ func TestChannelOverviewReportsProviderStatePerShape(t *testing.T) {
 			t.Fatalf("codebuddy status = %q, want %q", codebuddy.Status, want)
 		}
 	}
+	if got := string(channelAccountsCell(codebuddy)); !strings.Contains(got, "codebuddy-1.json：积分 120 · 今日已签到") {
+		t.Fatalf("codebuddy account cell = %q, want its own per-account figures", got)
+	}
 
 	// lobsterai reports the state under "selected", including the activity slot.
 	lobsterai := byID["lobsterai"]
@@ -133,6 +170,9 @@ func TestChannelOverviewReportsProviderStatePerShape(t *testing.T) {
 		if !strings.Contains(lobsterai.Status, want) {
 			t.Fatalf("lobsterai status = %q, want %q", lobsterai.Status, want)
 		}
+	}
+	if got := string(channelAccountsCell(lobsterai)); !strings.Contains(got, "lobster-1.json：积分 50 · 签到时段 OPEN") {
+		t.Fatalf("lobsterai account cell = %q, want its own per-account figures", got)
 	}
 
 	// qoder's claimable flag and package total; the document reports two
@@ -157,6 +197,9 @@ func TestChannelOverviewReportsProviderStatePerShape(t *testing.T) {
 			t.Fatalf("trae status = %q, want %q", trae.Status, want)
 		}
 	}
+	if got := string(channelAccountsCell(trae)); !strings.Contains(got, "trae-1.json：积分 42 · 今日已签到") {
+		t.Fatalf("trae account cell = %q, want its own per-account figures", got)
+	}
 
 	for _, id := range []string{"cline", "loomy"} {
 		report := byID[id]
@@ -172,12 +215,86 @@ func TestChannelOverviewReportsProviderStatePerShape(t *testing.T) {
 	if !strings.Contains(byID["loomy"].Status, "积分余额 300") || !strings.Contains(byID["loomy"].Status, "每日额度 50") {
 		t.Fatalf("loomy status = %q, want the points the document carried", byID["loomy"].Status)
 	}
+	if got := string(channelAccountsCell(byID["loomy"])); !strings.Contains(got, "loomy-1.json：积分余额 300 · 每日额度 50") {
+		t.Fatalf("loomy account cell = %q, want its own per-account figures", got)
+	}
+	// cline publishes no per-account figures (its document carries a count and
+	// the selected account only), so its cell stays the bare ledger count: no
+	// invented line, and the legacy numeric shape still counts.
+	if got := string(channelAccountsCell(byID["cline"])); strings.Contains(got, "<br>") {
+		t.Fatalf("cline account cell = %q, want no per-account line", got)
+	}
 
 	// The three codebuddy-family variants are not installed in this script.
 	for _, id := range []string{"codebuddy-intl", "workbuddy-cn", "workbuddy"} {
 		if report := byID[id]; report.State != channelMissing {
 			t.Fatalf("%s state = %s, want missing (its resource route answers 404)", id, report.State)
 		}
+	}
+}
+
+// TestChannelOverviewKeepsTheDisagreementCheck pins the cross-check the
+// per-account list must NOT replace: a provider that reports fewer accounts than
+// the host ledger holds is still flagged, and the row says both numbers.
+func TestChannelOverviewKeepsTheDisagreementCheck(t *testing.T) {
+	fake := newFakeHost(
+		account("codearts", "ca-1", "codearts-1.json"),
+		account("codearts", "ca-2", "codearts-2.json"),
+	)
+	fake.install(t)
+	fake.serve(
+		// A provider build that still reports only the selected account.
+		jsonRoute("/codearts/status?", `{"auth_index":"ca-1","name":"codearts-1.json","credit_package":true,`+
+			`"remaining":10,"used":5,"total":15,"daily_checkin":{"campaign_id":"c-1","claimable":false,"status":"CLAIMED"}}`),
+		catchAll(),
+	)
+	withSettings(t, testConfig("codearts"))
+
+	reports := channelReports(testHost(), settings())
+	if len(reports) != 1 {
+		t.Fatalf("rows = %d, want 1", len(reports))
+	}
+	report := reports[0]
+	if report.Accounts != 2 || report.Reported != 1 {
+		t.Fatalf("counts = %d/%d, want 2/1", report.Accounts, report.Reported)
+	}
+	if got := string(channelAccountsCell(report)); !strings.Contains(got, "2（provider 报告 1）") {
+		t.Fatalf("account cell = %q, want the disagreement", got)
+	}
+}
+
+// TestChannelOverviewCapsTheAccountLines keeps ten accounts readable: the first
+// few are listed with their figures, the rest are counted.
+func TestChannelOverviewCapsTheAccountLines(t *testing.T) {
+	accounts := make([]any, 0, 8)
+	for index := 0; index < 8; index++ {
+		accounts = append(accounts, map[string]any{
+			"auth_index": fmt.Sprintf("idx-%d", index),
+			"name":       fmt.Sprintf("account-%d.json", index),
+			"remaining":  float64(100 + index),
+			"total":      200,
+		})
+	}
+	report := channelReport{
+		Target:        mustTarget(t, "codearts"),
+		State:         channelReady,
+		Accounts:      8,
+		Reported:      8,
+		AccountDetail: accountDetails(map[string]any{"accounts": accounts}),
+		Status:        "剩余 100 / 200",
+	}
+	cellHTML := string(channelAccountsCell(report))
+	if !strings.Contains(cellHTML, "account-0.json：剩余 100 / 200") {
+		t.Fatalf("account cell = %q, want the first account", cellHTML)
+	}
+	if !strings.Contains(cellHTML, "account-4.json：剩余 104 / 200") {
+		t.Fatalf("account cell = %q, want the fifth account", cellHTML)
+	}
+	if strings.Contains(cellHTML, "account-5.json") {
+		t.Fatalf("account cell = %q, must stop at the cap", cellHTML)
+	}
+	if !strings.Contains(cellHTML, "…另有 3 个账号") {
+		t.Fatalf("account cell = %q, want the remaining accounts counted", cellHTML)
 	}
 }
 
@@ -332,5 +449,60 @@ func TestStatusDocumentOverviewFields(t *testing.T) {
 	// who wants to replay it by hand.
 	if !strings.Contains(row["request"].(string), "/v0/resource/plugins/qoder/checkin") {
 		t.Fatalf("channel request = %v", row["request"])
+	}
+}
+
+// TestStatusDocumentCarriesPerAccountFigures pins the machine-readable half of
+// the per-account fix: a script reading the hub document must be able to see
+// every account's own figures, not one balance per channel.
+func TestStatusDocumentCarriesPerAccountFigures(t *testing.T) {
+	fake := newFakeHost(
+		account("codearts", "ca-1", "codearts-1.json"),
+		account("codearts", "ca-2", "codearts-2.json"),
+	)
+	fake.install(t)
+	fake.serve(
+		jsonRoute("/codearts/status?", `{"account_count":2,"accounts":[`+
+			`{"auth_index":"ca-1","name":"codearts-1.json","remaining":1739.5,"total":2500},`+
+			`{"auth_index":"ca-2","name":"codearts-2.json","remaining":7,"total":100}],`+
+			`"auth_index":"ca-1","name":"codearts-1.json","remaining":1739.5,"total":2500}`),
+		catchAll(),
+	)
+	withSettings(t, testConfig("codearts"))
+
+	response := dispatchManagement(t, managementRequest(http.MethodGet, "/v0/resource/plugins/hub/status",
+		url.Values{"format": {"json"}}, "application/json"))
+	document := map[string]any{}
+	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
+		t.Fatalf("document is not JSON: %v", errUnmarshal)
+	}
+	channels, _ := document["channels"].([]any)
+	if len(channels) != 1 {
+		t.Fatalf("channels = %#v, want one row", document["channels"])
+	}
+	row, _ := channels[0].(map[string]any)
+	// `accounts` stays the ledger COUNT: a script that read it as a number keeps
+	// working, and the per-account list lives in its own key.
+	if row["accounts"] != float64(2) || row["reported_accounts"] != float64(2) {
+		t.Fatalf("counts = %v/%v, want 2/2", row["accounts"], row["reported_accounts"])
+	}
+	details, okDetails := row["account_details"].([]any)
+	if !okDetails || len(details) != 2 {
+		t.Fatalf("account_details = %#v, want two entries", row["account_details"])
+	}
+	second, _ := details[1].(map[string]any)
+	if second["name"] != "codearts-2.json" || second["auth_index"] != "ca-2" {
+		t.Fatalf("second account detail = %#v", second)
+	}
+	if second["status"] != "剩余 7 / 100" {
+		t.Fatalf("second account status = %v, want its own balance", second["status"])
+	}
+	if _, okFigures := second["figures"].([]any); !okFigures {
+		t.Fatalf("second account figures = %#v, want an array", second["figures"])
+	}
+	// The page shows the same lines.
+	page := string(renderStatusPage(channelReports(testHost(), settings()), settings(), nil).Body)
+	if !strings.Contains(page, "codearts-2.json：剩余 7 / 100") {
+		t.Fatalf("overview page does not show the second account's balance:\n%s", page)
 	}
 }

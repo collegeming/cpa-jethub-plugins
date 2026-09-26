@@ -234,11 +234,12 @@ func TestStatusPageWithAccount(t *testing.T) {
 		}
 	}
 	// The check-in link is a query-carrying GET: the '=' must survive into the
-	// attribute, otherwise the host receives one key with no value.
-	if !strings.Contains(body, `href="?action=checkin"`) {
+	// attribute, otherwise the host receives one key with no value. The link now
+	// also names the account it acts on.
+	if !strings.Contains(body, `href="?action=checkin`) {
 		t.Fatalf("check-in action href is malformed:\n%s", body)
 	}
-	if !strings.Contains(body, `href="login"`) {
+	if !strings.Contains(body, `href="login`) {
 		t.Fatalf("re-login action href is malformed:\n%s", body)
 	}
 	// A credential must not leak its access token into the page.

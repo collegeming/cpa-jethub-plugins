@@ -222,6 +222,25 @@ func statusDocument(cfg Config, reports []channelReport) map[string]any {
 		if report.Target.Note != "" {
 			document["note"] = report.Target.Note
 		}
+		// account_details is the provider's own per-account list: identity plus
+		// the figures that provider published for that account. `accounts` above
+		// stays the host ledger's COUNT (scripts read it as a number), so the two
+		// are separate keys on purpose. A provider whose document carries no
+		// per-account list reports an empty list rather than a fabricated row.
+		details := make([]map[string]any, 0, len(report.AccountDetail))
+		for _, account := range report.AccountDetail {
+			entry := map[string]any{
+				"auth_index": account.AuthIndex,
+				"name":       account.Name,
+				"figures":    account.Figures,
+				"status":     strings.Join(account.Figures, " · "),
+			}
+			if account.Label != "" {
+				entry["label"] = account.Label
+			}
+			details = append(details, entry)
+		}
+		document["account_details"] = details
 		if count, ok := counts[report.Target.ID]; ok {
 			document["last_account_count"] = count
 			document["last_run_at"] = ranAt

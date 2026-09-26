@@ -153,8 +153,18 @@ func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credenti
 }
 
 // statusJSON is the machine-readable status payload.
+//
+// The document reports EVERY account this plugin owns: `accounts` is an array,
+// one entry per account in host order, each with that account's own quota and
+// check-in state. `account_count` keeps the number the field used to carry, and
+// the selected account's fields (`account`, `credits`, `daily_checkin`, …) stay
+// at the top level for the consumers that read them there.
+//
+// A failed read is reported as an error field on the entry that failed and never
+// as a zero: `credits` is simply absent when it could not be read.
 func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	cfg := settings()
+	accounts := qoderAccounts(h)
 	body := map[string]any{
 		"provider":        ProviderKey,
 		"region":          string(activeRegion()),
@@ -162,7 +172,8 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		"wasm_configured": strings.TrimSpace(cfg.WASMPath) != "",
 		"wasm_path":       cfg.WASMPath,
 		"model_count":     len(staticModelInfos(cfg, activeRegion())),
-		"accounts":        len(qoderAccounts(h)),
+		"account_count":   len(accounts),
+		"accounts":        []map[string]any{},
 	}
 	if signer, errSigner := signerFor(cfg.WASMPath); errSigner != nil && strings.TrimSpace(cfg.WASMPath) != "" {
 		body["wasm_error"] = errSigner.Error()
@@ -175,49 +186,57 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		body["account"] = nil
 		return jsonManagementResponse(http.StatusOK, body)
 	}
+
+	quotas := collectAccountQuotas(h, accounts, cfg)
+	body["accounts"] = quotaListJSON(quotas)
+
+	current, okCurrent := quotaOf(quotas, entry)
+	if !okCurrent {
+		// Unreachable while accounts and quotas come from the same listing.
+		body["account"] = nil
+		body["error"] = "无法定位该账号的额度记录"
+		return jsonManagementResponse(http.StatusOK, body)
+	}
+
 	account := map[string]any{
 		"auth_index": entry.AuthIndex,
 		"name":       entry.Name,
 		"status":     statusText(entry),
 	}
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		account["error"] = errCredential.Error()
-		body["account"] = account
-		return jsonManagementResponse(statusOf(errCredential, http.StatusOK), body)
+	if label := strings.TrimSpace(entry.Label); label != "" {
+		account["label"] = label
 	}
-	account["region"] = string(credential.regionOr(activeRegion()))
-	account["expires_at"] = jsonTime(credential.ExpiresAt())
-	account["refreshable"] = credential.Refreshable()
-	account["has_uid"] = strings.TrimSpace(credential.UID) != ""
+	if current.CredentialErr != nil {
+		account["error"] = current.CredentialErr.Error()
+		body["account"] = account
+		return jsonManagementResponse(http.StatusOK, body)
+	}
+	account["region"] = string(current.Credential.regionOr(activeRegion()))
+	account["expires_at"] = jsonTime(current.Credential.ExpiresAt())
+	account["refreshable"] = current.Credential.Refreshable()
+	account["has_uid"] = strings.TrimSpace(current.Credential.UID) != ""
 	body["account"] = account
 
-	balance, errBalance := fetchCreditBalance(h, credential, cfg)
 	switch {
-	case errBalance != nil:
-		body["credit_error"] = errBalance.Error()
-	case balance == nil:
+	case current.BalanceErr != nil:
+		// The document is still served: the other accounts' figures and the
+		// account count are exactly what the hub needs, and this account's
+		// balance is reported as unknown rather than as 0.
+		body["credit_error"] = current.BalanceErr.Error()
+	case current.BalanceNone:
 		body["credit_note"] = "企业版账号不下发额度数字"
 	default:
-		packages := make([]map[string]any, 0, len(balance.Packages))
-		for _, pkg := range balance.Packages {
-			packages = append(packages, map[string]any{
-				"name":       pkg.Name,
-				"remaining":  pkg.Remaining,
-				"total":      pkg.Total,
-				"used":       pkg.Used,
-				"unit":       pkg.Unit,
-				"expired_at": pkg.ExpiredTime,
-			})
-		}
-		body["credits"] = map[string]any{"total": balance.Total, "packages": packages}
+		body["credits"] = creditsJSON(current.Balance)
 	}
-	if parsed, errCampaigns := loadCampaigns(h, credential, cfg); errCampaigns == nil {
+	if current.Campaigns != nil {
 		body["daily_checkin"] = map[string]any{
-			"claimable": len(claimableCampaigns(parsed)) > 0,
-			"show":      parsed.ShowCampaign,
-			"campaigns": len(parsed.Campaigns),
+			"claimable": len(claimableCampaigns(current.Campaigns)) > 0,
+			"show":      current.Campaigns.ShowCampaign,
+			"campaigns": len(current.Campaigns.Campaigns),
 		}
+	}
+	if current.CampaignsErr != nil {
+		body["activity_error"] = current.CampaignsErr.Error()
 	}
 	return jsonManagementResponse(http.StatusOK, body)
 }

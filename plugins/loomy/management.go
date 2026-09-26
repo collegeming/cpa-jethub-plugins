@@ -161,13 +161,24 @@ func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credenti
 }
 
 // statusJSON is the machine-readable status payload behind `?format=json`.
+//
+// The document reports EVERY account this plugin owns: `accounts` is an array,
+// one entry per account in host order, each with that account's own point pools.
+// `account_count` keeps the number the field used to carry, and the selected
+// account's fields (`account`, `points`, …) stay at the top level for the
+// consumers that read them there.
+//
+// A failed read is reported as an error field on the entry that failed and never
+// as a zero: `points` is simply absent when it could not be read.
 func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	cfg := settings()
+	accounts := loomyAccounts(h)
 	body := map[string]any{
 		"provider":        ProviderKey,
 		"discover_models": cfg.DiscoverModels,
 		"model_count":     len(fallbackCatalogue),
-		"accounts":        len(loomyAccounts(h)),
+		"account_count":   len(accounts),
+		"accounts":        []map[string]any{},
 		"login_page":      loginResourcePath,
 		// Loomy has no refresh_token: `auth.refresh` only probes validity.
 		"refreshable": false,
@@ -177,46 +188,48 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		body["account"] = nil
 		return jsonManagementResponse(http.StatusOK, body)
 	}
+
+	quotas := collectAccountQuotas(h, accounts, cfg)
+	body["accounts"] = quotaListJSON(quotas)
+
+	current, okCurrent := quotaOf(quotas, entry)
+	if !okCurrent {
+		// Unreachable while accounts and quotas come from the same listing.
+		body["account"] = nil
+		body["error"] = "无法定位该账号的积分记录"
+		return jsonManagementResponse(http.StatusOK, body)
+	}
+
 	account := map[string]any{
 		"auth_index": entry.AuthIndex,
 		"name":       entry.Name,
 		"status":     statusText(entry),
 	}
+	if label := strings.TrimSpace(entry.Label); label != "" {
+		account["label"] = label
+	}
 	body["account"] = account
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		account["error"] = errCredential.Error()
+	if current.CredentialErr != nil {
+		account["error"] = current.CredentialErr.Error()
 		return jsonManagementResponse(http.StatusOK, body)
 	}
-	body["model_count"] = len(activeCatalogue(h, credential, cfg))
-	account["phone"] = credential.Phone
-	account["userid"] = credential.UserID
-	account["expired"] = credential.Expired(time.Now())
-	if expiry := credential.Expiry(); !expiry.IsZero() {
+	body["model_count"] = len(activeCatalogue(h, current.Credential, cfg))
+	account["phone"] = current.Credential.Phone
+	account["userid"] = current.Credential.UserID
+	account["expired"] = current.Credential.Expired(time.Now())
+	if expiry := current.Credential.Expiry(); !expiry.IsZero() {
 		account["expires_at"] = expiry.UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
-	snapshot, errPoints := fetchPoints(h, credential, cfg)
 	switch {
-	case errPoints != nil:
-		body["points_error"] = errPoints.Error()
-	case snapshot == nil:
+	case current.PointsErr != nil:
+		// The document is still served: the other accounts' figures and the
+		// account count are exactly what the hub needs, and this account's
+		// points are reported as unknown rather than as 0.
+		body["points_error"] = current.PointsErr.Error()
+	case current.PointsNone:
 		body["points_note"] = "服务端未返回 balance 字段"
 	default:
-		points := map[string]any{
-			"balance":       snapshot.Balance,
-			"daily_balance": snapshot.DailyBalance,
-			"available":     snapshot.Available,
-		}
-		if snapshot.DailyQuota != nil {
-			points["daily_quota"] = *snapshot.DailyQuota
-		}
-		if snapshot.DailyConsumed != nil {
-			points["daily_consumed"] = *snapshot.DailyConsumed
-		}
-		if snapshot.DailyCycleDate != "" {
-			points["daily_cycle_date"] = snapshot.DailyCycleDate
-		}
-		body["points"] = points
+		body["points"] = pointsJSON(current.Snapshot)
 	}
 	return jsonManagementResponse(http.StatusOK, body)
 }

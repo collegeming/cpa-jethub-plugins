@@ -71,6 +71,125 @@ type checkinOutcome struct {
 	Balance *creditBalance
 }
 
+// accountQuota is ONE account's own quota and check-in state.
+//
+// Every quota field is a pointer: it is nil when the provider did not return it,
+// with the matching error set instead. A failed balance read must render as
+// 未知, never as 0 — 0 would tell the user the credits are spent.
+type accountQuota struct {
+	// Entry is the host credential this quota belongs to.
+	Entry pluginapi.HostAuthFileEntry
+	// Credential is nil when the credential itself could not be read;
+	// CredentialErr then explains why and no upstream call was made for it.
+	Credential    *Credential
+	CredentialErr error
+	// Balance is the account's own credit state, or nil with BalanceErr set.
+	Balance    *creditBalance
+	BalanceErr error
+	// Activity is the account's own daily-login campaign, or nil. ActivityErr
+	// carries a failed read and a nil Activity with a nil error means the
+	// provider listed no daily-login campaign for this account.
+	Activity    *dailyActivity
+	ActivityErr error
+}
+
+// collectAccountQuotas reads the quota of every account, in host order, one
+// account at a time.
+//
+// Sequential on purpose: each account costs two upstream requests, and the
+// reference panel queries balances one account at a time for the same reason
+// (parallel balance reads are what the provider's risk control reacts to). One
+// account's failure never stops the sweep and never hides another's figures.
+func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntry) []accountQuota {
+	out := make([]accountQuota, 0, len(accounts))
+	for _, entry := range accounts {
+		quota := accountQuota{Entry: entry}
+		credential, errCredential := credentialOf(h, entry)
+		if errCredential != nil {
+			quota.CredentialErr = errCredential
+			out = append(out, quota)
+			continue
+		}
+		quota.Credential = credential
+		balance, errBalance := fetchCreditBalance(h, credential)
+		if errBalance != nil {
+			quota.BalanceErr = errBalance
+			out = append(out, quota)
+			continue
+		}
+		quota.Balance = balance
+		activity, errActivity := fetchDailyActivity(h, credential)
+		if errActivity != nil {
+			quota.ActivityErr = errActivity
+		} else {
+			quota.Activity = activity
+		}
+		out = append(out, quota)
+	}
+	return out
+}
+
+// quotaOf picks one account's quota out of a collected list.
+func quotaOf(quotas []accountQuota, entry pluginapi.HostAuthFileEntry) (accountQuota, bool) {
+	for _, quota := range quotas {
+		if quota.Entry.AuthIndex == entry.AuthIndex && quota.Entry.Name == entry.Name {
+			return quota, true
+		}
+	}
+	return accountQuota{}, false
+}
+
+// quotaJSON renders one account's own figures.
+//
+// The keys are exactly the ones the selected account already publishes at the
+// top level (credit_package / remaining / used / total / daily_checkin) so a
+// consumer that reads the flat document can read one entry of `accounts` with
+// the same code. A failed read emits the reason under `credit_error` (balance) or
+// `activity_error` (check-in campaign) and NO number at all.
+func quotaJSON(quota accountQuota) map[string]any {
+	item := map[string]any{
+		"auth_index": quota.Entry.AuthIndex,
+		"name":       quota.Entry.Name,
+		"status":     statusText(quota.Entry),
+	}
+	if label := strings.TrimSpace(quota.Entry.Label); label != "" {
+		item["label"] = label
+	}
+	if quota.CredentialErr != nil {
+		item["error"] = quota.CredentialErr.Error()
+		return item
+	}
+	if quota.Balance != nil {
+		item["credit_package"] = quota.Balance.IsCreditPackage
+		item["remaining"] = quota.Balance.Remaining
+		item["used"] = quota.Balance.Used
+		item["total"] = quota.Balance.Total
+	}
+	if quota.BalanceErr != nil {
+		item["credit_error"] = quota.BalanceErr.Error()
+	}
+	if quota.Activity != nil {
+		item["daily_checkin"] = map[string]any{
+			"campaign_id": quota.Activity.CampaignID,
+			"claimable":   quota.Activity.Claimable,
+			"status":      quota.Activity.Status,
+		}
+	}
+	if quota.ActivityErr != nil {
+		item["activity_error"] = quota.ActivityErr.Error()
+	}
+	return item
+}
+
+// quotaListJSON renders every account's figures, in host order.
+func quotaListJSON(quotas []accountQuota) []map[string]any {
+	out := make([]map[string]any, 0, len(quotas))
+	for _, quota := range quotas {
+		out = append(out, quotaJSON(quota))
+	}
+	return out
+}
+
 // fetchCreditBalance reads /snap-manager/v1/statistics/plugin. The response is a
 // bare object, not a {code,data} envelope.
 func fetchCreditBalance(h *abiboot.Host, credential *Credential) (*creditBalance, error) {

@@ -167,8 +167,14 @@ func channelCell(report channelReport) template.HTML {
 	return template.HTML(`<span class="channel">` + icon + `<span class="channel-body">` + body + `</span></span>`)
 }
 
-// channelAccountsCell renders the account count: the host's credential ledger,
-// with the provider's own number next to it whenever the two disagree.
+// channelAccountsCell renders the account count — the host's credential ledger,
+// with the provider's own number next to it whenever the two disagree — and,
+// under it, one line per account the provider itself reported.
+//
+// The per-account lines are the fix for a channel whose several accounts showed
+// a single balance: the count alone never said whose numbers those were. A
+// provider that reports no figures for an account gets no line for it, and a
+// provider whose document carries no per-account list at all is unchanged.
 func channelAccountsCell(report channelReport) template.HTML {
 	if report.State == channelMissing {
 		return cell("—")
@@ -181,7 +187,33 @@ func channelAccountsCell(report channelReport) template.HTML {
 	case report.Reported != report.Accounts:
 		text += fmt.Sprintf("（provider 报告 %d）", report.Reported)
 	}
-	return cell(text)
+	lines := []template.HTML{cell(text)}
+	rendered := 0
+	for position, account := range report.AccountDetail {
+		if len(account.Figures) == 0 {
+			continue
+		}
+		if rendered == accountLinesPerChannel {
+			lines = append(lines, cell(fmt.Sprintf("…另有 %d 个账号", len(report.AccountDetail)-position)))
+			break
+		}
+		lines = append(lines, cell(account.display(position)+"："+strings.Join(account.Figures, " · ")))
+		rendered++
+	}
+	if len(lines) == 1 {
+		return lines[0]
+	}
+	return plugui.Group(lines[0], template.HTML("<br>"),
+		template.HTML(`<span class="muted">`+joinCells(lines[1:])+`</span>`))
+}
+
+// joinCells concatenates already-escaped cells with line breaks.
+func joinCells(cells []template.HTML) string {
+	parts := make([]string, 0, len(cells))
+	for _, item := range cells {
+		parts = append(parts, string(item))
+	}
+	return strings.Join(parts, "<br>")
 }
 
 // channelStatusCell renders the provider's own one-line state, or the reason

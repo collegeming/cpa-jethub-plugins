@@ -90,8 +90,14 @@ func TestManagementDispatchHTMLAndJSON(t *testing.T) {
 	if payload["refreshable"] != false {
 		t.Fatalf("refreshable = %v, want false: there is no refresh endpoint", payload["refreshable"])
 	}
-	if accounts, ok := payload["accounts"].(float64); !ok || accounts != 1 {
-		t.Fatalf("accounts = %v, want 1", payload["accounts"])
+	if count, ok := payload["account_count"].(float64); !ok || count != 1 {
+		t.Fatalf("account_count = %v, want 1", payload["account_count"])
+	}
+	// `accounts` is the per-account list; the number it used to carry lives in
+	// account_count above.
+	accounts, okAccounts := payload["accounts"].([]any)
+	if !okAccounts || len(accounts) != 1 {
+		t.Fatalf("accounts = %#v, want one entry carrying the account's own points", payload["accounts"])
 	}
 	points, ok := payload["points"].(map[string]any)
 	if !ok {
@@ -134,8 +140,11 @@ func TestStatusCountsOnlyLoomyAccounts(t *testing.T) {
 	if errUnmarshal := json.Unmarshal(response.Body, &payload); errUnmarshal != nil {
 		t.Fatalf("decode status json: %v", errUnmarshal)
 	}
-	if accounts := payload["accounts"].(float64); accounts != 1 {
-		t.Fatalf("accounts = %v, want only the Loomy credential", accounts)
+	if count := payload["account_count"].(float64); count != 1 {
+		t.Fatalf("account_count = %v, want only the Loomy credential", count)
+	}
+	if accounts := payload["accounts"].([]any); len(accounts) != 1 {
+		t.Fatalf("accounts = %#v, want only the Loomy credential", accounts)
 	}
 	account, ok := payload["account"].(map[string]any)
 	if !ok {

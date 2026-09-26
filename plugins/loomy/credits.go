@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -345,4 +346,132 @@ func handleQuotaReset(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 // trimAmount renders a point amount without a trailing `.0`.
 func trimAmount(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+// ── Per-account points ──
+
+// accountQuota is ONE Loomy account's own point state.
+//
+// Snapshot is nil when the server did not publish a balance (PointsNone marks
+// that answer, which is a fact) and PointsErr carries a failed read. A failed
+// read must render as 未知, never as 0 — 0 would read like "the points are gone"
+// (the repo's trap #11).
+type accountQuota struct {
+	// Entry is the host credential this quota belongs to.
+	Entry pluginapi.HostAuthFileEntry
+	// Credential is nil when the credential itself could not be read;
+	// CredentialErr then explains why and no upstream call was made.
+	Credential    *Credential
+	CredentialErr error
+	// Snapshot is the account's own point pools.
+	Snapshot   *pointsSnapshot
+	PointsNone bool
+	PointsErr  error
+}
+
+// collectAccountQuotas reads the points of every account, in host order, one
+// account at a time.
+//
+// Sequential on purpose: each account costs an upstream request, and the
+// reference panel queries balances one account at a time for the same reason
+// (parallel balance reads are what the provider's risk control reacts to). One
+// account's failure never stops the sweep and never hides another's figures.
+func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntry, cfg Config) []accountQuota {
+	out := make([]accountQuota, 0, len(accounts))
+	for _, entry := range accounts {
+		quota := accountQuota{Entry: entry}
+		credential, errCredential := credentialOf(h, entry)
+		if errCredential != nil {
+			quota.CredentialErr = errCredential
+			out = append(out, quota)
+			continue
+		}
+		quota.Credential = credential
+		snapshot, errPoints := fetchPoints(h, credential, cfg)
+		switch {
+		case errPoints != nil:
+			quota.PointsErr = errPoints
+		case snapshot == nil:
+			quota.PointsNone = true
+		default:
+			quota.Snapshot = snapshot
+		}
+		out = append(out, quota)
+	}
+	return out
+}
+
+// quotaOf picks one account's quota out of a collected list.
+func quotaOf(quotas []accountQuota, entry pluginapi.HostAuthFileEntry) (accountQuota, bool) {
+	for _, quota := range quotas {
+		if quota.Entry.AuthIndex == entry.AuthIndex && quota.Entry.Name == entry.Name {
+			return quota, true
+		}
+	}
+	return accountQuota{}, false
+}
+
+// quotaJSON renders one account's own figures.
+//
+// The keys are exactly the ones the selected account already publishes at the
+// top level (points / points_error / points_note), so a consumer that reads the
+// flat document can read one entry of `accounts` with the same code. A failed
+// read emits the reason and NO number at all.
+func quotaJSON(quota accountQuota) map[string]any {
+	item := map[string]any{
+		"auth_index": quota.Entry.AuthIndex,
+		"name":       quota.Entry.Name,
+		"status":     statusText(quota.Entry),
+	}
+	if label := strings.TrimSpace(quota.Entry.Label); label != "" {
+		item["label"] = label
+	}
+	if quota.CredentialErr != nil {
+		item["error"] = quota.CredentialErr.Error()
+		return item
+	}
+	item["phone"] = quota.Credential.maskedPhone()
+	item["userid"] = quota.Credential.UserID
+	item["expired"] = quota.Credential.Expired(time.Now())
+	if expiry := quota.Credential.Expiry(); !expiry.IsZero() {
+		item["expires_at"] = expiry.UTC().Format("2006-01-02T15:04:05Z07:00")
+	}
+
+	switch {
+	case quota.PointsErr != nil:
+		item["points_error"] = quota.PointsErr.Error()
+	case quota.PointsNone:
+		item["points_note"] = "服务端未返回 balance 字段"
+	default:
+		item["points"] = pointsJSON(quota.Snapshot)
+	}
+	return item
+}
+
+// pointsJSON renders the point pools the document already published.
+func pointsJSON(snapshot *pointsSnapshot) map[string]any {
+	points := map[string]any{
+		"balance":       snapshot.Balance,
+		"daily_balance": snapshot.DailyBalance,
+		"available":     snapshot.Available,
+	}
+	if snapshot.DailyQuota != nil {
+		points["daily_quota"] = *snapshot.DailyQuota
+	}
+	if snapshot.DailyConsumed != nil {
+		points["daily_consumed"] = *snapshot.DailyConsumed
+	}
+	if snapshot.DailyCycleDate != "" {
+		points["daily_cycle_date"] = snapshot.DailyCycleDate
+	}
+	return points
+}
+
+// quotaListJSON renders every account's figures, in host order.
+func quotaListJSON(quotas []accountQuota) []map[string]any {
+	out := make([]map[string]any, 0, len(quotas))
+	for _, quota := range quotas {
+		out = append(out, quotaJSON(quota))
+	}
+	return out
 }

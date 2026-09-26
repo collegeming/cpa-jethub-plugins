@@ -65,6 +65,128 @@ type traeCreditBalance struct {
 	Packages []traeCreditPackage
 }
 
+// accountQuota is ONE TRAE account's own credit and check-in state.
+//
+// A field is nil when the provider did not return it, and the matching error
+// says why. A failed read must render as 未知, never as 0 — 0 would read like
+// "the credits are spent".
+type accountQuota struct {
+	// Entry is the host credential this quota belongs to.
+	Entry pluginapi.HostAuthFileEntry
+	// Credential is nil when the credential itself could not be read;
+	// CredentialErr then explains why and no upstream call was made.
+	Credential    *Credential
+	CredentialErr error
+	// Balance is the account's own credit aggregate, or nil with BalanceErr set.
+	Balance    *traeCreditBalance
+	BalanceErr error
+	// Checkin is the account's own daily check-in state, or nil with CheckinErr.
+	Checkin    *traeCheckinStatus
+	CheckinErr error
+}
+
+// collectAccountQuotas reads the credits and check-in state of every account, in
+// host order, one account at a time.
+//
+// Sequential on purpose: each account costs two upstream requests, and the
+// reference panel queries balances one account at a time for the same reason
+// (parallel balance reads are what the provider's risk control reacts to). One
+// account's failure never stops the sweep and never hides another's figures.
+//
+// The catalog is deliberately NOT part of this sweep: it is a property of the
+// credential and costs one more request per account, so it stays on the selected
+// account's own entry (see statusJSON).
+func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntry, cfg Config) []accountQuota {
+	out := make([]accountQuota, 0, len(accounts))
+	for _, entry := range accounts {
+		quota := accountQuota{Entry: entry}
+		credential, errCredential := credentialOf(h, entry)
+		if errCredential != nil {
+			quota.CredentialErr = errCredential
+			out = append(out, quota)
+			continue
+		}
+		quota.Credential = credential
+		if balance, errBalance := fetchCreditBalance(h, credential, cfg); errBalance != nil {
+			quota.BalanceErr = errBalance
+		} else {
+			quota.Balance = balance
+		}
+		if status, errStatus := fetchCheckinStatus(h, credential, cfg); errStatus != nil {
+			quota.CheckinErr = errStatus
+		} else {
+			quota.Checkin = status
+		}
+		out = append(out, quota)
+	}
+	return out
+}
+
+// quotaOf picks one account's quota out of a collected list.
+func quotaOf(quotas []accountQuota, entry pluginapi.HostAuthFileEntry) (accountQuota, bool) {
+	for _, quota := range quotas {
+		if quota.Entry.AuthIndex == entry.AuthIndex && quota.Entry.Name == entry.Name {
+			return quota, true
+		}
+	}
+	return accountQuota{}, false
+}
+
+// quotaJSON renders one account's own figures.
+//
+// The keys are exactly the ones the selected account already publishes at the
+// top level (credits / daily_checkin), so a consumer that reads the flat
+// document can read one entry of `accounts` with the same code. A failed read
+// emits the reason and NO number at all.
+func quotaJSON(quota accountQuota) map[string]any {
+	item := map[string]any{
+		"auth_index": quota.Entry.AuthIndex,
+		"name":       quota.Entry.Name,
+		"status":     statusText(quota.Entry),
+	}
+	if label := strings.TrimSpace(quota.Entry.Label); label != "" {
+		item["label"] = label
+	}
+	if quota.CredentialErr != nil {
+		item["error"] = quota.CredentialErr.Error()
+		return item
+	}
+	item["uid"] = quota.Credential.UID
+	item["nickname"] = quota.Credential.Nickname
+	item["region"] = quota.Credential.Region
+	item["refreshable"] = quota.Credential.Refreshable()
+	item["expired"] = quota.Credential.Expired()
+	if expiresAt, ok := quota.Credential.ExpiresAtMS(); ok {
+		item["expires_at_ms"] = expiresAt
+	}
+	if quota.Balance != nil {
+		item["credits"] = quota.Balance.Total
+	}
+	if quota.BalanceErr != nil {
+		item["credit_error"] = quota.BalanceErr.Error()
+	}
+	if quota.Checkin != nil {
+		item["daily_checkin"] = map[string]any{
+			"checked_in":  quota.Checkin.CheckedIn,
+			"credits":     quota.Checkin.Credits,
+			"streak_days": quota.Checkin.StreakDays,
+		}
+	}
+	if quota.CheckinErr != nil {
+		item["checkin_error"] = quota.CheckinErr.Error()
+	}
+	return item
+}
+
+// quotaListJSON renders every account's figures, in host order.
+func quotaListJSON(quotas []accountQuota) []map[string]any {
+	out := make([]map[string]any, 0, len(quotas))
+	for _, quota := range quotas {
+		out = append(out, quotaJSON(quota))
+	}
+	return out
+}
+
 // decodeResponseBody undoes the transfer encoding of a response. The check-in
 // headers ask for `gzip, deflate` verbatim from the reference client, and an
 // explicit Accept-Encoding stops the transport from decompressing for us.

@@ -332,6 +332,149 @@ func claimCampaign(h *abiboot.Host, credential *Credential, cfg Config, campaign
 	return claimOutcome{Status: "claimed", Message: "领取成功", Amount: amount}
 }
 
+// ── Per-account quota ──
+
+// accountQuota is ONE Qoder account's own quota and check-in state.
+//
+// A quota field is nil when the provider did not publish it, and BalanceNone or
+// the matching error says why. A failed read must render as 未知, never as 0 —
+// 0 would read like "the credits are spent".
+type accountQuota struct {
+	// Entry is the host credential this quota belongs to.
+	Entry pluginapi.HostAuthFileEntry
+	// Credential is nil when the credential itself could not be read;
+	// CredentialErr then explains why and no upstream call was made.
+	Credential    *Credential
+	CredentialErr error
+	// Balance is the account's own credit aggregate. BalanceNone marks the
+	// provider's own "this account has no credit numbers" answer (企业版账号),
+	// which is a fact rather than a failure. BalanceErr carries a failed read.
+	Balance     *creditBalance
+	BalanceNone bool
+	BalanceErr  error
+	// Campaigns is the account's own daily-campaign list, CampaignsErr a failed
+	// read of it.
+	Campaigns    *campaigns
+	CampaignsErr error
+}
+
+// collectAccountQuotas reads the quota of every account, in host order, one
+// account at a time.
+//
+// Sequential on purpose: each account costs two upstream requests, and the
+// reference panel queries balances one account at a time for the same reason
+// (parallel balance reads are what the provider's risk control reacts to). One
+// account's failure never stops the sweep and never hides another's figures.
+func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntry, cfg Config) []accountQuota {
+	out := make([]accountQuota, 0, len(accounts))
+	for _, entry := range accounts {
+		quota := accountQuota{Entry: entry}
+		credential, errCredential := credentialOf(h, entry)
+		if errCredential != nil {
+			quota.CredentialErr = errCredential
+			out = append(out, quota)
+			continue
+		}
+		quota.Credential = credential
+		balance, errBalance := fetchCreditBalance(h, credential, cfg)
+		switch {
+		case errBalance != nil:
+			quota.BalanceErr = errBalance
+		case balance == nil:
+			quota.BalanceNone = true
+		default:
+			quota.Balance = balance
+		}
+		parsed, errCampaigns := loadCampaigns(h, credential, cfg)
+		if errCampaigns != nil {
+			quota.CampaignsErr = errCampaigns
+		} else {
+			quota.Campaigns = parsed
+		}
+		out = append(out, quota)
+	}
+	return out
+}
+
+// quotaOf picks one account's quota out of a collected list.
+func quotaOf(quotas []accountQuota, entry pluginapi.HostAuthFileEntry) (accountQuota, bool) {
+	for _, quota := range quotas {
+		if quota.Entry.AuthIndex == entry.AuthIndex && quota.Entry.Name == entry.Name {
+			return quota, true
+		}
+	}
+	return accountQuota{}, false
+}
+
+// quotaJSON renders one account's own figures.
+//
+// The keys are exactly the ones the selected account already publishes at the
+// top level (credits / credit_error / credit_note / daily_checkin), so a
+// consumer that reads the flat document can read one entry of `accounts` with
+// the same code. A failed read emits the reason and NO number at all.
+func quotaJSON(quota accountQuota) map[string]any {
+	item := map[string]any{
+		"auth_index": quota.Entry.AuthIndex,
+		"name":       quota.Entry.Name,
+		"status":     statusText(quota.Entry),
+	}
+	if label := strings.TrimSpace(quota.Entry.Label); label != "" {
+		item["label"] = label
+	}
+	if quota.CredentialErr != nil {
+		item["error"] = quota.CredentialErr.Error()
+		return item
+	}
+	item["region"] = string(quota.Credential.regionOr(activeRegion()))
+	item["expires_at"] = jsonTime(quota.Credential.ExpiresAt())
+	item["refreshable"] = quota.Credential.Refreshable()
+	item["has_uid"] = strings.TrimSpace(quota.Credential.UID) != ""
+
+	switch {
+	case quota.BalanceErr != nil:
+		item["credit_error"] = quota.BalanceErr.Error()
+	case quota.BalanceNone:
+		item["credit_note"] = "企业版账号不下发额度数字"
+	default:
+		item["credits"] = creditsJSON(quota.Balance)
+	}
+	if quota.CampaignsErr != nil {
+		item["activity_error"] = quota.CampaignsErr.Error()
+	} else if quota.Campaigns != nil {
+		item["daily_checkin"] = map[string]any{
+			"claimable": len(claimableCampaigns(quota.Campaigns)) > 0,
+			"show":      quota.Campaigns.ShowCampaign,
+			"campaigns": len(quota.Campaigns.Campaigns),
+		}
+	}
+	return item
+}
+
+// creditsJSON renders the credit aggregate the document already published.
+func creditsJSON(balance *creditBalance) map[string]any {
+	packages := make([]map[string]any, 0, len(balance.Packages))
+	for _, pkg := range balance.Packages {
+		packages = append(packages, map[string]any{
+			"name":       pkg.Name,
+			"remaining":  pkg.Remaining,
+			"total":      pkg.Total,
+			"used":       pkg.Used,
+			"unit":       pkg.Unit,
+			"expired_at": pkg.ExpiredTime,
+		})
+	}
+	return map[string]any{"total": balance.Total, "packages": packages}
+}
+
+// quotaListJSON renders every account's figures, in host order.
+func quotaListJSON(quotas []accountQuota) []map[string]any {
+	out := make([]map[string]any, 0, len(quotas))
+	for _, quota := range quotas {
+		out = append(out, quotaJSON(quota))
+	}
+	return out
+}
+
 // claimDailyCheckin claims every currently claimable campaign
 // (`claimQoderDailyCheckin`, `qoder-credits.ts:456-481`).
 func claimDailyCheckin(h *abiboot.Host, credential *Credential, cfg Config) (claimOutcome, error) {

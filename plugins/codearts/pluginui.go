@@ -98,6 +98,12 @@ func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credenti
 
 // renderStatusPage renders the account overview, optionally after performing a
 // check-in.
+//
+// There is ONE card per account, in the same order as the account list, and each
+// card carries that account's own figures — never the selected account's numbers
+// repeated. Both the upstream reads and the cards are per account, so a channel
+// with several accounts shows several balances, which is what the reference
+// panel does.
 func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	accounts := codeartsAccounts(h)
 	if len(accounts) == 0 {
@@ -116,67 +122,84 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		)
 	}
 
-	body := make([]template.HTML, 0, 4)
+	quotas := collectAccountQuotas(h, accounts)
+
+	body := make([]template.HTML, 0, len(quotas)+2)
 	if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "checkin") {
 		body = append(body, renderCheckinOutcome(h, entry))
 	}
-
-	accountFields := []plugui.Field{
-		{Label: "名称", Value: entry.Name},
-		{Label: "状态", Value: statusText(entry)},
+	for _, quota := range quotas {
+		body = append(body, renderQuotaCard(quota, quota.Entry.AuthIndex == entry.AuthIndex))
 	}
-	if entry.AuthIndex != "" {
-		accountFields = append(accountFields, plugui.Field{Label: "索引", Value: entry.AuthIndex})
-	}
-
-	creditFields := []plugui.Field{}
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		creditFields = append(creditFields, plugui.Field{Label: "凭据", Value: "无法读取：" + errCredential.Error()})
-	} else {
-		accountFields = append(accountFields,
-			plugui.Field{Label: "有效期至", Value: formatExpiry(credential.Expiry())},
-			plugui.Field{Label: "可自动续期", Value: yesNo(credential.Refreshable())},
-		)
-		if credential.UserName != "" {
-			accountFields = append(accountFields, plugui.Field{Label: "用户", Value: credential.UserName})
-		}
-		if balance, errBalance := fetchCreditBalance(h, credential); errBalance != nil {
-			creditFields = append(creditFields, plugui.Field{Label: "额度", Value: "查询失败：" + errBalance.Error()})
-		} else {
-			creditFields = append(creditFields,
-				plugui.Field{Label: "计费方式", Value: creditPackageText(balance.IsCreditPackage)},
-				plugui.Field{Label: "剩余额度", Value: fmt.Sprintf("%.2f", balance.Remaining)},
-				plugui.Field{Label: "已用额度", Value: fmt.Sprintf("%.2f", balance.Used)},
-			)
-			if activity, errActivity := fetchDailyActivity(h, credential); errActivity == nil && activity != nil {
-				creditFields = append(creditFields, plugui.Field{Label: "今日签到", Value: checkinText(activity)})
-			}
-		}
-	}
-
-	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
-		plugui.Action{Label: "签到", Query: "action=checkin", Kind: "primary"},
-		// 重新登录 names the account it re-authorises, so the new credential
-		// replaces that account's file instead of adding a second entry; 新建账号
-		// deliberately names no account and derives a fresh file name.
-		plugui.Action{Label: "重新登录", Path: "login", Query: accountQuery(entry)},
-		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
-	))
-	if len(creditFields) > 0 {
-		body = append(body, plugui.Card("额度", plugui.Fields(creditFields...)))
-	}
-	if switcher := renderAccountList(accounts, entry.AuthIndex); switcher != "" {
-		body = append(body, switcher)
-	}
+	// 新建账号 stays reachable even for a single account, which is why the
+	// account list card is rendered whenever there is at least one account.
+	body = append(body, renderAccountList(accounts, entry.AuthIndex))
 	return plugui.HTML("CodeArts Agent", body...)
 }
 
-// renderAccountList renders the switcher across accounts.
-func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) template.HTML {
-	if len(accounts) < 2 {
-		return ""
+// renderQuotaCard renders one account: its identity, its OWN quota and its OWN
+// check-in state, with the two per-account actions.
+//
+// The card title names the account, so ten cards stay tellable apart, and every
+// number shown belongs to the account in the title. An unreadable credential or
+// balance is stated as such — the card never falls back to 0.
+func renderQuotaCard(quota accountQuota, current bool) template.HTML {
+	entry := quota.Entry
+	fields := []plugui.Field{{Label: "状态", Value: statusText(entry)}}
+	if entry.AuthIndex != "" {
+		fields = append(fields, plugui.Field{Label: "索引", Value: entry.AuthIndex})
 	}
+	switch {
+	case quota.CredentialErr != nil:
+		fields = append(fields, plugui.Field{Label: "凭据", Value: "无法读取：" + quota.CredentialErr.Error()})
+	default:
+		fields = append(fields,
+			plugui.Field{Label: "有效期至", Value: formatExpiry(quota.Credential.Expiry())},
+			plugui.Field{Label: "可自动续期", Value: yesNo(quota.Credential.Refreshable())},
+		)
+		if quota.Credential.UserName != "" {
+			fields = append(fields, plugui.Field{Label: "用户", Value: quota.Credential.UserName})
+		}
+		switch {
+		case quota.BalanceErr != nil:
+			fields = append(fields, plugui.Field{Label: "额度", Value: "查询失败：" + quota.BalanceErr.Error()})
+		case quota.Balance != nil:
+			fields = append(fields,
+				plugui.Field{Label: "计费方式", Value: creditPackageText(quota.Balance.IsCreditPackage)},
+				plugui.Field{Label: "剩余额度", Value: formatCredit(quota.Balance.Remaining)},
+				plugui.Field{Label: "已用额度", Value: formatCredit(quota.Balance.Used)},
+			)
+			switch {
+			case quota.ActivityErr != nil:
+				fields = append(fields, plugui.Field{Label: "今日签到", Value: "查询失败：" + quota.ActivityErr.Error()})
+			case quota.Activity != nil:
+				fields = append(fields, plugui.Field{Label: "今日签到", Value: checkinText(quota.Activity)})
+			}
+		}
+	}
+	title := "额度 · " + entry.Name
+	if current {
+		title += "（当前）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "签到", Query: "action=checkin&" + accountQuery(entry), Kind: "primary"},
+		// 重新登录 names the account it re-authorises, so the new credential
+		// replaces that account's file instead of adding a second entry.
+		plugui.Action{Label: "重新登录", Path: "login", Query: accountQuery(entry)},
+	)
+}
+
+// formatCredit renders a credit amount the way the provider reports it: two
+// decimals, like the balance endpoint and the reference panel do.
+func formatCredit(value float64) string {
+	return fmt.Sprintf("%.2f", value)
+}
+
+// renderAccountList renders the switcher across accounts.
+//
+// It is rendered for a single account as well, because it carries 新建账号 —
+// the only way to add a SECOND account from this page.
+func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) template.HTML {
 	fields := make([]plugui.Field, 0, len(accounts))
 	for _, entry := range accounts {
 		marker := ""
@@ -185,7 +208,13 @@ func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) t
 		}
 		fields = append(fields, plugui.Field{Label: entry.Name + marker, Value: statusText(entry)})
 	}
-	return plugui.Card("全部账号（在地址后追加 ?auth_index=<索引> 可切换）", plugui.Fields(fields...))
+	title := "全部账号"
+	if len(accounts) > 1 {
+		title += "（在地址后追加 ?auth_index=<索引> 可切换）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
+	)
 }
 
 // renderCheckinOutcome performs the daily check-in and renders its result.
@@ -223,36 +252,68 @@ func checkinNotice(outcome *checkinOutcome) template.HTML {
 
 // statusJSON is the machine-readable form of the status page, served when the
 // caller asks for `?format=json` or does not accept HTML.
+//
+// The document reports EVERY account this plugin owns: `accounts` carries one
+// entry per account, in host order, each with that account's own quota and
+// check-in state. The selected account's fields stay at the top level, so a
+// consumer that only ever read the flat document (the hub's channel overview,
+// CPAMP) keeps working unchanged.
+//
+// A failed read is reported as an error field on the entry that failed and never
+// as a zero: remaining/used/total are simply absent when they could not be read.
 func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
-	if len(codeartsAccounts(h)) == 0 {
-		return jsonManagementResponse(http.StatusOK, map[string]any{"account": nil, "accounts": 0})
+	accounts := codeartsAccounts(h)
+	if len(accounts) == 0 {
+		return jsonManagementResponse(http.StatusOK, map[string]any{
+			"account": nil, "accounts": []map[string]any{}, "account_count": 0,
+		})
 	}
 	entry, found := selectAccount(h, request)
 	if !found {
 		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "指定的 auth_index 不存在"})
 	}
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": errCredential.Error()})
-	}
-	balance, errBalance := fetchCreditBalance(h, credential)
-	if errBalance != nil {
-		return jsonManagementResponse(http.StatusBadGateway, map[string]any{"error": errBalance.Error()})
-	}
+
+	quotas := collectAccountQuotas(h, accounts)
 	body := map[string]any{
-		"auth_index":     entry.AuthIndex,
-		"name":           entry.Name,
-		"credit_package": balance.IsCreditPackage,
-		"remaining":      balance.Remaining,
-		"used":           balance.Used,
-		"total":          balance.Total,
+		"account_count": len(accounts),
+		"accounts":      quotaListJSON(quotas),
+		"auth_index":    entry.AuthIndex,
+		"name":          entry.Name,
+		"status":        statusText(entry),
 	}
-	if activity, errActivity := fetchDailyActivity(h, credential); errActivity == nil && activity != nil {
+	if label := strings.TrimSpace(entry.Label); label != "" {
+		body["label"] = label
+	}
+
+	current, okCurrent := quotaOf(quotas, entry)
+	if !okCurrent {
+		// Unreachable while accounts and quotas come from the same listing.
+		body["error"] = "无法定位该账号的额度记录"
+		return jsonManagementResponse(http.StatusOK, body)
+	}
+	switch {
+	case current.CredentialErr != nil:
+		body["error"] = current.CredentialErr.Error()
+	case current.BalanceErr != nil:
+		// The document is still served: the other accounts' figures and the
+		// account count are exactly what the hub needs, and this account's
+		// balance is reported as unknown rather than as 0.
+		body["credit_error"] = current.BalanceErr.Error()
+	default:
+		body["credit_package"] = current.Balance.IsCreditPackage
+		body["remaining"] = current.Balance.Remaining
+		body["used"] = current.Balance.Used
+		body["total"] = current.Balance.Total
+	}
+	if current.Activity != nil {
 		body["daily_checkin"] = map[string]any{
-			"campaign_id": activity.CampaignID,
-			"claimable":   activity.Claimable,
-			"status":      activity.Status,
+			"campaign_id": current.Activity.CampaignID,
+			"claimable":   current.Activity.Claimable,
+			"status":      current.Activity.Status,
 		}
+	}
+	if current.ActivityErr != nil {
+		body["activity_error"] = current.ActivityErr.Error()
 	}
 	return jsonManagementResponse(http.StatusOK, body)
 }

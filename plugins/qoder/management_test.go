@@ -223,10 +223,12 @@ func TestStatusPageRendersHTML(t *testing.T) {
 	if strings.Contains(strings.ToLower(page), "<form") {
 		t.Fatal("the page contains a form; the resource mount is dispatched as GET only")
 	}
-	if !strings.Contains(page, `href="login"`) {
+	// Every action names the account it acts on, so the links carry a selector;
+	// the two routes must still be reachable from the page.
+	if !strings.Contains(page, `href="login`) {
 		t.Error("the status page has no link to the login page")
 	}
-	if !strings.Contains(page, `href="checkin"`) {
+	if !strings.Contains(page, `href="checkin`) {
 		t.Error("the status page has no link to the check-in page")
 	}
 }
