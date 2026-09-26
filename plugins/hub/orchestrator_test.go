@@ -356,8 +356,8 @@ func TestAggregatedVerdicts(t *testing.T) {
 	}
 
 	summary := result.summary()
-	if summary["total"] != 11 {
-		t.Fatalf("summary total = %d, want 11: %v", summary["total"], summary)
+	if summary["total"] != 12 {
+		t.Fatalf("summary total = %d, want 12: %v", summary["total"], summary)
 	}
 	for _, pair := range []struct {
 		kind rowKind
@@ -366,7 +366,8 @@ func TestAggregatedVerdicts(t *testing.T) {
 		{kindClaimed, 5},
 		{kindAlreadyClaimed, 2},
 		{kindUnavailable, 3},
-		{kindUnsupported, 1},
+		// cline and raccoon both have no check-in endpoint upstream.
+		{kindUnsupported, 2},
 		{kindFailed, 0},
 	} {
 		if summary[string(pair.kind)] != pair.want {

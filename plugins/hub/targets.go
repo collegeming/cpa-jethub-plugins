@@ -160,6 +160,16 @@ func targetCatalogue() []target {
 			CheckinQuery: url.Values{"action": {"claim"}},
 			Note:         "只执行每日赠送额度初始化，不含一次性新手任务（/onboarding）",
 		},
+		{
+			ID: "raccoon", Label: "Raccoon（商汤）", Icon: brandicons.Raccoon,
+			Support: supportNone,
+			// No daily check-in exists upstream: the daily 300 is granted by the
+			// server on its own. The one-off desktop login reward is a separate,
+			// explicitly-invoked action on the plugin's own page and must never be
+			// swept into a "claim everything" run, which is what this catalogue
+			// drives.
+			Note: "Raccoon 没有每日签到（每日额度由服务端自动发放）；一次性登录奖励需在插件页单独领取，不参与一键动作",
+		},
 	}
 }
 

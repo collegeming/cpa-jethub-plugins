@@ -28,10 +28,11 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | `lobsterai` | LobsterAI（有道） | 状态、登录、签到 | 5 | 有道 LobsterAI，本地回环回调 + authCode 换取 |
 | `cline` | Cline | 状态、登录 | 9 | Cline（cline.bot），WorkOS 设备码登录，标准 OpenAI 兼容推理 |
 | `loomy` | Loomy（讯飞） | 状态、登录、签到 | 10 | 讯飞 Loomy，微信扫码登录（备用：短信验证码），两个积分池 + 新手任务 |
+| `raccoon` | Raccoon（商汤小浣熊） | 状态、登录、一次性奖励 | 7 | 商汤 Raccoon Work，**仅**微信扫码登录（手机验证码需要人机验证，未实现），模型价格随名称显示；**没有每日签到** |
 | `hub` | Jet Hub | 状态、一键签到 | 4 | 编排型插件：读取各 provider 状态并一次点击完成全部签到 |
 | `codebuddy-intl` 等 | CodeBuddy／WorkBuddy | 状态、登录、签到 | 9 | 见下方「产品变体」——同一份代码按产品构建的独立插件 |
 
-七个适配器都实现了完整方法面（另有一个编排型的 `hub`）：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器统一声明 `chat-completions` 入出格式且 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
+八个适配器都实现了完整方法面（另有一个编排型的 `hub`）：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器统一声明 `chat-completions` 入出格式且 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
 
 ### 选择平台／区域
 
@@ -67,6 +68,10 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
   - 它是唯一**不能续期**的：后端没有 refresh 端点，`auth.refresh` 只做有效性探测，失效即提示重新登录。这是如实标记，不是遗漏。
   - 积分是**两个池**（永久积分 + 每日赠送，消耗后不回补），分开显示；鉴权头也分两套——`/chat/completions` 用 `Bearer`，而 `/models`、`/points/*`、`/onboarding/*` **只认小写 `token` 头**，带错的那个返回 **HTTP 200** 加 `code:100002`，只看状态码会误判成功。
   它的账号接口用 HMAC-SHA1 签名，密钥是**参考实现内置的客户端凭据**（不是你的账号凭据）。若上游轮换该密钥，需要手机号的那几步（短信登录、微信首次登录时的手机号绑定）会失效而其余接口不受影响；配置项 `account_ak` / `account_sk` 可在不重新构建的情况下替换。
+- **Raccoon（商汤小浣熊）是唯一「只能扫码」的**，有两点必须知情：
+  - **没有短信登录，这不是遗漏**：每一次 `send_sms` 都必须带阿里云的 `captcha_param`，而它只能由阿里云的前端 JS 在**人手动拖滑块**之后生成——没有无头路径。插件因此在登录页用一行说明这件事，并且**只提供微信扫码**，不放一个注定失败的按钮。登录页的二维码由本插件**本地**生成（`code` 是本地随机的 32 位小写十六进制，二维码内容 `https://xiaohuanxiong.com/login/mp?code=<code>&appname=商汤小浣熊官网`，共 144 字节，版本 8 / 纠错级别 M），页面用 `plugui.Image` 内联 PNG、用 `<meta http-equiv="refresh">` 每次加载只轮询一次；`canceled` 会自动换一张新码，`pending`／`logging`／`success` 之外的任何状态（含网络错误、无 token 的 success）都按 `pending` 处理。
+  - **没有每日签到**：每日 300 积分由服务端自动发放，**没有对应接口**，所以本插件不提供签到按钮、也没有 `/checkin` 路由，更不参与 `hub` 的一键签到。唯一可领取的是**一次性**桌面端登录奖励（`POST /api/web/desktop/v1/login/points/grant`，每号一次，靠服务端 `granted` 标记幂等），它在状态页之外单独成页、只由显式点击触发，**不在任何自动或「全部领取」路径里**。
+  另有两点与协议细节有关：`access_token` 会在每次续期时轮换，因此插件不把任何持久结构（凭据文件名、限额记录）建在它上面，一律用 `user_id`／昵称+手机尾号；而 `X-Client-Platform` 是登录奖励接口的**必需**头，缺了会被拒绝。
 - **`hub` 是怎么跨插件工作的**：CPA 里一个插件不能直接调用另一个插件，管理 API 又需要插件拿不到的密钥。但**插件的 resource 路由不受管理密钥保护且派发 GET**，于是 `hub` 通过宿主的 HTTP 客户端回环读取各 provider 自己的 `status?format=json`（渲染侧边栏里那一行「Jet Hub」的渠道总览），并在显式点击一键签到时回环调用各 provider 自己的签到页，再汇总成一张表。两个前提：各 provider 页面支持 `?format=json`；以及 `host_base_url` 配置项——**宿主不向插件暴露自己的 HTTP 端口**（`HostConfigSummary` 没有 port 字段），所以只能配置，默认 `http://127.0.0.1:8317`。
   因为走的是宿主的 HTTP 客户端，它**会受 CPA 出站代理设置影响**：若代理拦截 `127.0.0.1`，回环调用会失败。
   每个 provider 的 `status?format=json` 都有一个 `accounts` 数组：**每个账号一项**，带该账号自己的额度／签到字段（字段名与该 provider 顶层所选账号的一致），另有数字型的 `account_count`；所选账号的字段同时保留在顶层，读旧字段的调用方不受影响。渠道总览据此**按账号逐行**显示余额，而不再是一个渠道一个数字（同一份数据也出现在 hub 自己的 `channels[].account_details` 里）；宿主凭据列表与 provider 自报账号数的交叉核对仍然保留，两边不一致时照旧标出。
@@ -342,6 +347,8 @@ curl http://localhost:8317/v1/chat/completions \
 - **`codearts` 走通凭据解析到模型目录的全链路**：注入测试凭据后宿主日志出现 `processing auth file` 与 `Registered new model ... from provider codearts`，`/v1/models` 返回 16 个模型；
 - **方法面**逐个经 C `dlopen` 探针调用：`plugin.register`、`auth.identifier`、`model.register`、`model.static`、`quota.identifier`、`quota.describe`、`request.translate`、`response.translate`、`management.register` 在 5 个插件上全部返回成功 envelope；
 - **`registry.json` 清单**用 CPA 真实解析器（`ParseRegistry` + `ValidateRegistry`）校验通过；发布产物按规范打包并校验 sha256。
+
+**Raccoon 的验证边界**：本仓库**没有** Raccoon 账号，因此只验证到「二维码页能打开、页面带可扫码的 PNG、轮询能跑」——**真实的微信扫码登录、模型推理与积分领取都没有跑通**。二维码编码器本身有独立验收：`go test ./internal/jethub/qr/` 会用 jsQR（与编码器无关的解码器）把渲染出的 PNG 解回来，覆盖 144 字节的真实登录 URL（版本 8）、"HELLO WORLD" 与 1–10 全部版本。另外两条前提**未对生产验证**：账号池身份字段是 `access_token`（会轮换，插件已避免依赖它），以及「服务端接受任意自造 code」——这只是参考实现的源码注释，没有测试覆盖。
 
 **尚未验证的部分**：五个平台的上游协议都**没有对真实服务端跑通过**——这里没有它们的账号。签名算法、载荷转换、SSE 解析、登录状态机、错误分类由单元测试覆盖（`go test ./...`），但**真实登录授权、模型调用与每日签到需要你用真实账号各试一次**。已知的取舍与未移植项记录在 [docs/PORTING.md](docs/PORTING.md)。
 

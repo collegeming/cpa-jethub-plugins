@@ -104,6 +104,22 @@
       ]
     },
     {
+      "id": "raccoon",
+      "name": "Raccoon（商汤小浣熊）",
+      "description": "商汤 Raccoon Work 接入：微信扫码登录（无短信路径）、令牌续期、动态模型目录（价格随名称显示）、OpenAI 兼容流式推理与积分余额；没有每日签到，唯一可领取的是一次性桌面端登录奖励。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "SenseTime",
+        "Raccoon",
+        "QRLogin",
+        "Credits"
+      ]
+    },
+    {
       "id": "hub",
       "name": "Jet Hub（一键签到）",
       "description": "跨渠道统一面板：读取各 provider 插件的状态并以一次点击完成全部每日签到，逐账号如实区分「已领取／领取成功／无账号／不支持」。",
