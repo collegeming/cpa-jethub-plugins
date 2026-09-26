@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
 	"strconv"
 	"strings"
 
@@ -26,7 +27,7 @@ const (
 	// invented URL would render as a broken image in the manager.
 	// The icon the Loomy site itself links. An empty logo renders nothing in
 	// the panel, which is what every plugin looked like before this was set.
-	Logo = "https://loomy.xunfei.cn/icon.png?5f7e7b8be5d4c76b"
+	Logo = brandicons.Loomy
 )
 
 // Hosts and paths. Both are PRODUCTION addresses and the source explicitly

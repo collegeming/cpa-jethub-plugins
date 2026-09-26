@@ -19,6 +19,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -97,7 +98,7 @@ func (p *plugin) Registration() abiboot.Registration {
 		Version:          Version,
 		Author:           Author,
 		GitHubRepository: Repository,
-		Logo:             "https://qoder.com/favIcon.svg",
+		Logo:             brandicons.Qoder,
 		ConfigFields:     configFieldsForHost(),
 	}
 	capabilities := abiboot.Capabilities{

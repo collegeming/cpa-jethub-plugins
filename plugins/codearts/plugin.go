@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -83,7 +84,7 @@ func (p *plugin) Registration() abiboot.Registration {
 		GitHubRepository: "https://github.com/collegeming/cpa-jethub-plugins",
 		// The site root favicon answers with HTML, not an image; the portal's own
 		// /favicon.ico is the one that actually serves an icon.
-		Logo:         "https://codearts.huaweicloud.com/favicon.ico",
+		Logo:         brandicons.CodeArts,
 		ConfigFields: configFieldsForHost(),
 	}
 	capabilities := abiboot.Capabilities{

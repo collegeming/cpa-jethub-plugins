@@ -27,6 +27,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -109,7 +110,7 @@ func (p *plugin) Registration() abiboot.Registration {
 		// at, so none is claimed.
 		// The icon the Cline site itself links. An empty logo renders nothing in
 		// the panel, which is what every plugin looked like before this was set.
-		Logo:         "https://cline.bot/assets/branding/favicons/favicon-16x16.png",
+		Logo:         brandicons.Cline,
 		ConfigFields: configFieldsForHost(),
 	}
 	capabilities := abiboot.Capabilities{

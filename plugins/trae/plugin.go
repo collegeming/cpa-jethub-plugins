@@ -19,6 +19,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -100,7 +101,7 @@ func (p *plugin) Registration() abiboot.Registration {
 		GitHubRepository: "https://github.com/collegeming/cpa-jethub-plugins",
 		// The reference sources declare no logo asset. This is the icon the TRAE
 		// site itself links, so it is the vendor's own mark rather than a guess.
-		Logo:         "https://lf-cdn.trae.com.cn/obj/trae-com-cn/trae_website_prod_cn/favicon.png",
+		Logo:         brandicons.Trae,
 		ConfigFields: configFieldsForHost(),
 	}
 	capabilities := abiboot.Capabilities{

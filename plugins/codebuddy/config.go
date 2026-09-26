@@ -15,6 +15,7 @@ package main
 // X-Product-Code / 兜底模型表 —— 与 TS 的差异全部收敛在本文件的产品表里。
 
 import (
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
 	"strconv"
 	"strings"
 
@@ -204,7 +205,7 @@ const (
 var Products = []productConfig{
 	{
 		ID:          "buddy",
-		LogoURL:     "https://download.codebuddy.cn/web/website/2323ea5befd8bcf62c88b96b44fc8f6c83815612/assets/logo.svg",
+		LogoURL:     brandicons.CodeBuddy,
 		ConfigValue: ProductCodeBuddy,
 		Platform:    "ide",
 		Endpoint:    APIEndpoint,
@@ -223,7 +224,7 @@ var Products = []productConfig{
 	},
 	{
 		ID:          "buddy-intl",
-		LogoURL:     "https://codebuddy-1328495429.cos.accelerate.myqcloud.com/web/ide/logo.svg",
+		LogoURL:     brandicons.CodeBuddy,
 		ConfigValue: ProductCodeBuddyIntl,
 		Platform:    "ide",
 		Endpoint:    "https://www.codebuddy.ai",
@@ -242,7 +243,7 @@ var Products = []productConfig{
 	},
 	{
 		ID:          "workbuddy-cn",
-		LogoURL:     "https://download.codebuddy.ai/web/workbuddy/ea2a61614c71b7bed74ab35460e918796a083362/assets/logo.svg",
+		LogoURL:     brandicons.WorkBuddy,
 		ConfigValue: ProductWorkBuddyCN,
 		Platform:    "workbuddy",
 		Endpoint:    APIEndpoint,
@@ -262,7 +263,7 @@ var Products = []productConfig{
 	},
 	{
 		ID:          "workbuddy",
-		LogoURL:     "https://download.codebuddy.ai/web/workbuddy/ea2a61614c71b7bed74ab35460e918796a083362/assets/logo.svg",
+		LogoURL:     brandicons.WorkBuddy,
 		ConfigValue: ProductWorkBuddy,
 		Platform:    "workbuddy-ai",
 		Endpoint:    "https://www.workbuddy.ai",

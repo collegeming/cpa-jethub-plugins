@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
 	"strconv"
 	"strings"
 	"time"
@@ -31,7 +32,7 @@ const (
 	// Logo is the plugin display asset shown by management clients.
 	// The product domain serves no /favicon.ico (404); this is the icon the
 	// site itself links from Youdao's shared CDN.
-	Logo = "https://shared.ydstatic.com/images/favicon.ico"
+	Logo = brandicons.LobsterAI
 
 	// APIBase is the upstream API host (lobsterai-product.ts:421).
 	APIBase = "https://lobsterai-server.youdao.com"
