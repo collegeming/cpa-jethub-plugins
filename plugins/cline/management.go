@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/plugui"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -143,16 +144,38 @@ func selectAccount(h *abiboot.Host, request pluginapi.ManagementRequest) (plugin
 	return pluginapi.HostAuthFileEntry{}, false
 }
 
-// credentialOf loads and parses the credential of one account.
-func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, error) {
+// credentialOf loads one account's credential and makes sure it is still valid
+// before a page uses it: an expired credential — or one inside the renewal lead
+// window — is renewed through this provider's own `auth.refresh` handler and
+// written back to the auth file the host knows.
+//
+// The returned error covers a credential that could not be READ. A renewal that
+// failed comes back inside the result (Result.Err) instead: it does not stop the
+// caller from showing the credential's own fields, and — while the credential is
+// still inside its validity — does not stop the upstream read either.
+func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, authrefresh.Result, error) {
 	if strings.TrimSpace(entry.AuthIndex) == "" {
-		return nil, statusError(false, "missing_auth", http.StatusBadRequest, "账号 %s 缺少运行时索引", entry.Name)
+		return nil, authrefresh.Result{}, statusError(false, "missing_auth", http.StatusBadRequest, "账号 %s 缺少运行时索引", entry.Name)
 	}
 	auth, errGet := h.GetAuth(entry.AuthIndex)
 	if errGet != nil {
-		return nil, errGet
+		return nil, authrefresh.Result{}, errGet
 	}
-	return ParseCredential(auth.JSON)
+	credential, errParse := ParseCredential(auth.JSON)
+	if errParse != nil {
+		return nil, authrefresh.Result{}, errParse
+	}
+	result, _ := credentialRefresher.Ensure(h, authrefresh.Request{
+		Name:        authNameForHost(entry.Name, entry.Path, entry.Source, credential),
+		StorageJSON: auth.JSON,
+		Attributes:  map[string]string{"path": entry.Path, "source": entry.Source},
+	})
+	if len(result.Storage) > 0 {
+		if renewed, errRenewed := ParseCredential(result.Storage); errRenewed == nil {
+			credential = renewed
+		}
+	}
+	return credential, result, nil
 }
 
 // refreshAccount renews one account and persists the result through the host.
@@ -161,7 +184,7 @@ func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credenti
 // host writes it; a page-driven refresh has to save it itself (the same
 // arrangement the other device-code plugins use for their browser login page).
 func refreshAccount(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, error) {
-	credential, errCredential := credentialOf(h, entry)
+	credential, _, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		return nil, errCredential
 	}
@@ -215,11 +238,19 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		"name":       entry.Name,
 		"status":     statusText(entry),
 	}
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		account["error"] = errCredential.Error()
 		body["account"] = account
 		return jsonManagementResponse(statusOf(errCredential, http.StatusOK), body)
+	}
+	// The renewal the page just performed, and a renewal that failed, belong to
+	// the account's own state.
+	if freshness.Refreshed {
+		account["refreshed"] = true
+	}
+	if freshness.Err != nil {
+		account["refresh_error"] = freshness.Err.Error()
 	}
 	account["account_id"] = credential.AccountID
 	account["email"] = credential.Email

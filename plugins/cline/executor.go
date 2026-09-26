@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -81,7 +82,7 @@ func handleExecutorCountTokens(_ *abiboot.Host, raw json.RawMessage) (any, error
 // handleExecutorExecute serves a non-streaming completion. Cline only streams
 // upstream, so the stream is folded into one chat.completion.
 func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
-	request, credential, cfg, errDecode := decodeExecutorCall(raw)
+	request, credential, cfg, errDecode := decodeExecutorCall(h, raw)
 	if errDecode != nil {
 		return nil, errDecode
 	}
@@ -122,7 +123,7 @@ func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
 // buffered, which is also why the SSE idle timeouts of `cline-adapter.ts:135-140`
 // cannot be enforced here (the host owns the transport deadline).
 func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, error) {
-	request, credential, cfg, errDecode := decodeExecutorCall(raw)
+	request, credential, cfg, errDecode := decodeExecutorCall(h, raw)
 	if errDecode != nil {
 		return nil, errDecode
 	}
@@ -138,12 +139,26 @@ func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, err
 }
 
 // decodeExecutorCall decodes the request and the credential it is bound to.
-func decodeExecutorCall(raw json.RawMessage) (pluginapi.ExecutorRequest, *Credential, Config, error) {
+//
+// The credential is renewed first when it is expired or about to expire: the
+// host's own refresh timer restarts with the process, so an expired token would
+// otherwise be signed into a request the gateway is bound to reject. The
+// expired-credential renewal inside usableCredential, and the post-401 retry in
+// executeChat, both stay as the last line of defence.
+func decodeExecutorCall(h *abiboot.Host, raw json.RawMessage) (pluginapi.ExecutorRequest, *Credential, Config, error) {
 	request, errDecode := abiboot.Decode[pluginapi.ExecutorRequest](raw)
 	if errDecode != nil {
 		return request, nil, Config{}, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	fresh, errFresh := ensureCredentialFresh(h, authrefresh.Request{
+		Name:        request.AuthID,
+		StorageJSON: request.StorageJSON,
+		Attributes:  request.AuthAttributes,
+	})
+	if errFresh != nil {
+		return request, nil, Config{}, errFresh
+	}
+	credential, errCredential := ParseCredential(fresh.Storage)
 	if errCredential != nil {
 		return request, nil, Config{}, errCredential
 	}

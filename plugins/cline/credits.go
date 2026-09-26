@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -148,7 +149,17 @@ func handleQuotaFetch(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	// The host asks for a quota read before the page is ever opened, so the
+	// credential is renewed here as well.
+	fresh, errFresh := ensureCredentialFresh(h, authrefresh.Request{
+		Name:        request.AuthID,
+		StorageJSON: request.StorageJSON,
+		Attributes:  request.Attributes,
+	})
+	if errFresh != nil {
+		return nil, errFresh
+	}
+	credential, errCredential := ParseCredential(fresh.Storage)
 	if errCredential != nil {
 		return nil, errCredential
 	}

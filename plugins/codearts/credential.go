@@ -70,13 +70,29 @@ func (c *Credential) Encode() (json.RawMessage, error) {
 // Expiry reports when the STS credentials expire. Unparseable timestamps fall
 // back to 24 hours from now, matching Jet-Hub's account-pool bookkeeping.
 func (c *Credential) Expiry() time.Time {
-	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(c.ExpiresAt)); err == nil {
-		return parsed
-	}
-	if parsed, err := time.Parse("2006-01-02T15:04:05Z", strings.TrimSpace(c.ExpiresAt)); err == nil {
+	if parsed, ok := c.ParsedExpiry(); ok {
 		return parsed
 	}
 	return time.Now().Add(24 * time.Hour)
+}
+
+// ParsedExpiry reports the expiry the credential actually carries, ok=false
+// when it carries none that can be read.
+//
+// Callers that decide whether to RENEW the credential must use this and not
+// Expiry(): the 24-hour fallback above is a display fallback, and treating it
+// as real would renew an undatable credential forever.
+func (c *Credential) ParsedExpiry() (time.Time, bool) {
+	raw := strings.TrimSpace(c.ExpiresAt)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05Z"} {
+		if parsed, errParse := time.Parse(layout, raw); errParse == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // Expired reports whether the STS credentials are past (or within skew of) their

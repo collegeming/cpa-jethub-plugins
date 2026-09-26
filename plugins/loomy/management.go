@@ -145,6 +145,17 @@ func selectAccount(h *abiboot.Host, request pluginapi.ManagementRequest) (plugin
 }
 
 // credentialOf loads and parses the credential of one account.
+//
+// ⚠️ Unlike every other provider in this repository, the credential is NOT
+// freshness-checked before use. That is deliberate, not an omission: Loomy has
+// no refresh endpoint and its credentials carry no refresh token
+// (`loomy.ts:195-205`), so `auth.refresh` is a validity PROBE and there is
+// nothing to renew. Forcing one would either invent a protocol that does not
+// exist or hammer the probe on every request; the whole point of the shared
+// refresher is that a credential with no renewal path is left alone. The honesty
+// lives on the page instead — 可自动续期 否（无 refresh_token，过期只能重新登录）
+// — and the server's 100002 stays the only authority on whether a session is
+// really dead. plugins/loomy/freshness_test.go pins all of that.
 func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, error) {
 	if h == nil || strings.TrimSpace(entry.AuthIndex) == "" {
 		return nil, statusError(false, "missing_auth", http.StatusBadRequest, "账号 %s 缺少运行时索引", entry.Name)

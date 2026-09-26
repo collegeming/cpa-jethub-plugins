@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -252,7 +253,17 @@ func handleQuotaFetch(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	// The host asks for a quota read before the page is ever opened, so the
+	// credential is renewed here as well.
+	fresh, errFresh := ensureCredentialFresh(h, authrefresh.Request{
+		Name:        request.AuthID,
+		StorageJSON: request.StorageJSON,
+		Attributes:  request.Attributes,
+	})
+	if errFresh != nil {
+		return nil, errFresh
+	}
+	credential, errCredential := ParseCredential(fresh.Storage)
 	if errCredential != nil {
 		return nil, errCredential
 	}
@@ -322,6 +333,10 @@ type accountQuota struct {
 	// CredentialErr then explains why and no upstream call was made.
 	Credential    *Credential
 	CredentialErr error
+	// Refresh is what the freshness check did to this account's credential: it
+	// says whether the credential was renewed (so the figures below come from a
+	// fresh token) and carries a renewal that failed.
+	Refresh authrefresh.Result
 	// Snapshot is the account's own point pools.
 	Snapshot   *balanceSnapshot
 	PointsNone bool
@@ -337,13 +352,14 @@ func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntr
 	out := make([]accountQuota, 0, len(accounts))
 	for _, entry := range accounts {
 		quota := accountQuota{Entry: entry}
-		credential, errCredential := credentialOf(h, entry)
+		credential, freshness, errCredential := credentialOf(h, entry)
 		if errCredential != nil {
 			quota.CredentialErr = errCredential
 			out = append(out, quota)
 			continue
 		}
 		quota.Credential = credential
+		quota.Refresh = freshness
 		snapshot, errBalance := fetchBalance(h, credential, cfg)
 		switch {
 		case errBalance != nil:
@@ -390,6 +406,12 @@ func quotaJSON(quota accountQuota) map[string]any {
 	item["userid"] = quota.Credential.UserID
 	item["expired"] = quota.Credential.Expired(nowTime())
 	item["needs_refresh"] = quota.Credential.NeedsRefresh(nowTime(), refreshWindow(settings()))
+	if quota.Refresh.Refreshed {
+		item["refreshed"] = true
+	}
+	if quota.Refresh.Err != nil {
+		item["refresh_error"] = quota.Refresh.Err.Error()
+	}
 	if expiry := quota.Credential.Expiry(); !expiry.IsZero() {
 		item["expires_at"] = expiry.UTC().Format(time.RFC3339)
 	}

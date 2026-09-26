@@ -74,7 +74,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	}
 	balanceFields := []plugui.Field{}
 
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		accountFields = append(accountFields, plugui.Field{Label: "凭据", Value: "无法读取：" + errCredential.Error()})
 	} else {
@@ -85,6 +85,15 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 			plugui.Field{Label: "可自动续期", Value: yesNo(credential.Refreshable())},
 			plugui.Field{Label: "令牌前缀", Value: tokenPrefixText(credential)},
 		)
+		// The renewal this page view just performed is stated, so a figure that
+		// only exists because the credential was renewed is never a silent
+		// surprise — and a renewal that failed is never hidden.
+		switch {
+		case freshness.Err != nil:
+			accountFields = append(accountFields, plugui.Field{Label: "自动续期", Value: "失败：" + freshness.Err.Error()})
+		case freshness.Refreshed:
+			accountFields = append(accountFields, plugui.Field{Label: "自动续期", Value: "刚刚已自动续期"})
+		}
 		balance, errBalance := fetchBalance(transportFor(h), credential, cfg)
 		switch {
 		case errBalance != nil:

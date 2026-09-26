@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -216,7 +217,7 @@ func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := decodeCredential(request.StorageJSON)
+	credential, errCredential := executorCredential(h, request)
 	if errCredential != nil {
 		return nil, errCredential
 	}
@@ -262,7 +263,7 @@ func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, err
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := decodeCredential(request.StorageJSON)
+	credential, errCredential := executorCredential(h, request)
 	if errCredential != nil {
 		return nil, errCredential
 	}
@@ -310,6 +311,21 @@ func handleExecutorCountTokens(_ *abiboot.Host, raw json.RawMessage) (any, error
 }
 
 // decodeCredential parses the executor's credential payload.
+// executorCredential renews the credential before an inference request signs
+// with it: the host's own refresh timer restarts with the process, so an expired
+// token would otherwise be signed into a request the gateway is bound to reject.
+func executorCredential(h *abiboot.Host, request pluginapi.ExecutorRequest) (*Credential, error) {
+	fresh, errFresh := ensureCredentialFresh(h, authrefresh.Request{
+		Name:        request.AuthID,
+		StorageJSON: request.StorageJSON,
+		Attributes:  request.AuthAttributes,
+	})
+	if errFresh != nil {
+		return nil, errFresh
+	}
+	return decodeCredential(fresh.Storage)
+}
+
 func decodeCredential(storage []byte) (*Credential, error) {
 	credential, err := ParseCredential(storage)
 	if err != nil {

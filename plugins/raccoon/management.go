@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -134,20 +135,38 @@ func selectAccount(h *abiboot.Host, request pluginapi.ManagementRequest) (plugin
 	return pluginapi.HostAuthFileEntry{}, false
 }
 
-// credentialOf loads and parses the credential of one account.
-func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, error) {
+// credentialOf loads one account's credential and makes sure it is still valid
+// before a page uses it: an expired credential — or one inside the renewal lead
+// window — is renewed through this provider's own `auth.refresh` handler and
+// written back to the auth file the host knows.
+//
+// The returned error covers a credential that could not be READ. A renewal that
+// failed comes back inside the result (Result.Err) instead: it does not stop the
+// caller from showing the credential's own fields, and — while the credential is
+// still inside its validity — does not stop the upstream read either.
+func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, authrefresh.Result, error) {
 	if h == nil || strings.TrimSpace(entry.AuthIndex) == "" {
-		return nil, statusError(false, "missing_auth", http.StatusBadRequest, "账号 %s 缺少运行时索引", entry.Name)
+		return nil, authrefresh.Result{}, statusError(false, "missing_auth", http.StatusBadRequest, "账号 %s 缺少运行时索引", entry.Name)
 	}
 	auth, errGet := h.GetAuth(entry.AuthIndex)
 	if errGet != nil {
-		return nil, errGet
+		return nil, authrefresh.Result{}, errGet
 	}
 	credential, errParse := ParseCredential(auth.JSON)
 	if errParse != nil {
-		return nil, errParse
+		return nil, authrefresh.Result{}, errParse
 	}
-	return credential, nil
+	result, _ := credentialRefresher.Ensure(h, authrefresh.Request{
+		Name:        authNameForHost(entry.Name, entry.Path, entry.Source, credential),
+		StorageJSON: auth.JSON,
+		Attributes:  map[string]string{"path": entry.Path, "source": entry.Source},
+	})
+	if len(result.Storage) > 0 {
+		if renewed, errRenewed := ParseCredential(result.Storage); errRenewed == nil {
+			credential = renewed
+		}
+	}
+	return credential, result, nil
 }
 
 // statusJSON is the machine-readable status payload behind `?format=json`.
@@ -212,6 +231,14 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		account["error"] = current.CredentialErr.Error()
 		return jsonManagementResponse(http.StatusOK, body)
 	}
+	if current.Refresh.Refreshed {
+		account["refreshed"] = true
+		body["refreshed"] = true
+	}
+	if current.Refresh.Err != nil {
+		account["refresh_error"] = current.Refresh.Err.Error()
+		body["refresh_error"] = current.Refresh.Err.Error()
+	}
 	body["model_count"] = len(activeCatalogue(h, current.Credential, cfg))
 	account["phone"] = current.Credential.maskedPhone()
 	account["userid"] = current.Credential.UserID
@@ -260,10 +287,14 @@ func rewardJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 	if !found {
 		return jsonManagementResponse(http.StatusNotFound, map[string]any{"error": "未找到 Raccoon 账号"})
 	}
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		return jsonManagementResponse(statusOf(errCredential, http.StatusBadRequest),
 			map[string]any{"error": errCredential.Error()})
+	}
+	if freshness.Expired && freshness.Err != nil {
+		return jsonManagementResponse(http.StatusBadGateway,
+			map[string]any{"error": "凭据已过期且自动续期失败：" + freshness.Err.Error()})
 	}
 	cfg := settings()
 	if !strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "grant") {

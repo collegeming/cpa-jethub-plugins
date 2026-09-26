@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/plugui"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -194,16 +195,38 @@ func selectAccount(h *abiboot.Host, request pluginapi.ManagementRequest) (plugin
 	return pluginapi.HostAuthFileEntry{}, false
 }
 
-// credentialOf loads and parses the credential of one account.
-func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, error) {
+// credentialOf loads one account's credential and makes sure it is still valid
+// before a page uses it: an expired credential — or one inside the renewal lead
+// window — is renewed through this provider's own `auth.refresh` handler and
+// written back to the auth file the host knows.
+//
+// The returned error covers a credential that could not be READ. A renewal that
+// failed comes back inside the result (Result.Err) instead: it does not stop the
+// caller from showing the credential's own fields, and — while the credential is
+// still inside its validity — does not stop the upstream read either.
+func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, authrefresh.Result, error) {
 	if strings.TrimSpace(entry.AuthIndex) == "" {
-		return nil, abiboot.Errorf("missing_auth", "账号 %s 缺少运行时索引", entry.Name)
+		return nil, authrefresh.Result{}, abiboot.Errorf("missing_auth", "账号 %s 缺少运行时索引", entry.Name)
 	}
 	auth, errGet := h.GetAuth(entry.AuthIndex)
 	if errGet != nil {
-		return nil, errGet
+		return nil, authrefresh.Result{}, errGet
 	}
-	return ParseCredential(auth.JSON)
+	credential, errParse := ParseCredential(auth.JSON)
+	if errParse != nil {
+		return nil, authrefresh.Result{}, errParse
+	}
+	result, _ := credentialRefresher.Ensure(h, authrefresh.Request{
+		Name:        authNameForHost(entry.Name, entry.Path, entry.Source, credential),
+		StorageJSON: auth.JSON,
+		Attributes:  map[string]string{"path": entry.Path, "source": entry.Source},
+	})
+	if len(result.Storage) > 0 {
+		if renewed, errRenewed := ParseCredential(result.Storage); errRenewed == nil {
+			credential = renewed
+		}
+	}
+	return credential, result, nil
 }
 
 // ── 页面 ──
@@ -275,6 +298,15 @@ func renderQuotaCard(quota accountQuota, current bool) template.HTML {
 			plugui.Field{Label: "可自动续期", Value: yesNo(quota.Credential.Refreshable())},
 			plugui.Field{Label: "模型数", Value: fmt.Sprintf("%d", catalogSize(product))},
 		)
+		// The renewal the page just performed is stated, so a figure that only
+		// exists because the credential was renewed is never a silent surprise —
+		// and a renewal that failed is never hidden behind a stale number.
+		switch {
+		case quota.Refresh.Err != nil:
+			fields = append(fields, plugui.Field{Label: "自动续期", Value: "失败：" + quota.Refresh.Err.Error()})
+		case quota.Refresh.Refreshed:
+			fields = append(fields, plugui.Field{Label: "自动续期", Value: "刚刚已自动续期"})
+		}
 		if quota.Credential.Nickname != "" {
 			fields = append(fields, plugui.Field{Label: "昵称", Value: quota.Credential.Nickname})
 		}
@@ -571,10 +603,17 @@ func renderCheckinPage(h *abiboot.Host, request pluginapi.ManagementRequest) plu
 			plugui.Card("无法签到", plugui.Notice("danger", "没有可用账号，请先登录。"),
 				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"}))
 	}
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		return plugui.HTML("CodeBuddy 积分",
 			plugui.Card("无法签到", plugui.Notice("danger", errCredential.Error()),
+				plugui.Action{Label: "返回状态", Path: "status"}))
+	}
+	// A check-in signs with the same credential the page reads with: an expired
+	// one that could not be renewed would only produce an upstream rejection.
+	if freshness.Expired && freshness.Err != nil {
+		return plugui.HTML("CodeBuddy 积分",
+			plugui.Card("无法签到", plugui.Notice("danger", "凭据已过期且自动续期失败："+freshness.Err.Error()),
 				plugui.Action{Label: "返回状态", Path: "status"}))
 	}
 	product := productForCredential(credential)
@@ -752,9 +791,13 @@ func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi
 	if !found {
 		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": "指定的 auth_index 不存在"})
 	}
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": errCredential.Error()})
+	}
+	if freshness.Expired && freshness.Err != nil {
+		return jsonManagementResponse(http.StatusBadGateway,
+			map[string]any{"error": "凭据已过期且自动续期失败：" + freshness.Err.Error()})
 	}
 	product := productForCredential(credential)
 	if !supportsCheckin(product) {

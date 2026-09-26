@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/plugui"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -70,16 +71,38 @@ func selectAccount(h *abiboot.Host, request pluginapi.ManagementRequest) (plugin
 	return pluginapi.HostAuthFileEntry{}, false
 }
 
-// credentialOf loads and parses the credential of one account.
-func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, error) {
+// credentialOf loads one account's credential and makes sure it is still valid
+// before a page uses it: an expired credential — or one inside the renewal lead
+// window — is renewed through this provider's own `auth.refresh` handler and
+// written back to the auth file the host knows.
+//
+// The returned error covers a credential that could not be READ. A renewal that
+// failed comes back inside the result (Result.Err) instead: it does not stop the
+// caller from showing the credential's own fields, and — while the credential is
+// still inside its validity — does not stop the upstream read either.
+func credentialOf(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) (*Credential, authrefresh.Result, error) {
 	if strings.TrimSpace(entry.AuthIndex) == "" {
-		return nil, abiboot.Errorf("missing_auth", "账号 %s 缺少运行时索引", entry.Name)
+		return nil, authrefresh.Result{}, abiboot.Errorf("missing_auth", "账号 %s 缺少运行时索引", entry.Name)
 	}
 	auth, errGet := h.GetAuth(entry.AuthIndex)
 	if errGet != nil {
-		return nil, errGet
+		return nil, authrefresh.Result{}, errGet
 	}
-	return ParseCredential(auth.JSON)
+	credential, errParse := ParseCredential(auth.JSON)
+	if errParse != nil {
+		return nil, authrefresh.Result{}, errParse
+	}
+	result, _ := credentialRefresher.Ensure(h, authrefresh.Request{
+		Name:        authNameForHost(entry.Name, entry.Path, entry.Source, credential),
+		StorageJSON: auth.JSON,
+		Attributes:  map[string]string{"path": entry.Path, "source": entry.Source},
+	})
+	if len(result.Storage) > 0 {
+		if renewed, errRenewed := ParseCredential(result.Storage); errRenewed == nil {
+			credential = renewed
+		}
+	}
+	return credential, result, nil
 }
 
 // catalogSummary describes the account's catalog for the status page.
@@ -160,7 +183,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		body = append(body, renderCheckinOutcome(h, entry))
 	}
 	if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "refresh") {
-		if credential, errCredential := credentialOf(h, entry); errCredential == nil {
+		if credential, _, errCredential := credentialOf(h, entry); errCredential == nil {
 			invalidateCatalog(cfg, credential)
 			body = append(body, plugui.Notice("success", "已清除模型目录缓存，重新拉取。"))
 		}
@@ -173,7 +196,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		{Label: "配置通道", Value: strings.Join(cfg.Channels, ", ")},
 		{Label: "默认通道", Value: cfg.DefaultChannel},
 	}
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		catalogFields = append(catalogFields, plugui.Field{Label: "凭据", Value: "无法读取：" + errCredential.Error()})
 	} else {
@@ -185,12 +208,24 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 			plugui.Field{Label: "machine_id", Value: shorten(credential.MachineID)},
 			plugui.Field{Label: "device_id", Value: shorten(credential.DeviceID)},
 		)
+		// The renewal this page view just performed is stated, so a figure that
+		// only exists because the credential was renewed is never a silent
+		// surprise — and a renewal that failed is never hidden.
+		switch {
+		case freshness.Err != nil:
+			accountFields = append(accountFields, plugui.Field{Label: "自动续期", Value: "失败：" + freshness.Err.Error()})
+		case freshness.Refreshed:
+			accountFields = append(accountFields, plugui.Field{Label: "自动续期", Value: "刚刚已自动续期"})
+		}
 		if credential.Region != "" && credential.Region != cfg.Region {
 			warnings = append(warnings, plugui.Notice("warning",
 				fmt.Sprintf("该凭据来自 %s，但当前插件区域配置为 %s；两侧端点与登录态互不相通，请改配置或重新登录。",
 					credential.Region, cfg.Region)))
 		}
-		if credential.Expired() {
+		if credential.Expired() && freshness.Err == nil {
+			// The page renews on the spot, so "wait for the auto-refresh" is only
+			// still true when the renewal itself has not failed; when it has, the
+			// field above says exactly that.
 			warnings = append(warnings, plugui.Notice("danger", "凭据已过期，请重新登录或等待自动续期。"))
 		}
 		if !credential.Refreshable() {
@@ -322,9 +357,14 @@ func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) t
 
 // renderCheckinOutcome performs the daily check-in and renders its result.
 func renderCheckinOutcome(h *abiboot.Host, entry pluginapi.HostAuthFileEntry) template.HTML {
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		return plugui.Notice("danger", "无法读取凭据："+errCredential.Error())
+	}
+	// A check-in signs with the same credential the page reads with: an expired
+	// one that could not be renewed would only produce an upstream rejection.
+	if freshness.Expired && freshness.Err != nil {
+		return plugui.Notice("danger", "凭据已过期且自动续期失败："+freshness.Err.Error())
 	}
 	outcome, errClaim := claimDailyCheckin(h, credential, settings())
 	if errClaim != nil {
@@ -437,6 +477,12 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 	body["auth_index"] = entry.AuthIndex
 	body["name"] = entry.Name
 	body["status"] = statusText(entry)
+	if current.Refresh.Refreshed {
+		body["refreshed"] = true
+	}
+	if current.Refresh.Err != nil {
+		body["refresh_error"] = current.Refresh.Err.Error()
+	}
 	if current.CredentialErr != nil {
 		body["error"] = current.CredentialErr.Error()
 		return jsonManagementResponse(http.StatusOK, body)
@@ -472,13 +518,22 @@ func checkinResponse(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 			plugui.Card("签到失败", plugui.Notice("danger", "指定的账号不存在"),
 				plugui.Action{Label: "返回状态", Path: "status"}))
 	}
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		if wantsJSON(request) {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]any{"error": errCredential.Error()})
 		}
 		return plugui.HTML("TRAE 签到",
 			plugui.Card("签到失败", plugui.Notice("danger", errCredential.Error()),
+				plugui.Action{Label: "返回状态", Path: "status"}))
+	}
+	if freshness.Expired && freshness.Err != nil {
+		if wantsJSON(request) {
+			return jsonManagementResponse(http.StatusBadGateway,
+				map[string]any{"error": "凭据已过期且自动续期失败：" + freshness.Err.Error()})
+		}
+		return plugui.HTML("TRAE 签到",
+			plugui.Card("签到失败", plugui.Notice("danger", "凭据已过期且自动续期失败："+freshness.Err.Error()),
 				plugui.Action{Label: "返回状态", Path: "status"}))
 	}
 

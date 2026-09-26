@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -70,7 +71,7 @@ func handleExecutorCountTokens(_ *abiboot.Host, raw json.RawMessage) (any, error
 // handleExecutorExecute serves a non-streaming completion by folding the
 // upstream stream.
 func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
-	request, credential, errPrepare := decodeExecutorCall(raw)
+	request, credential, errPrepare := decodeExecutorCall(h, raw)
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
@@ -102,7 +103,7 @@ func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
 // `host.stream.emit`; both are valid ABI paths and this is the one the sibling
 // plugins in this repository use.
 func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, error) {
-	request, credential, errPrepare := decodeExecutorCall(raw)
+	request, credential, errPrepare := decodeExecutorCall(h, raw)
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
@@ -128,12 +129,25 @@ func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, err
 //
 // ⚠️ A credential that cannot be parsed is a 401, not a transport failure: the
 // host must be able to retire it (`raccoon-adapter.ts:257-259`).
-func decodeExecutorCall(raw json.RawMessage) (pluginapi.ExecutorRequest, *Credential, error) {
+func decodeExecutorCall(h *abiboot.Host, raw json.RawMessage) (pluginapi.ExecutorRequest, *Credential, error) {
 	request, errDecode := abiboot.Decode[pluginapi.ExecutorRequest](raw)
 	if errDecode != nil {
 		return request, nil, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	// The credential is renewed first when it is expired or about to expire: the
+	// host's own refresh timer restarts with the process, so an expired token
+	// would otherwise be signed into a request the gateway is bound to reject.
+	// The refresh-once-retry-once path inside performInfer stays as the last
+	// line of defence.
+	fresh, errFresh := ensureCredentialFresh(h, authrefresh.Request{
+		Name:        request.AuthID,
+		StorageJSON: request.StorageJSON,
+		Attributes:  request.AuthAttributes,
+	})
+	if errFresh != nil {
+		return request, nil, errFresh
+	}
+	credential, errCredential := ParseCredential(fresh.Storage)
 	if errCredential != nil {
 		return request, nil, credentialError("missing_credential", "raccoon: no usable credential; log in first")
 	}

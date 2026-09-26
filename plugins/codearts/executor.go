@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -53,6 +54,18 @@ func handleExecutorIdentifier(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return abiboot.IdentifierReply(ProviderKey), nil
 }
 
+// executorRefreshRequest names the credential an executor call was dispatched
+// for: the host passes the auth record id, which for a file-backed credential
+// is exactly the auth file name the refreshed credential must be written back
+// to, plus the credential's own attributes as a fallback.
+func executorRefreshRequest(request pluginapi.ExecutorRequest) authrefresh.Request {
+	return authrefresh.Request{
+		Name:        request.AuthID,
+		StorageJSON: request.StorageJSON,
+		Attributes:  request.AuthAttributes,
+	}
+}
+
 // prepareChatCall signs the upstream chat request and attaches the unsigned
 // attribution headers.
 func prepareChatCall(request pluginapi.ExecutorRequest, credential *Credential, cfg Config) (*chatCall, error) {
@@ -92,7 +105,14 @@ func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	// The credential is renewed before it is used to sign anything: the host's
+	// own refresh timer restarts with the process, so an expired token would
+	// otherwise be signed into a request the gateway is bound to reject.
+	fresh, errFresh := ensureCredentialFresh(h, executorRefreshRequest(request))
+	if errFresh != nil {
+		return nil, errFresh
+	}
+	credential, errCredential := ParseCredential(fresh.Storage)
 	if errCredential != nil {
 		return nil, errCredential
 	}
@@ -135,7 +155,11 @@ func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, err
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	fresh, errFresh := ensureCredentialFresh(h, executorRefreshRequest(request))
+	if errFresh != nil {
+		return nil, errFresh
+	}
+	credential, errCredential := ParseCredential(fresh.Storage)
 	if errCredential != nil {
 		return nil, errCredential
 	}

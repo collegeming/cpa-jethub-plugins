@@ -118,6 +118,15 @@ func renderQuotaCard(quota accountQuota, current bool) template.HTML {
 			plugui.Field{Label: "可自动续期", Value: yesNo(quota.Credential.Refreshable())},
 			plugui.Field{Label: "含 uid（加密推理必需）", Value: yesNo(strings.TrimSpace(quota.Credential.UID) != "")},
 		)
+		// The renewal the page just performed is stated, so a figure that only
+		// exists because the credential was renewed is never a silent surprise —
+		// and a renewal that failed is never hidden behind a stale number.
+		switch {
+		case quota.Refresh.Err != nil:
+			fields = append(fields, plugui.Field{Label: "自动续期", Value: "失败：" + quota.Refresh.Err.Error()})
+		case quota.Refresh.Refreshed:
+			fields = append(fields, plugui.Field{Label: "自动续期", Value: "刚刚已自动续期"})
+		}
 		if quota.Credential.Nickname != "" {
 			fields = append(fields, plugui.Field{Label: "用户", Value: quota.Credential.Nickname})
 		}

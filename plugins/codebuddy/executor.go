@@ -28,6 +28,7 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authfile"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -611,6 +612,27 @@ func classifyFailure(response *pluginapi.HTTPResponse, model string) error {
 
 // ── executor.execute ──
 
+// executorCredential resolves the credential for one execution, renewing it
+// first when it is expired or about to expire: the host's own refresh timer
+// restarts with the process, so an expired token would otherwise be signed into
+// a request the gateway is bound to reject.
+func executorCredential(h *abiboot.Host, request pluginapi.ExecutorRequest) (*Credential, error) {
+	fresh, errFresh := ensureCredentialFresh(h, authrefresh.Request{
+		Name:        request.AuthID,
+		StorageJSON: request.StorageJSON,
+		Attributes:  request.AuthAttributes,
+	})
+	if errFresh != nil {
+		return nil, errFresh
+	}
+	credential, errCredential := ParseCredential(fresh.Storage)
+	if errCredential != nil {
+		return nil, abiboot.HTTPError("AUTH", http.StatusUnauthorized,
+			"CodeBuddy 凭据不可用：%v", errCredential)
+	}
+	return credential, nil
+}
+
 // handleExecutorExecute serves a non-streaming completion. The upstream call is
 // always streamed (buddy-adapter.ts:991 `stream: true`) and the frames are
 // folded into one chat.completion.
@@ -619,10 +641,9 @@ func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	credential, errCredential := executorCredential(h, request)
 	if errCredential != nil {
-		return nil, abiboot.HTTPError("AUTH", http.StatusUnauthorized,
-			"CodeBuddy 凭据不可用：%v", errCredential)
+		return nil, errCredential
 	}
 	call, errPrepare := prepareChatCall(h, request, credential, settings())
 	if errPrepare != nil {
@@ -702,10 +723,9 @@ func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, err
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	credential, errCredential := executorCredential(h, request)
 	if errCredential != nil {
-		return nil, abiboot.HTTPError("AUTH", http.StatusUnauthorized,
-			"CodeBuddy 凭据不可用：%v", errCredential)
+		return nil, errCredential
 	}
 	call, errPrepare := prepareChatCall(h, request, credential, settings())
 	if errPrepare != nil {

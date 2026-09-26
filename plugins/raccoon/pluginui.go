@@ -79,7 +79,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	}
 	body = append(body, renderAccountList(accounts, entry.AuthIndex))
 
-	if credential, errCredential := credentialOf(h, entry); errCredential == nil {
+	if credential, _, errCredential := credentialOf(h, entry); errCredential == nil {
 		body = append(body, catalogueCard(h, credential, cfg))
 	}
 	return pluguiPage("Raccoon", body...)
@@ -398,10 +398,15 @@ func renderRewardPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 			plugui.Card("没有可用账号", plugui.Notice("warning", "请先微信扫码登录一个 Raccoon 账号。"),
 				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"}))
 	}
-	credential, errCredential := credentialOf(h, entry)
+	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		return pluguiPage("Raccoon 一次性登录奖励",
 			plugui.Card("无法读取凭据", plugui.Notice("danger", errCredential.Error()),
+				plugui.Action{Label: "重新登录", Path: "login", Kind: "primary"}))
+	}
+	if freshness.Expired && freshness.Err != nil {
+		return pluguiPage("Raccoon 一次性登录奖励",
+			plugui.Card("凭据已过期", plugui.Notice("danger", "自动续期失败："+freshness.Err.Error()),
 				plugui.Action{Label: "重新登录", Path: "login", Kind: "primary"}))
 	}
 	cfg := settings()

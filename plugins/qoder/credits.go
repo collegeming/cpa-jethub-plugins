@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -346,6 +347,10 @@ type accountQuota struct {
 	// CredentialErr then explains why and no upstream call was made.
 	Credential    *Credential
 	CredentialErr error
+	// Refresh is what the freshness check did to this account's credential: it
+	// says whether the credential was renewed (so the figures below come from a
+	// fresh token) and carries a renewal that failed.
+	Refresh authrefresh.Result
 	// Balance is the account's own credit aggregate. BalanceNone marks the
 	// provider's own "this account has no credit numbers" answer (企业版账号),
 	// which is a fact rather than a failure. BalanceErr carries a failed read.
@@ -369,13 +374,14 @@ func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntr
 	out := make([]accountQuota, 0, len(accounts))
 	for _, entry := range accounts {
 		quota := accountQuota{Entry: entry}
-		credential, errCredential := credentialOf(h, entry)
+		credential, freshness, errCredential := credentialOf(h, entry)
 		if errCredential != nil {
 			quota.CredentialErr = errCredential
 			out = append(out, quota)
 			continue
 		}
 		quota.Credential = credential
+		quota.Refresh = freshness
 		balance, errBalance := fetchCreditBalance(h, credential, cfg)
 		switch {
 		case errBalance != nil:
@@ -429,6 +435,12 @@ func quotaJSON(quota accountQuota) map[string]any {
 	item["expires_at"] = jsonTime(quota.Credential.ExpiresAt())
 	item["refreshable"] = quota.Credential.Refreshable()
 	item["has_uid"] = strings.TrimSpace(quota.Credential.UID) != ""
+	if quota.Refresh.Refreshed {
+		item["refreshed"] = true
+	}
+	if quota.Refresh.Err != nil {
+		item["refresh_error"] = quota.Refresh.Err.Error()
+	}
 
 	switch {
 	case quota.BalanceErr != nil:
@@ -556,7 +568,17 @@ func handleQuotaFetch(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	credential, errCredential := ParseCredential(request.StorageJSON)
+	// The host asks for a quota read before the page is ever opened, so the
+	// credential is renewed here as well.
+	fresh, errFresh := ensureCredentialFresh(h, authrefresh.Request{
+		Name:        request.AuthID,
+		StorageJSON: request.StorageJSON,
+		Attributes:  request.Attributes,
+	})
+	if errFresh != nil {
+		return nil, errFresh
+	}
+	credential, errCredential := ParseCredential(fresh.Storage)
 	if errCredential != nil {
 		return nil, errCredential
 	}
