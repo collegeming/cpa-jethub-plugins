@@ -178,7 +178,7 @@ git tag v0.1.0 && git push origin v0.1.0
 
 **结论：可以，且不需要写前端。** 插件能在 CPA-Manager-Plus 里得到完整的登录／状态／签到界面，与 Jet-Hub 在 DSH 前端的效果对应。
 
-CPA 会把 `management.register` 注册的每条路由变成菜单项；CPAMP 的 `collectPluginResourceEntries` 过滤出已启用插件，把**每个菜单渲染成一个可路由页面**，页面内容是一个指向该菜单路径的 iframe：
+CPA 会把 `management.register` 里**带 `Menu` 的路由**变成侧边栏菜单项；CPAMP 的 `collectPluginResourceEntries` 过滤出已启用插件，把**每个菜单渲染成一个可路由页面**，页面内容是一个指向该菜单路径的 iframe：
 
 ```
 CPAMP 页面  /plugins/<id>/<menuIndex>
@@ -194,15 +194,17 @@ CPAMP 页面  /plugins/<id>/<menuIndex>
 
 宿主对两类路由的处理完全不同（`internal/pluginhost/management.go` 的 `routeDeclaresLegacyMenuResource`）：
 
-| 声明方式 | 实际挂载点 | 命名空间 |
-| --- | --- | --- |
-| GET **且**带 `Menu` | 仅 `/v0/resource/plugins/<插件ID>/<路径>` | 含插件 ID，安全 |
-| 其他任意方法 | 仅 `/v0/management/<路径>` | **全局共享**，与所有插件及宿主内置端点同处一个命名空间 |
+| 声明方式 | 实际挂载点 | 侧边栏菜单 | 命名空间 |
+| --- | --- | --- | --- |
+| GET **且**带 `Menu` | `/v0/resource/plugins/<插件ID>/<路径>` | **每个菜单一项** | 含插件 ID，安全 |
+| GET **且** `Menu` 为空 | `/v0/resource/plugins/<插件ID>/<路径>` | 无 | 含插件 ID，安全 |
+| 其他任意方法 | `/v0/management/<路径>` | 无 | **全局共享**，与所有插件及宿主内置端点同处一个命名空间 |
 
-两个后果：
+三个后果：
 
-1. **带 `Menu` 的 GET 路由不会挂到管理 API 下。** 想同时提供网页和脚本接口时，网页用带 `Menu` 的 GET 路由，脚本接口用**不带 `Menu`** 的路由。
+1. **一个插件只应声明一个带 `Menu` 的路由。** CPAMP 侧边栏是**扁平**的（`collectPluginResourceEntries` 把每个菜单直接 map 成一项，不分组），插件有几个菜单就占几行，还会与内置的「凭证管理」「OAuth 登录」并列。5 个插件各声明 2～3 个菜单，侧边栏就出现 13 行重复条目。因此：**主页用唯一的带 `Menu` 路由；登录页、签到页等子页面改成 `Menu` 为空字符串的 `Resources` 条目**——`registeredPluginMenus()` 会跳过空 `Menu` 的记录，路径照旧可访问，但侧边栏不再出现。
 2. **不带 `Menu` 的路由路径必须自带插件前缀**，例如 `/codearts/checkin` 而不是 `/checkin`。冲突时宿主只打一条 `management route ... was skipped` 警告就丢弃该路由——静默失效，很难排查。
+3. **带 `Menu` 的 GET 路由不会挂到管理 API 下。** 想同时提供网页和脚本接口时，网页用带 `Menu` 的 GET 路由，脚本接口用**不带 `Menu`** (`Resources`) 或非 GET 方法的路由。
 
 另外，resource 路径**只以 GET 派发**（`management.go` 里 `Method: http.MethodGet` 是写死的）。所以管理页面里的操作不能是表单 POST，必须是携带查询参数的 GET 链接；本仓库的 `plugui.Action` 就按此设计（渲染成 `<a href="?action=...">`），并有单测断言页面里不出现 `<form>`。
 
@@ -215,6 +217,81 @@ CPAMP 页面  /plugins/<id>/<menuIndex>
 - **不支持签到的 provider 如实显示"不支持"**，不臆造状态。
 - 状态页在普通页面请求时返回 HTML，带 `?format=json` 时返回 JSON，便于脚本与排障复用同一路由。
 
+## 容器部署：浏览器登录回调必须能被宿主机访问
+
+**这是容器部署最容易踩的坑，且报错信息具有误导性。** 若不做配置，登录授权完成后浏览器会停在
+`127.0.0.1:<随机端口>/...` 并显示 `ERR_CONNECTION_REFUSED`，页面提示"登录后自动跳转回调失败"。
+
+原因：`codearts`／`trae`／`lobsterai` 三个平台的授权流程要求浏览器回跳到一个 **loopback 地址**
+（`http://127.0.0.1:<port>/...`）。Jet-Hub 跑在 DSH 进程里、与浏览器同机，回环天然可达；而 CPA 插件跑在
+**容器内部**——容器里的 `127.0.0.1` 不是宿主机的 `127.0.0.1`，且随机临时端口无法预先发布。CPA 官方 compose
+里那行被注释掉的 `# - "1455:1455"` 正是同一问题（Codex 回调端口）。
+
+**解法**：把回调端口固定下来，并让容器监听 `0.0.0.0`、在 compose 里发布同名端口——与 CPA 内置回调转发器
+（`auth_files_oauth_callback.go` 绑定 `0.0.0.0:<port>`）的做法一致。
+
+`config.yaml`（端口可自选，只要与 compose 一致）：
+
+```yaml
+plugins:
+  enabled: true
+  configs:
+    codearts:
+      enabled: true
+      callback_port: 18091        # 固定端口；不设置则用 ≥10000 的随机端口
+      callback_bind_host: "0.0.0.0"
+    trae:
+      enabled: true
+      callback_port: 18092
+      callback_bind_host: "0.0.0.0"
+    lobsterai:
+      enabled: true
+      callback_port: 18093
+      callback_bind_host: "0.0.0.0"
+```
+
+`docker-compose.yml`：
+
+```yaml
+services:
+  cli-proxy-api:
+    ports:
+      - "8317:8317"
+      - "18091:18091"   # codearts   登录回调
+      - "18092:18092"   # trae       登录回调
+      - "18093:18093"   # lobsterai  登录回调
+```
+
+三个注意点：
+
+1. **`callback_bind_host` 必须是 `0.0.0.0`。** 只绑 `127.0.0.1` 时，即使发布端口也进不来——Docker 的
+   `-p` 是把流量转发到容器的非回环地址。
+2. **`callback_port` 要避开宿主机已占用端口。** 端口被占时 `Start` 直接失败并报
+   `callback_listen`，不会静默改用其它端口——静默换端口会让浏览器拿到一个无法路由的地址。
+3. **`codearts` 的端口必须 ≥10000。** 这是华为 portal 自身的约束（`login.ts:338-341`），低于此值的配置会被拒绝。
+
+不改配置也能用：`qoder` 与 `codebuddy` 走**设备码流程**，不需要浏览器回调，在任何部署形态下都可用。
+若浏览器不在宿主机上（远程访问），回环回调本身不可达，可参考 CPA 的
+[`docs/management-devin-oauth.md`](https://github.com/router-for-me/CLIProxyAPI) 手动投递回调 URL 的做法。
+
+`callback_public_host` / `callback_public_port` 用于反向代理等场景：前者是**浏览器实际访问的地址**，默认
+`127.0.0.1` 与绑定端口一致，所以发布端口与容器内端口相同时无需设置。
+
+### 登录后这些凭据怎么用
+
+登录成功后凭据写入 `~/.cli-proxy-api/<provider>-*.json`（容器内为 `/root/.cli-proxy-api`，即 compose 里挂进去的 `auths` 目录），模型随之下线到 `/v1/models`。调用与内置 provider 完全一致，**不需要进「AI 提供商」页面**（那里只管 API-key 类条目）：
+
+```bash
+curl http://localhost:8317/v1/chat/completions \
+  -H "Authorization: Bearer $CPA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<provider>/<model>","messages":[{"role":"user","content":"hi"}]}'
+```
+
+其中 `$CPA_API_KEY` 是 `config.yaml` 里的 `api-keys` 之一。模型别名与禁用走 `oauth-model-alias` / `oauth-excluded-models`，键是 provider 名（`codearts`、`trae` 等），详见下节。
+
+> **注意：不要在凭据的 `attributes` 里写 `api_key`。** 宿主把 `api_key` 属性视为「这是 API-key 型凭据」的依据，会让 `Auth.AuthKind()` 返回 `apikey`，进而让 `oauth-model-alias` 与 `oauth-excluded-models` **静默失效**（`OAuthModelAliasChannel` 对 `apikey` 返回空串）。本仓库曾因此在 `codearts`／`lobsterai` 上踩过这个坑，现分别改用 `access_key_id`／`uid`。
+
 ## 依赖的宿主能力
 
 插件通过 `host.call` 使用宿主能力。HTTP 请求一律由宿主执行，代理、TLS 与请求日志仍归宿主控制；因此插件本身不建立网络连接。
@@ -224,7 +301,11 @@ CPAMP 页面  /plugins/<id>/<menuIndex>
 在真实 CPA 宿主中验证过的部分（用 `docker.io/eceasy/cli-proxy-api` 起临时容器装入本仓库产物）：
 
 - **5 个插件可同时加载并注册**：宿主日志逐条输出 `pluginhost: plugin registered plugin_id=<id>`，管理 API 返回 `registered=true`、`effective_enabled=true`、`supports_oauth=true`、`supports_quota=true`；
-- **13 个管理路由全部返回 `200` + `Content-Type: text/html`**，页面内均带宿主主题变量（`var(--bg-primary)` 等），即都能在 CPA-Manager-Plus 的 iframe 中正常渲染；
+- **侧边栏每个插件只占一行**（共 5 行）：管理 API 返回的每个插件恰有 1 条带 `Menu` 的路由，登录页/签到页以空 `Menu` 的 resource 路由提供，浏览器可直接访问但不进侧边栏；
+- **容器内浏览器登录回调已端到端验证**：固定端口 `18091`、绑定 `0.0.0.0`、compose 发布后，从宿主机执行
+  `GET http://127.0.0.1:18091/oauth/callback?code=...` 得到 **307**（插件已捕获并跳转），随后轮询返回上游
+  STS 对假 code 的拒绝（`STS5.1805 invalid authorization code`）——证明 code 确实穿过容器边界抵达插件。
+  未发布该端口时同一请求连接失败（`curl` exit 000），与用户报告的 `ERR_CONNECTION_REFUSED` 一致，构成负向对照；
 - **`codearts` 走通凭据解析到模型目录的全链路**：注入测试凭据后宿主日志出现 `processing auth file` 与 `Registered new model ... from provider codearts`，`/v1/models` 返回 16 个模型；
 - **方法面**逐个经 C `dlopen` 探针调用：`plugin.register`、`auth.identifier`、`model.register`、`model.static`、`quota.identifier`、`quota.describe`、`request.translate`、`response.translate`、`management.register` 在 5 个插件上全部返回成功 envelope；
 - **插件商店清单**用 CPA 真实解析器（`ParseRegistry` + `ValidateRegistry`）校验通过；发布产物按商店要求打包并校验 sha256。

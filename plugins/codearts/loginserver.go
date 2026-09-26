@@ -99,6 +99,15 @@ func startLoginSession(flow string) (*loginSession, error) {
 	// browser's, and an ephemeral port cannot be published in advance, so such a
 	// deployment pins the port and binds 0.0.0.0.
 	cfg := settings()
+	// The portal rejects a callback below 10000 (login.ts:338-341). A pinned
+	// port bypasses the MinPort retry loop, so catch it here: otherwise the
+	// portal simply never calls back and the failure looks like a network
+	// problem instead of a misconfiguration.
+	if cfg.CallbackPort > 0 && cfg.CallbackPort < minCallbackPort {
+		return nil, abiboot.Errorf("callback_port",
+			"callback_port 必须 ≥ %d（华为 portal 的硬性要求），当前为 %d",
+			minCallbackPort, cfg.CallbackPort)
+	}
 	options := oauthcb.Options{
 		Path:       LegacyCallbackPath,
 		MinPort:    minCallbackPort,
