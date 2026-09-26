@@ -101,8 +101,22 @@ func startLoginSession(cfg Config) (*loginSession, error) {
 	} else {
 		options.PreferredPort = DefaultCallbackPort
 	}
+	// Binding happens under loginMu so that releasing a superseded session and
+	// taking the port are a single step. A pinned port carries one sign-in at a
+	// time, so without this a retry races the previous attempt and reports
+	// "address already in use" — the error the panel shows on 重试.
+	loginMu.Lock()
+	purgeExpiredLoginSessionsLocked()
+	if options.Port > 0 {
+		supersedePendingLoginSessionsLocked(supersededLoginMessage)
+	}
 	callback, errListen := oauthcb.Start(options)
 	if errListen != nil {
+		loginMu.Unlock()
+		if options.Port > 0 {
+			return nil, abiboot.Errorf("callback_listen",
+				"TRAE 回调端口 %d 无法监听（%v）；请确认该端口未被其它程序占用", options.Port, errListen)
+		}
 		return nil, abiboot.Errorf("callback_listen",
 			"TRAE 回调端口无法监听（%v）；端口可能已被其它程序占用，请释放后重试", errListen)
 	}
@@ -119,9 +133,6 @@ func startLoginSession(cfg Config) (*loginSession, error) {
 		callback:  callback,
 	}
 	session.LoginURL = buildTraeLoginURL(productFor(cfg.Region), machineID, deviceID, session.RedirectURI())
-
-	loginMu.Lock()
-	purgeExpiredLoginSessionsLocked()
 	loginSessions[state] = session
 	loginMu.Unlock()
 
@@ -251,6 +262,22 @@ func forgetLoginSession(state string) {
 	loginMu.Lock()
 	delete(loginSessions, state)
 	loginMu.Unlock()
+}
+
+// supersededLoginMessage is what a replaced sign-in reports. The panel may still
+// be polling the older state, so it has to say the attempt was replaced rather
+// than look like a silent stall.
+const supersededLoginMessage = "该登录已被新的登录请求取代，请重新发起"
+
+// supersedePendingLoginSessionsLocked releases every live session and forgets
+// it. A pinned callback port carries one sign-in at a time, so an earlier
+// attempt must give the port up before a retry can bind it. Callers hold
+// loginMu.
+func supersedePendingLoginSessionsLocked(message string) {
+	for state, session := range loginSessions {
+		delete(loginSessions, state)
+		session.expire(message)
+	}
 }
 
 // purgeExpiredLoginSessionsLocked drops expired entries. Callers hold loginMu.

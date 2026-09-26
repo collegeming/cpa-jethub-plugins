@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 // freePort returns a port that was free a moment ago. Tests use it for the
@@ -82,6 +84,54 @@ func TestPinnedCallbackPortBindsExactlyThatPort(t *testing.T) {
 		}
 		if !strings.Contains(session.callback.RedirectURI(), ":"+strconv.Itoa(port)+"/") {
 			t.Fatalf("RedirectURI = %q, want it to carry the pinned port %d", session.callback.RedirectURI(), port)
+		}
+	})
+}
+
+// TestRetryWithPinnedPortSupersedesPreviousAttempt is the regression guard for
+// the container retry loop. A pinned port stays bound for the whole life of the
+// pending session, so before this fix pressing 重试 — or simply starting a second
+// sign-in — failed with "address already in use" until the first session's TTL
+// lapsed. Superseding the older attempt therefore has to happen before the bind.
+func TestRetryWithPinnedPortSupersedesPreviousAttempt(t *testing.T) {
+	port := freePort(t)
+	if port < minCallbackPort {
+		t.Skipf("kernel assigned %d below the portal minimum; rerun", port)
+	}
+
+	cfg := DefaultConfig()
+	cfg.CallbackPort = port
+	cfg.CallbackBindHost = "127.0.0.1"
+
+	withSettings(t, cfg, func() {
+		first, errFirst := startLoginSession(LoginFlowOAuth)
+		if errFirst != nil {
+			t.Fatalf("first startLoginSession: %v", errFirst)
+		}
+
+		// Exactly what the panel does when the user presses 重试.
+		second, errSecond := startLoginSession(LoginFlowOAuth)
+		if errSecond != nil {
+			first.fail("test teardown")
+			t.Fatalf("retry failed, want the previous attempt superseded: %v", errSecond)
+		}
+		defer func() { second.fail("test teardown") }()
+
+		if second.Port != port {
+			t.Fatalf("retry bound port %d, want the pinned %d", second.Port, port)
+		}
+
+		// The replaced session must settle with an explanation; leaving it
+		// pending would keep the panel polling a state that can never complete.
+		status, message, _, finished := first.snapshot()
+		if !finished {
+			t.Fatal("superseded session is still pending, want it settled")
+		}
+		if status != pluginapi.AuthLoginStatusError {
+			t.Fatalf("superseded status = %v, want error", status)
+		}
+		if !strings.Contains(message, "取代") {
+			t.Fatalf("superseded message = %q, want it to explain the replacement", message)
 		}
 	})
 }

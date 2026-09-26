@@ -132,6 +132,15 @@ func startLoginSession(now time.Time) (*loginSession, error) {
 	// deployment pins the port and binds 0.0.0.0, which is what the host's own
 	// callback forwarder does.
 	cfg := settings()
+	// Binding happens under loginMu so that releasing a superseded session and
+	// taking the port are a single step. A pinned port carries one sign-in at a
+	// time, so without this a retry races the previous attempt and reports
+	// "address already in use" — the error the panel shows on 重试.
+	loginMu.Lock()
+	purgeExpiredLoginSessionsLocked(now)
+	if cfg.CallbackPort > 0 {
+		supersedePendingLoginSessionsLocked(supersededLoginMessage)
+	}
 	callback, errListen := oauthcb.Start(oauthcb.Options{
 		Path:        CallbackPath,
 		MinPort:     MinCallbackPort,
@@ -143,14 +152,16 @@ func startLoginSession(now time.Time) (*loginSession, error) {
 		SuccessHTML: callbackSuccessHTML,
 	})
 	if errListen != nil {
+		loginMu.Unlock()
+		if cfg.CallbackPort > 0 {
+			return nil, abiboot.Errorf("callback_listen",
+				"LobsterAI 回调端口 %d 无法监听（%v）；请确认该端口未被其它程序占用", cfg.CallbackPort, errListen)
+		}
 		return nil, abiboot.Errorf("callback_listen", "start LobsterAI callback listener: %v", errListen)
 	}
 	session.callback = callback
 	session.Port = callback.Port()
 	session.ExpiresAt = callback.ExpiresAt()
-
-	loginMu.Lock()
-	purgeExpiredLoginSessionsLocked(now)
 	loginSessions[state] = session
 	loginMu.Unlock()
 
@@ -305,6 +316,22 @@ func forgetLoginSession(state string) {
 		delete(loginSessions, state)
 	}
 	loginMu.Unlock()
+}
+
+// supersededLoginMessage is what a replaced sign-in reports. The panel may still
+// be polling the older state, so it has to say the attempt was replaced rather
+// than look like a silent stall.
+const supersededLoginMessage = "该登录已被新的登录请求取代，请重新发起"
+
+// supersedePendingLoginSessionsLocked releases every live session and forgets
+// it. A pinned callback port carries one sign-in at a time, so an earlier
+// attempt must give the port up before a retry can bind it. Callers must hold
+// loginMu.
+func supersedePendingLoginSessionsLocked(message string) {
+	for state, session := range loginSessions {
+		delete(loginSessions, state)
+		session.expire(message)
+	}
 }
 
 // purgeExpiredLoginSessionsLocked drops expired entries. Callers must hold

@@ -332,15 +332,22 @@ func (s *Server) Wait(ctx context.Context) (Result, error) {
 
 // Close releases the listener exactly once. It is safe to call concurrently and
 // repeatedly; the first error is returned to every caller.
+//
+// The raw listener is closed before the HTTP server, and it is closed even when
+// an HTTP server exists. http.Server.Close only closes the listeners Serve has
+// already registered, and Serve runs in its own goroutine, so delegating to it
+// alone can return while the port is still bound — long enough for a retry to
+// fail with "address already in use" when the callback port is pinned.
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.closed)
-		if s.httpServer != nil {
-			s.closeErr = s.httpServer.Close()
-			return
-		}
 		if s.listener != nil {
+			// The HTTP server closes the same listener through onceCloseListener,
+			// so the redundant close error is expected and not worth surfacing.
 			s.closeErr = s.listener.Close()
+		}
+		if s.httpServer != nil {
+			_ = s.httpServer.Close()
 		}
 	})
 	return s.closeErr
