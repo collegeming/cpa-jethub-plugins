@@ -298,6 +298,65 @@ func TestStatusPageEscapesHostileValues(t *testing.T) {
 	}
 }
 
+// TestStatusPageOffersAddAccount pins the affordance: a SECOND Qoder account must
+// be reachable from the status page itself instead of only through the manager's
+// OAuth page. The link stays a GET navigation into this plugin's own login route
+// — 新建账号 adds a link, not a route.
+func TestStatusPageOffersAddAccount(t *testing.T) {
+	statusHost(t, "alice")
+	withSettings(t, DefaultConfig())
+
+	response := managementCall(t, testHost(), managementRequest("/status", nil, "text/html"))
+	page := string(response.Body)
+	if !strings.Contains(page, "新建账号") {
+		t.Fatalf("the status page offers no way to add a second account:\n%s", page)
+	}
+	if !strings.Contains(page, `href="login?add=1"`) {
+		t.Fatalf("新建账号 must be a GET link into the login route:\n%s", page)
+	}
+	if strings.Contains(strings.ToLower(page), "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestLoginPageExplainsAddingAnAccount pins the one-line caveat. 新建账号 and
+// 重新登录 open the SAME device flow on purpose (the credential file name comes
+// from the account's own identity), so the page has to say which one this is.
+func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
+	newFakeHost().install(t)
+	withSettings(t, DefaultConfig())
+
+	plain := string(managementCall(t, testHost(), managementRequest("/login", nil, "text/html")).Body)
+	if strings.Contains(plain, "新增账号") {
+		t.Fatalf("the ordinary login page must not claim to add an account:\n%s", plain)
+	}
+	adding := string(managementCall(t, testHost(),
+		managementRequest("/login", map[string]string{"add": "1"}, "text/html")).Body)
+	if !strings.Contains(adding, "已有账号的凭据不受影响") {
+		t.Fatalf("the add-account login page must state that the existing account survives:\n%s", adding)
+	}
+	if strings.Contains(strings.ToLower(adding), "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestSecondAccountGetsItsOwnCredentialFile is the guarantee 新建账号 relies on:
+// the auth file name is `<region>-<identity>.json`, so a second account in the
+// same region writes a NEW file and leaves the first credential alone. The host
+// saves by exactly this name (it feeds AuthData.FileName), and no code path in
+// this plugin deletes a credential.
+func TestSecondAccountGetsItsOwnCredentialFile(t *testing.T) {
+	first := &Credential{AccessToken: "tok-a", SecurityOAuthToken: "tok-a", UID: "u-1", Nickname: "alice", Region: string(RegionGlobal)}
+	second := &Credential{AccessToken: "tok-b", SecurityOAuthToken: "tok-b", UID: "u-2", Nickname: "bob", Region: string(RegionGlobal)}
+	firstName, secondName := defaultAuthFileName(first), defaultAuthFileName(second)
+	if firstName == secondName {
+		t.Fatalf("two accounts share the file name %q: a second login would overwrite the first account", firstName)
+	}
+	if !strings.HasSuffix(firstName, ".json") || !strings.HasPrefix(firstName, string(RegionGlobal)+"-") {
+		t.Fatalf("auth file name = %q, want <region>-<identity>.json", firstName)
+	}
+}
+
 // TestLoginPageTwoStepFlow walks the login page: the first load offers a button,
 // `?action=start` shows the device-code URL, and `?action=poll` completes and
 // SAVES the credential (the host does not save what a page-driven poll returns).

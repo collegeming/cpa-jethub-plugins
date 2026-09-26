@@ -1,14 +1,34 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+// stubAuthList installs a host transport whose credential listing holds exactly
+// the given entries and answers nothing else. The status page only needs the
+// listing to get past its empty state; a credential that cannot be read is a
+// state the page already renders.
+func stubAuthList(t *testing.T, entries ...pluginapi.HostAuthFileEntry) *abiboot.Host {
+	t.Helper()
+	abiboot.SetHostCaller(func(method string, _ []byte) ([]byte, error) {
+		if method != pluginabi.MethodHostAuthList {
+			return nil, fmt.Errorf("unexpected host method %s", method)
+		}
+		return abiboot.OK(map[string]any{"files": entries})
+	})
+	t.Cleanup(abiboot.ClearHostCaller)
+	return abiboot.NewHost(json.RawMessage(`{"host_callback_id":"test-callback"}`))
+}
 
 // pageRequest builds a browser-shaped management request.
 func pageRequest(path string, query url.Values) pluginapi.ManagementRequest {
@@ -185,6 +205,68 @@ func TestRefreshPageWithoutAccounts(t *testing.T) {
 	}
 	if fake.callCount() != 0 {
 		t.Errorf("no request may be issued: %d", fake.callCount())
+	}
+}
+
+// TestStatusPageOffersAddAccount pins the affordance: a SECOND Cline account must
+// be reachable from the status page itself instead of only through the manager's
+// OAuth page. The link stays a GET navigation into this plugin's own login route
+// — 新建账号 adds a link, not a route.
+func TestStatusPageOffersAddAccount(t *testing.T) {
+	withTestSettings(t, DefaultConfig())
+	host := stubAuthList(t, pluginapi.HostAuthFileEntry{
+		Provider: ProviderKey, AuthIndex: "idx-1", Name: "cline-alice.json",
+	})
+	page := pageOf(t, renderStatusPage(host, pageRequest("/status", nil)), nil)
+	if !strings.Contains(page, "新建账号") {
+		t.Fatalf("the status page offers no way to add a second account:\n%s", page)
+	}
+	if !strings.Contains(page, `href="login?add=1"`) {
+		t.Fatalf("新建账号 must be a GET link into the login route:\n%s", page)
+	}
+	if strings.Contains(page, "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestLoginPageExplainsAddingAnAccount pins the one-line caveat. 新建账号 and
+// 重新登录 open the SAME device flow on purpose (the credential file name comes
+// from the account's own identity), so the page has to say which one this is.
+func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
+	withTestSettings(t, DefaultConfig())
+	plain := pageOf(t, renderLoginPage(nil, pageRequest("/login", nil)), nil)
+	if strings.Contains(plain, "新增账号") {
+		t.Fatalf("the ordinary login page must not claim to add an account:\n%s", plain)
+	}
+	adding := pageOf(t, renderLoginPage(nil, pageRequest("/login", url.Values{"add": {"1"}})), nil)
+	if !strings.Contains(adding, "已有账号的凭据不受影响") {
+		t.Fatalf("the add-account login page must state that the existing account survives:\n%s", adding)
+	}
+	if strings.Contains(adding, "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestSecondAccountGetsItsOwnCredentialFile is the guarantee 新建账号 relies on:
+// the auth file name is derived from the account's own identity, so a second
+// login writes a NEW file and leaves the first credential alone. The host saves
+// by exactly this name (it feeds AuthData.FileName), and no code path in this
+// plugin deletes a credential.
+func TestSecondAccountGetsItsOwnCredentialFile(t *testing.T) {
+	first := &Credential{AccessToken: "workos:a", Email: "alice@example.com", AccountID: "usr-1"}
+	second := &Credential{AccessToken: "workos:b", Email: "bob@example.com", AccountID: "usr-2"}
+	firstName, secondName := defaultAuthFileName(first), defaultAuthFileName(second)
+	if firstName == secondName {
+		t.Fatalf("two accounts share the file name %q: a second login would overwrite the first account", firstName)
+	}
+	if !strings.HasPrefix(firstName, ProviderKey+"-") || !strings.HasSuffix(firstName, ".json") {
+		t.Fatalf("auth file name = %q, want %s-*.json", firstName, ProviderKey)
+	}
+	// No email/nickname: the token prefix keeps two accounts apart.
+	anonymousA := defaultAuthFileName(&Credential{AccessToken: "workos:aaaaaaaa"})
+	anonymousB := defaultAuthFileName(&Credential{AccessToken: "workos:bbbbbbbb"})
+	if anonymousA == anonymousB {
+		t.Fatalf("two anonymous accounts share the file name %q", anonymousA)
 	}
 }
 

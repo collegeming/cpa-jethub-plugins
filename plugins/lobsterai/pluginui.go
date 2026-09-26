@@ -184,6 +184,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
 		plugui.Action{Label: "签到", Path: "checkin", Kind: "primary"},
 		plugui.Action{Label: "重新登录", Path: "login"},
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
 	))
 	if len(creditFields) > 0 {
 		body = append(body, plugui.Card("积分", plugui.Fields(creditFields...)))
@@ -283,10 +284,15 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	case "poll":
 		return pollLoginPage(h, request)
 	}
+	notices := []template.HTML{}
+	if plugui.IsAddAccountRequest(request) {
+		notices = append(notices, plugui.Notice("", plugui.AddAccountNotice))
+	}
+	notices = append(notices, plugui.Notice("", "点击下面的按钮获取授权链接。LobsterAI 使用本地回调 + authCode 换 token："+
+		"授权完成后浏览器会跳到本机 127.0.0.1 的回调地址，再回到本页检查结果。"))
 	return plugui.HTML("LobsterAI 登录",
 		plugui.Card("浏览器登录",
-			plugui.Notice("", "点击下面的按钮获取授权链接。LobsterAI 使用本地回调 + authCode 换 token："+
-				"授权完成后浏览器会跳到本机 127.0.0.1 的回调地址，再回到本页检查结果。"),
+			plugui.Group(notices...),
 			plugui.Action{Label: "开始登录", Query: "action=start", Kind: "primary"},
 			plugui.Action{Label: "返回状态", Path: "status"},
 		),

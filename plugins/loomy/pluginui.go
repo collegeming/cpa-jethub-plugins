@@ -72,7 +72,8 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	if errCredential != nil {
 		accountFields = append(accountFields, plugui.Field{Label: "凭据", Value: "无法读取：" + errCredential.Error()})
 		body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
-			plugui.Action{Label: "重新登录", Path: "login"}))
+			plugui.Action{Label: "重新登录", Path: "login"},
+			plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery}))
 		return pluguiPage("Loomy", body...)
 	}
 	accountFields = append(accountFields,
@@ -83,6 +84,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	)
 	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
 		plugui.Action{Label: "重新登录", Path: "login"},
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
 		plugui.Action{Label: "刷新每日额度", Path: "checkin"},
 		plugui.Action{Label: "一次性任务", Path: "onboarding"},
 	))
@@ -259,6 +261,23 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	return loginIntroPage(cfg, request, session)
 }
 
+// addAccountNotice is the two-line caveat the SMS login page shows when it was
+// reached through 新建账号.
+//
+// Loomy identifies an account by its phone number (`defaultAuthFileName` uses
+// `displayLabel`, i.e. the full number), so "another account" only means
+// "another number": with the configured phone the flow would re-save the SAME
+// account instead of adding one.
+func addAccountNotice(request pluginapi.ManagementRequest) template.HTML {
+	if !plugui.IsAddAccountRequest(request) {
+		return ""
+	}
+	return plugui.Group(
+		plugui.Notice("", plugui.AddAccountNotice),
+		plugui.Notice("", "新增账号要换一个手机号：改插件设置里的 phone，或在链接后追加 ?phone=13xxxxxxxxx。"),
+	)
+}
+
 // loginIntroPage is the entry page before a code has been requested. A session is
 // passed in when one already exists, so the send link keeps the state.
 func loginIntroPage(cfg Config, request pluginapi.ManagementRequest, session *loginSession) pluginapi.ManagementResponse {
@@ -276,6 +295,7 @@ func loginIntroPage(cfg Config, request pluginapi.ManagementRequest, session *lo
 	if phone == "" {
 		return pluguiPage("Loomy 登录", plugui.Card("手机验证码登录",
 			plugui.Group(
+				addAccountNotice(request),
 				plugui.Notice("warning", "本页只接受 GET 链接，没有输入框。请在插件设置里填写 phone，"+
 					"或在链接上追加 ?phone=13800138000 后再发起登录。"),
 				plugui.Fields(fields...),
@@ -286,6 +306,7 @@ func loginIntroPage(cfg Config, request pluginapi.ManagementRequest, session *lo
 	fields = append(fields, plugui.Field{Label: "将发送到", Value: phone})
 	return pluguiPage("Loomy 登录", plugui.Card("手机验证码登录",
 		plugui.Group(
+			addAccountNotice(request),
 			plugui.Notice("", "点击「发送验证码」调用 "+SendMsgCodePath+"；收到短信后用下面的数字链接输入验证码，"+
 				"再点「提交验证」。整个流程都在这一个页面里完成。"),
 			plugui.Fields(fields...),

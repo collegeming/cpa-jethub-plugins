@@ -146,7 +146,8 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 
 	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
 		plugui.Action{Label: "签到", Query: "action=checkin", Kind: "primary"},
-		plugui.Action{Label: "重新登录", Path: "login", Kind: ""},
+		plugui.Action{Label: "重新登录", Path: "login"},
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
 	))
 	if len(creditFields) > 0 {
 		body = append(body, plugui.Card("额度", plugui.Fields(creditFields...)))
@@ -286,9 +287,14 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	if settings().Flow == LoginFlowTicket {
 		note = "当前配置为旧版票据登录流程（flow=ticket）。点击按钮获取登录链接。"
 	}
+	notices := []template.HTML{}
+	if plugui.IsAddAccountRequest(request) {
+		notices = append(notices, plugui.Notice("", plugui.AddAccountNotice))
+	}
+	notices = append(notices, plugui.Notice("", note))
 	return plugui.HTML("CodeArts 登录",
 		plugui.Card("浏览器登录",
-			plugui.Notice("", note),
+			plugui.Group(notices...),
 			plugui.Action{Label: "获取授权链接", Query: "action=login", Kind: "primary"},
 			plugui.Action{Label: "返回状态", Path: "status"},
 		),

@@ -427,6 +427,63 @@ func TestCheckinPageAndJSON(t *testing.T) {
 	})
 }
 
+// TestStatusPageOffersAddAccount pins the affordance: a SECOND LobsterAI account
+// must be reachable from the status page itself instead of only through the
+// manager's OAuth page. The link stays a GET navigation into this plugin's own
+// login route — 新建账号 adds a link, not a route.
+func TestStatusPageOffersAddAccount(t *testing.T) {
+	_, host, _ := statusFixture(t)
+	response := renderStatusPage(host, managementRequest(http.MethodGet, "/status", nil, nil))
+	body := string(response.Body)
+	if !strings.Contains(body, "新建账号") {
+		t.Fatalf("the status page offers no way to add a second account:\n%s", firstLines(body, 40))
+	}
+	if !strings.Contains(body, `href="login?add=1"`) {
+		t.Fatalf("新建账号 must be a GET link into the login route:\n%s", firstLines(body, 40))
+	}
+	if strings.Contains(body, "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestLoginPageExplainsAddingAnAccount pins the one-line caveat. 新建账号 and
+// 重新登录 open the SAME browser flow on purpose (the credential file name comes
+// from the account's own uid), so the page has to say which one this is.
+func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
+	fake := newFakeHost()
+	host := installFakeHost(t, fake)
+
+	plain := string(renderLoginPage(host, managementRequest(http.MethodGet, "/login", nil, nil)).Body)
+	if strings.Contains(plain, "新增账号") {
+		t.Fatalf("the ordinary login page must not claim to add an account:\n%s", firstLines(plain, 40))
+	}
+	adding := string(renderLoginPage(host,
+		managementRequest(http.MethodGet, "/login", url.Values{"add": {"1"}}, nil)).Body)
+	if !strings.Contains(adding, "已有账号的凭据不受影响") {
+		t.Fatalf("the add-account login page must state that the existing account survives:\n%s", firstLines(adding, 40))
+	}
+	if strings.Contains(adding, "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestSecondAccountGetsItsOwnCredentialFile is the guarantee 新建账号 relies on:
+// the auth file name is `lobsterai-<uid>.json` (the reference layout), so a
+// second account writes a NEW file and leaves the first credential alone. The
+// host saves by exactly this name (it feeds AuthData.FileName), and no code path
+// in this plugin deletes a credential.
+func TestSecondAccountGetsItsOwnCredentialFile(t *testing.T) {
+	first := &Credential{AccessToken: "tok-a", UID: "101989", UserID: "y-1"}
+	second := &Credential{AccessToken: "tok-b", UID: "202989", UserID: "y-2"}
+	firstName, secondName := defaultAuthFileName(first), defaultAuthFileName(second)
+	if firstName == secondName {
+		t.Fatalf("two accounts share the file name %q: a second login would overwrite the first account", firstName)
+	}
+	if firstName != ProviderKey+"-101989.json" {
+		t.Fatalf("auth file name = %q, want the reference layout %s-101989.json", firstName, ProviderKey)
+	}
+}
+
 func TestLoginPage(t *testing.T) {
 	t.Run("landing page offers a start action", func(t *testing.T) {
 		fake := newFakeHost()

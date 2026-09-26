@@ -131,6 +131,68 @@ func TestLoginCodePageOffersKeypadAndScriptLink(t *testing.T) {
 	}
 }
 
+// The status page carries the 新建账号 affordance: a SECOND Loomy account must be
+// reachable from the page itself instead of only through the manager's OAuth
+// page. The link stays a GET navigation into this plugin's own login route —
+// 新建账号 adds a link, not a route.
+func TestStatusPageOffersAddAccount(t *testing.T) {
+	fake := newFakeHost()
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		return httpResponse(200, `{"code":"000000","data":{"balance":15000,"dailyBalance":4992,"availableBalance":19992}}`), nil
+	}
+	fake.install(t)
+	withAccount(t, fake)
+
+	body := renderPage(t, testHost(), "/status", nil)
+	if !strings.Contains(body, "新建账号") {
+		t.Fatalf("the status page offers no way to add a second account:\n%s", truncate(body, 600))
+	}
+	if !strings.Contains(body, `href="login?add=1"`) {
+		t.Fatalf("新建账号 must be a GET link into the login route:\n%s", truncate(body, 600))
+	}
+}
+
+// The add-account flow says which account it will touch. Loomy identifies an
+// account by its phone number, so "another account" means "another number", and
+// without that line the flow would re-save the configured account instead.
+func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
+	fake := newFakeHost()
+	fake.install(t)
+	h := testHost()
+
+	plain := renderPage(t, h, "/login", nil)
+	if strings.Contains(plain, "新增账号") {
+		t.Fatalf("the ordinary login page must not claim to add an account:\n%s", truncate(plain, 400))
+	}
+	adding := renderPage(t, h, "/login", url.Values{"add": {"1"}})
+	if !strings.Contains(adding, "已有账号的凭据不受影响") {
+		t.Fatalf("the add-account login page must state that the existing account survives:\n%s", truncate(adding, 600))
+	}
+	if !strings.Contains(adding, "换一个手机号") {
+		t.Fatalf("the add-account login page must say that a second number is required:\n%s", truncate(adding, 600))
+	}
+}
+
+// The guarantee 新建账号 relies on: the auth file name is derived from the
+// account's own phone (or user id when there is no phone), so a second login
+// writes a NEW file and leaves the first credential alone. The host saves by
+// exactly this name (it feeds AuthData.FileName), and no code path in this plugin
+// deletes a credential.
+func TestSecondAccountGetsItsOwnCredentialFile(t *testing.T) {
+	first := defaultAuthFileName(&Credential{AccessToken: "a", UserID: "100000000000000001", Phone: "13800138000"})
+	second := defaultAuthFileName(&Credential{AccessToken: "b", UserID: "100000000000000002", Phone: "13900139000"})
+	if first == second {
+		t.Fatalf("two accounts share the file name %q: a second login would overwrite the first account", first)
+	}
+	// A WeChat login with no bound phone still gets a name of its own: the
+	// fallback is the user id, never a constant.
+	wechatA := defaultAuthFileName(&Credential{AccessToken: "c", UserID: "100000000000000003"})
+	wechatB := defaultAuthFileName(&Credential{AccessToken: "d", UserID: "100000000000000004"})
+	if wechatA == wechatB {
+		t.Fatalf("two phone-less accounts share the file name %q", wechatA)
+	}
+}
+
 // A failed balance read is shown as a failure and never as a zero (trap #11).
 func TestStatusPageNeverRendersAFailedBalanceAsZero(t *testing.T) {
 	fake := newFakeHost()

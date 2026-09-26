@@ -305,6 +305,9 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 
 	actions := []plugui.Action{
 		{Label: "重新登录", Path: "login"},
+		// 同一产品下的第二个账号：默认凭据名带随机后缀，每次登录都会新建文件，
+		// 所以这里和「重新登录」走的是同一条登录流程，标签只是把意图说清楚。
+		{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
 	}
 	if credential != nil && supportsCheckin(productForCredential(credential)) {
 		actions = append([]plugui.Action{{Label: "领取每日积分", Path: "checkin", Kind: "primary"}}, actions...)
@@ -372,16 +375,21 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 		return pollLoginPage(h, request)
 	}
 	product, _ := productByConfigValue(settings().Product)
+	notices := []template.HTML{}
+	if plugui.IsAddAccountRequest(request) {
+		notices = append(notices, plugui.Notice("", plugui.AddAccountNotice))
+	}
+	notices = append(notices,
+		plugui.Notice("", "点击下面的按钮获取授权链接。链接由服务端下发（POST /v2/plugin/auth/state），"+
+			"在浏览器里完成授权后回到本页检查结果 —— 本页不会阻塞等待。"),
+		plugui.Fields(
+			plugui.Field{Label: "当前产品", Value: product.DisplayName + "（" + product.ConfigValue + "）"},
+			plugui.Field{Label: "授权平台", Value: product.Platform},
+		),
+	)
 	return plugui.HTML("CodeBuddy 登录",
 		plugui.Card("浏览器登录",
-			plugui.Group(
-				plugui.Notice("", "点击下面的按钮获取授权链接。链接由服务端下发（POST /v2/plugin/auth/state），"+
-					"在浏览器里完成授权后回到本页检查结果 —— 本页不会阻塞等待。"),
-				plugui.Fields(
-					plugui.Field{Label: "当前产品", Value: product.DisplayName + "（" + product.ConfigValue + "）"},
-					plugui.Field{Label: "授权平台", Value: product.Platform},
-				),
-			),
+			plugui.Group(notices...),
 			plugui.Action{Label: "开始登录", Query: "action=login", Kind: "primary"},
 			plugui.Action{Label: "返回状态", Path: "status"},
 		),

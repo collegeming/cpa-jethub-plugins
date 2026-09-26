@@ -104,6 +104,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
 		plugui.Action{Label: "刷新令牌", Query: "action=refresh", Kind: "primary"},
 		plugui.Action{Label: "重新登录", Path: "login"},
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
 	))
 	if len(balanceFields) > 0 {
 		body = append(body, plugui.Card("余额", plugui.Fields(balanceFields...)))
@@ -143,17 +144,21 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	case "poll":
 		return pollLoginPage(h, request)
 	}
+	notices := []template.HTML{}
+	if plugui.IsAddAccountRequest(request) {
+		notices = append(notices, plugui.Notice("", plugui.AddAccountNotice))
+	}
+	notices = append(notices, plugui.Notice("", "点击下面的按钮获取设备码授权链接。在浏览器里完成授权后回到本页点击「检查授权结果」即可，"+
+		"整个过程不需要本地回调端口。"))
 	return pluguiPage("Cline 登录",
 		plugui.Card("WorkOS 设备码登录",
-			plugui.Group(
-				plugui.Notice("", "点击下面的按钮获取设备码授权链接。在浏览器里完成授权后回到本页点击「检查授权结果」即可，"+
-					"整个过程不需要本地回调端口。"),
+			plugui.Group(append(notices,
 				plugui.Fields(
 					plugui.Field{Label: "授权接口", Value: WorkOSBase + DeviceAuthorizationPath},
 					plugui.Field{Label: "轮询接口", Value: WorkOSBase + DeviceAuthenticatePath},
 					plugui.Field{Label: "换取凭据", Value: APIBase + RegisterPath},
 				),
-			),
+			)...),
 			plugui.Action{Label: "开始登录", Query: "action=start", Kind: "primary"},
 			plugui.Action{Label: "返回状态", Path: "status"},
 		),

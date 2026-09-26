@@ -249,6 +249,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		plugui.Action{Label: "签到", Query: "action=checkin", Kind: "primary"},
 		plugui.Action{Label: "刷新模型目录", Query: "action=refresh"},
 		plugui.Action{Label: "重新登录", Path: "login"},
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
 	))
 	body = append(body, plugui.Card("通道与模型", plugui.Fields(catalogFields...)))
 	if len(creditFields) > 0 {
@@ -497,17 +498,21 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	}
 	cfg := settings()
 	product := productFor(cfg.Region)
+	notices := []template.HTML{}
+	if plugui.IsAddAccountRequest(request) {
+		notices = append(notices, plugui.Notice("", plugui.AddAccountNotice))
+	}
+	notices = append(notices, plugui.Notice("", "点击下面的按钮获取授权链接，在浏览器里完成授权后回到本页检查结果。"))
 	return plugui.HTML("TRAE 登录",
 		plugui.Card("浏览器登录",
-			plugui.Group(
-				plugui.Notice("", "点击下面的按钮获取授权链接，在浏览器里完成授权后回到本页检查结果。"),
+			plugui.Group(append(notices,
 				plugui.Fields(
 					plugui.Field{Label: "区域", Value: cfg.Region + "（" + product.Site + "）"},
 					plugui.Field{Label: "登录门户", Value: product.ConsoleHost + "/authorization"},
 					plugui.Field{Label: "回调地址", Value: fmt.Sprintf("http://127.0.0.1:<实际端口>%s", CallbackPath)},
 					plugui.Field{Label: "首选端口", Value: fmt.Sprintf("%d", cfg.CallbackPort)},
 				),
-			),
+			)...),
 			plugui.Action{Label: "开始登录", Query: "action=start", Kind: "primary"},
 			plugui.Action{Label: "返回状态", Path: "status"},
 		),

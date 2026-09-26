@@ -132,6 +132,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
 		plugui.Action{Label: "领取每日积分", Path: "checkin", Kind: "primary"},
 		plugui.Action{Label: "重新登录", Path: "login"},
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
 	))
 	if len(creditFields) > 0 {
 		body = append(body, plugui.Card("额度", plugui.Fields(creditFields...)))
@@ -178,16 +179,20 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	if strings.TrimSpace(settings().WASMPath) == "" {
 		note += "（当前未配置 wasm_path，登录后仅能调用公开端点认识的通用模型名。）"
 	}
+	notices := []template.HTML{}
+	if plugui.IsAddAccountRequest(request) {
+		notices = append(notices, plugui.Notice("", plugui.AddAccountNotice))
+	}
+	notices = append(notices, plugui.Notice("", note))
 	return pluguiPage("Qoder 登录",
 		plugui.Card("设备码登录",
-			plugui.Group(
-				plugui.Notice("", note),
+			plugui.Group(append(notices,
 				plugui.Fields(
 					plugui.Field{Label: "区域", Value: regionText(region)},
 					plugui.Field{Label: "授权页", Value: productByID(string(region)).AuthBase + DeviceSelectPath},
 					plugui.Field{Label: "轮询地址", Value: productByID(string(region)).OpenAPIBase + PollPath},
 				),
-			),
+			)...),
 			plugui.Action{Label: "开始登录", Query: "action=start", Kind: "primary"},
 			plugui.Action{Label: "返回状态", Path: "status"},
 		),

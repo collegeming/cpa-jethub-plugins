@@ -353,6 +353,63 @@ func TestLoginPageRendersStartAction(t *testing.T) {
 	}
 }
 
+// TestStatusPageOffersAddAccount pins the affordance: a SECOND TRAE account must
+// be reachable from the status page itself instead of only through the manager's
+// OAuth page. The link stays a GET navigation into this plugin's own login route
+// — 新建账号 adds a link, not a route.
+func TestStatusPageOffersAddAccount(t *testing.T) {
+	accountHost(t, nil)
+	response := renderStatusPage(abiboot.NewHost(nil), pluginapi.ManagementRequest{})
+	body := string(response.Body)
+	if !strings.Contains(body, "新建账号") {
+		t.Fatalf("the status page offers no way to add a second account:\n%s", body)
+	}
+	if !strings.Contains(body, `href="login?add=1"`) {
+		t.Fatalf("新建账号 must be a GET link into the login route:\n%s", body)
+	}
+	if strings.Contains(strings.ToLower(body), "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestLoginPageExplainsAddingAnAccount pins the one-line caveat. 新建账号 and
+// 重新登录 open the SAME browser flow on purpose (the credential file name comes
+// from the account's own identity), so the page has to say which one this is.
+func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
+	plain := string(renderLoginPage(abiboot.NewHost(nil), pluginapi.ManagementRequest{}).Body)
+	if strings.Contains(plain, "新增账号") {
+		t.Fatalf("the ordinary login page must not claim to add an account:\n%s", plain)
+	}
+	adding := string(renderLoginPage(abiboot.NewHost(nil), pluginapi.ManagementRequest{
+		Query: map[string][]string{"add": {"1"}},
+	}).Body)
+	if !strings.Contains(adding, "已有账号的凭据不受影响") {
+		t.Fatalf("the add-account login page must state that the existing account survives:\n%s", adding)
+	}
+	if strings.Contains(strings.ToLower(adding), "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestSecondAccountGetsItsOwnCredentialFile is the guarantee 新建账号 relies on:
+// the auth file name is derived from the account's own uid, so a second login
+// writes a NEW file and leaves the first credential alone. The host saves by
+// exactly this name (it feeds AuthData.FileName), and no code path in this
+// plugin deletes a credential.
+func TestSecondAccountGetsItsOwnCredentialFile(t *testing.T) {
+	// Both nicknames are Chinese, i.e. they sanitise away, so the uid decides —
+	// which is exactly the case a constant fallback would have broken.
+	first := &Credential{AccessToken: "tok-a", UID: "uid-1", Nickname: "张三"}
+	second := &Credential{AccessToken: "tok-b", UID: "uid-2", Nickname: "李四"}
+	firstName, secondName := defaultAuthFileName(first), defaultAuthFileName(second)
+	if firstName == secondName {
+		t.Fatalf("two accounts share the file name %q: a second login would overwrite the first account", firstName)
+	}
+	if !strings.HasPrefix(firstName, ProviderKey+"-") || !strings.HasSuffix(firstName, ".json") {
+		t.Fatalf("auth file name = %q, want %s-*.json", firstName, ProviderKey)
+	}
+}
+
 // TestManagementHandleDispatch covers routing and both representations, using the
 // full request path the host passes in.
 func TestManagementHandleDispatch(t *testing.T) {

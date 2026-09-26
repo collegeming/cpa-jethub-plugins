@@ -2,12 +2,32 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+// stubAuthList installs a host transport whose credential listing holds exactly
+// the given entries and answers nothing else. The status page only needs the
+// listing to get past its empty state; a credential that cannot be read is a
+// state the page already renders.
+func stubAuthList(t *testing.T, entries ...pluginapi.HostAuthFileEntry) *abiboot.Host {
+	t.Helper()
+	abiboot.SetHostCaller(func(method string, _ []byte) ([]byte, error) {
+		if method != pluginabi.MethodHostAuthList {
+			return nil, fmt.Errorf("unexpected host method %s", method)
+		}
+		return abiboot.OK(map[string]any{"files": entries})
+	})
+	t.Cleanup(abiboot.ClearHostCaller)
+	return abiboot.NewHost(json.RawMessage(`{"host_callback_id":"test-callback"}`))
+}
 
 func TestManagementRoute(t *testing.T) {
 	tests := []struct {
@@ -173,6 +193,70 @@ func TestLoginJSONHint(t *testing.T) {
 	}
 	if len(response.Body) == 0 {
 		t.Fatal("empty body")
+	}
+}
+
+// TestStatusPageOffersAddAccount pins the affordance: a SECOND account of the
+// same product must be reachable from the status page itself instead of only
+// through the manager's OAuth page. The link stays a GET navigation into this
+// plugin's own login route — 新建账号 adds a link, not a route.
+func TestStatusPageOffersAddAccount(t *testing.T) {
+	previous := settings()
+	defer setSettings(previous)
+	setSettings(Config{Product: ProductCodeBuddy})
+
+	host := stubAuthList(t, pluginapi.HostAuthFileEntry{
+		Provider: ProviderKey, AuthIndex: "idx-1", Name: "codebuddy-alice-1a2b.json",
+	})
+	response := renderStatusPage(host, pluginapi.ManagementRequest{Query: map[string][]string{}})
+	body := string(response.Body)
+	if !strings.Contains(body, "新建账号") {
+		t.Fatalf("the status page offers no way to add a second account:\n%s", body)
+	}
+	if !strings.Contains(body, `href="login?add=1"`) {
+		t.Fatalf("新建账号 must be a GET link into the login route:\n%s", body)
+	}
+	if strings.Contains(body, "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestLoginPageExplainsAddingAnAccount pins the one-line caveat. 新建账号 and
+// 重新登录 open the SAME login flow on purpose, so the page has to say which one
+// this is.
+func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
+	plain := string(renderLoginPage(nil, pluginapi.ManagementRequest{Query: map[string][]string{}}).Body)
+	if strings.Contains(plain, "新增账号") {
+		t.Fatalf("the ordinary login page must not claim to add an account:\n%s", plain)
+	}
+	adding := string(renderLoginPage(nil, pluginapi.ManagementRequest{Query: map[string][]string{"add": {"1"}}}).Body)
+	if !strings.Contains(adding, "已有账号的凭据不受影响") {
+		t.Fatalf("the add-account login page must state that the existing account survives:\n%s", adding)
+	}
+	if strings.Contains(adding, "<form") {
+		t.Fatal("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestSecondAccountGetsItsOwnCredentialFile is the guarantee 新建账号 relies on:
+// the auth file name carries a random suffix, so every completed login writes a
+// NEW file and leaves the credentials already on disk alone. The host saves by
+// exactly this name (it feeds AuthData.FileName), and no code path in this
+// plugin deletes a credential.
+func TestSecondAccountGetsItsOwnCredentialFile(t *testing.T) {
+	alice := &Credential{AccessToken: "tok-a", UserID: "u-1", Nickname: "alice", Product: ProductCodeBuddy}
+	bob := &Credential{AccessToken: "tok-b", UserID: "u-2", Nickname: "bob", Product: ProductCodeBuddy}
+	firstName, secondName := defaultAuthFileName(alice), defaultAuthFileName(bob)
+	if firstName == secondName {
+		t.Fatalf("two accounts share the file name %q: a second login would overwrite the first account", firstName)
+	}
+	// Even a repeat login of the SAME account gets its own file here, because the
+	// suffix is random rather than derived from the identity.
+	if again := defaultAuthFileName(alice); again == firstName {
+		t.Fatalf("a repeat login reused %q, want a fresh file", again)
+	}
+	if !strings.HasPrefix(firstName, ProviderKey+"-") || !strings.HasSuffix(firstName, ".json") {
+		t.Fatalf("auth file name = %q, want %s-*.json", firstName, ProviderKey)
 	}
 }
 

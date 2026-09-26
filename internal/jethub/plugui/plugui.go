@@ -141,6 +141,31 @@ type Action struct {
 	Kind string
 }
 
+// AddAccountQuery is the query a status page appends to the login link when the
+// user asked for an ADDITIONAL account instead of a re-login.
+//
+// Every provider derives its credential file name from the account's own
+// identity (`defaultAuthFileName`), so a second account lands in a second file
+// and the first one is left untouched. The query exists only so the login page
+// can say that out loud: the login flow itself is the same one, deliberately —
+// there is no second code path that could behave differently.
+const AddAccountQuery = "add=1"
+
+// AddAccountNotice is the one-line caveat a login page shows when it was
+// reached through AddAccountQuery. It is the only place the distinction is
+// explained; the action itself is labelled 新建账号.
+const AddAccountNotice = "本次登录用于新增账号，已有账号的凭据不受影响。"
+
+// IsAddAccountRequest reports whether a page was opened to add another account.
+func IsAddAccountRequest(request pluginapi.ManagementRequest) bool {
+	switch strings.ToLower(strings.TrimSpace(request.Query.Get("add"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 // Field is one label/value row.
 type Field struct {
 	Label string

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -25,17 +26,18 @@ func TestMenuCount(t *testing.T) {
 	if menus != 0 {
 		t.Fatalf("menu routes = %d, want zero: the hub plugin owns the repository's only sidebar entry", menus)
 	}
-	// The status page must stay mounted on the resource path the hub links to.
-	statusMounted := false
+	// Every page is a Menu-less resource route, and the set is pinned: the
+	// 新建账号 affordance is a LINK to /login, so adding a second account must
+	// not have added a route. The repository-wide sidebar count therefore stays
+	// at the hub's single entry — this plugin contributes none of it.
+	pages := make([]string, 0, len(resp.Resources))
 	for _, resource := range resp.Resources {
 		if resource.Menu != "" {
 			t.Fatalf("resource route %s carries menu %q, want empty", resource.Path, resource.Menu)
 		}
-		if resource.Path == "/status" {
-			statusMounted = true
-		}
+		pages = append(pages, resource.Path)
 	}
-	if !statusMounted {
-		t.Fatal("the status page is not a Menu-less resource route, so /v0/resource/plugins/<id>/status would 404")
+	if want := []string{"/status", "/login", "/checkin", "/onboarding"}; !slices.Equal(pages, want) {
+		t.Fatalf("resource routes = %v, want %v: /status is what the hub links to, /login is what it and 新建账号 open", pages, want)
 	}
 }
