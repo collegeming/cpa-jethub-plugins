@@ -31,7 +31,7 @@ GO="${GO:-$(command -v go 2>/dev/null || echo /home/colle/.local/go/bin/go)}"
 # Every artifact a release carries. The Tencent entries are product variants:
 # one source directory, one .so each (see scripts/build.sh), because CPA takes a
 # plugin's id from its file name and a plugin registers one provider key.
-PLUGINS=(codearts cline loomy qoder trae lobsterai \
+PLUGINS=(codearts cline hub loomy qoder trae lobsterai \
          codebuddy codebuddy-intl workbuddy-cn workbuddy)
 
 # variant_source_dir maps an artifact id to the directory its version is
