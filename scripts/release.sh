@@ -28,7 +28,20 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 GO="${GO:-$(command -v go 2>/dev/null || echo /home/colle/.local/go/bin/go)}"
-PLUGINS=(codearts codebuddy qoder trae lobsterai)
+# Every artifact a release carries. The Tencent entries are product variants:
+# one source directory, one .so each (see scripts/build.sh), because CPA takes a
+# plugin's id from its file name and a plugin registers one provider key.
+PLUGINS=(codearts cline loomy qoder trae lobsterai \
+         codebuddy codebuddy-intl workbuddy-cn workbuddy)
+
+# variant_source_dir maps an artifact id to the directory its version is
+# declared in; variants share plugins/codebuddy.
+variant_source_dir() {
+	case "$1" in
+	codebuddy | codebuddy-intl | workbuddy-cn | workbuddy) printf 'plugins/codebuddy' ;;
+	*) printf 'plugins/%s' "$1" ;;
+	esac
+}
 
 SKIP_BUILD=0
 for argument in "$@"; do
@@ -83,7 +96,7 @@ if [[ -n "${VERSION:-}" ]]; then
 else
 	expected=""
 	for plugin in "${PLUGINS[@]}"; do
-		this_version="$(plugin_version "plugins/$plugin")"
+		this_version="$(plugin_version "$(variant_source_dir "$plugin")")"
 		if [[ -z "$expected" ]]; then
 			expected="$this_version"
 		elif [[ "$expected" != "$this_version" ]]; then
@@ -100,7 +113,7 @@ fi
 ARTIFACT_DIR="dist/${GOOS}/${GOARCH}"
 packaged=0
 for plugin in "${PLUGINS[@]}"; do
-	source_lib="${ARTIFACT_DIR}/${plugin}-v$(plugin_version "plugins/$plugin").${EXT}"
+	source_lib="${ARTIFACT_DIR}/${plugin}-v$(plugin_version "$(variant_source_dir "$plugin")").${EXT}"
 	if [[ ! -f "$source_lib" ]]; then
 		echo "==> $plugin: SKIP (no ${source_lib})"
 		continue
