@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authfile"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -21,6 +22,20 @@ import (
 const refreshLead = time.Hour
 
 var unsafeFileNameChars = regexp.MustCompile(`[^A-Za-z0-9._@-]+`)
+
+// authNameForHost resolves the auth file name the host already uses for this
+// credential: the name it supplies on `auth.parse` (the file it read the
+// credential from) or on `auth.refresh` (the auth record id, which for a
+// file-backed credential is that same file name), and failing both, the
+// `path`/`source` attribute naming that file.
+//
+// Deriving a name is the brand-new-login case only: the derived name belongs to
+// the account identity, and a credential without one still gets a random suffix,
+// so a refresh that derived a name could write the renewed credential to a
+// second file and leave the one the host asked us to renew behind.
+func authNameForHost(incoming, path, source string, credential *Credential) string {
+	return authfile.Name(func() string { return defaultAuthFileName(credential) }, incoming, path, source)
+}
 
 // authDataFor converts a credential into the host-facing AuthData record.
 func authDataFor(credential *Credential, fileName string) (pluginapi.AuthData, error) {
@@ -81,31 +96,43 @@ func authDataFor(credential *Credential, fileName string) (pluginapi.AuthData, e
 	return auth, nil
 }
 
-// defaultAuthFileName derives a stable auth-file name for an account.
+// defaultAuthFileName derives an auth-file name for one account.
+//
+// The name comes from the account's own identity and NOT from a random draw:
+// the host saves a completed login (and every later renewal) under exactly this
+// name, so a name that changes per call leaves one auth file behind per login —
+// the duplicate entries the status page grows. Two different accounts still land
+// in two files, because their user ids differ.
+//
+// The nickname is only usable when it survives sanitising. A Chinese nickname
+// (the common case here, e.g. 黎明文铮) sanitises down to nothing, exactly like
+// TRAE's, so the user id is tried next instead of collapsing to the shared
+// constant "account" — two accounts with CJK nicknames must not share a file.
+// A credential with neither a nickname nor a user id is the one case the name
+// cannot tell accounts apart; there the random suffix stays, because two
+// identity-less accounts must never overwrite each other.
 func defaultAuthFileName(credential *Credential) string {
-	identity := credential.Nickname
+	identity := sanitizeFileIdentity(credential.Nickname)
 	if identity == "" {
-		identity = credential.UserID
+		identity = sanitizeFileIdentity(credential.UserID)
 	}
 	if identity == "" {
-		identity = credential.Product
-	}
-	if identity == "" {
-		identity = "account"
-	}
-	identity = unsafeFileNameChars.ReplaceAllString(strings.TrimSpace(identity), "-")
-	identity = strings.Trim(identity, "-")
-	if identity == "" {
-		identity = "account"
+		suffix, errSuffix := randomHex(4)
+		if errSuffix != nil {
+			suffix = "0000"
+		}
+		return ProviderKey + "-account-" + suffix + ".json"
 	}
 	if len(identity) > 48 {
 		identity = identity[:48]
 	}
-	suffix, errSuffix := randomHex(4)
-	if errSuffix != nil {
-		suffix = "0000"
-	}
-	return ProviderKey + "-" + identity + "-" + suffix + ".json"
+	return ProviderKey + "-" + identity + ".json"
+}
+
+// sanitizeFileIdentity keeps the characters that are safe in an auth file name.
+func sanitizeFileIdentity(value string) string {
+	identity := unsafeFileNameChars.ReplaceAllString(strings.TrimSpace(value), "-")
+	return strings.Trim(identity, "-")
 }
 
 func boolString(value bool) string {
@@ -147,7 +174,7 @@ func handleAuthParse(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 	if credential.Product == "" {
 		credential.Product = settings().Product
 	}
-	auth, errAuth := authDataFor(credential, request.FileName)
+	auth, errAuth := authDataFor(credential, authNameForHost(request.FileName, request.Path, "", credential))
 	if errAuth != nil {
 		return nil, errAuth
 	}
@@ -176,7 +203,7 @@ func handleAuthRefresh(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		}
 		return nil, errRefresh
 	}
-	auth, errAuth := authDataFor(refreshed, request.AuthID)
+	auth, errAuth := authDataFor(refreshed, authNameForHost(request.AuthID, request.Attributes["path"], request.Attributes["source"], refreshed))
 	if errAuth != nil {
 		return nil, errAuth
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authfile"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -59,6 +60,21 @@ func authDataFor(credential *Credential, fileName string) (pluginapi.AuthData, e
 		},
 		NextRefreshAfter: credential.Expiry().Add(-refreshLead),
 	}, nil
+}
+
+// authNameForHost resolves the auth file name the host already uses for this
+// credential: the name it supplies on `auth.parse` (the file it read the
+// credential from) or on `auth.refresh` (the auth record id, which for a
+// file-backed credential is that same file name), and failing both, the
+// `path`/`source` attribute naming that file.
+//
+// Deriving a name is the brand-new-login case only. The derived identity here
+// walks down to the STS access key id, which rotates on every token refresh: a
+// refresh that derived a name would write the renewed credential to a second
+// file and leave the one the host asked us to renew behind, so one account
+// would collect one auth file per refresh cycle.
+func authNameForHost(incoming, path, source string, credential *Credential) string {
+	return authfile.Name(func() string { return defaultAuthFileName(credential) }, incoming, path, source)
 }
 
 // defaultAuthFileName derives a stable auth-file name for an account.
@@ -114,7 +130,7 @@ func handleAuthParse(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 	if request.Provider != "" && request.Provider != ProviderKey {
 		return pluginapi.AuthParseResponse{Handled: false}, nil
 	}
-	auth, errAuth := authDataFor(credential, request.FileName)
+	auth, errAuth := authDataFor(credential, authNameForHost(request.FileName, request.Path, "", credential))
 	if errAuth != nil {
 		return nil, errAuth
 	}
@@ -123,12 +139,22 @@ func handleAuthParse(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 
 // handleAuthLoginStart opens the loopback callback listener and returns the
 // browser URL for the interactive sign-in.
-func handleAuthLoginStart(_ *abiboot.Host, _ json.RawMessage) (any, error) {
+//
+// A re-login may arrive with the account it re-authorises (the manager passes
+// its query string as metadata, and its own relogin page knows the file). The
+// target travels back to auth.login.poll inside the returned metadata, so the
+// sign-in lands in that account's file even when this plugin is not the one
+// driving the poll.
+func handleAuthLoginStart(h *abiboot.Host, raw json.RawMessage) (any, error) {
+	request, errDecode := abiboot.Decode[pluginapi.AuthLoginStartRequest](raw)
+	if errDecode != nil {
+		return nil, errDecode
+	}
 	flow := settings().Flow
 	if flow != LoginFlowTicket {
 		flow = LoginFlowOAuth
 	}
-	session, errStart := startLoginSession(flow)
+	session, errStart := startLoginSession(flow, loginTargetNameFromMetadata(h, request.Metadata))
 	if errStart != nil {
 		return nil, errStart
 	}
@@ -140,6 +166,9 @@ func handleAuthLoginStart(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	if session.Flow == LoginFlowTicket {
 		metadata["ticket_id"] = session.TicketID
 	}
+	if session.TargetName != "" {
+		metadata["target"] = session.TargetName
+	}
 	return pluginapi.AuthLoginStartResponse{
 		Provider:  ProviderKey,
 		URL:       session.LoginURL(),
@@ -147,6 +176,17 @@ func handleAuthLoginStart(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 		ExpiresAt: session.ExpiresAt,
 		Metadata:  metadata,
 	}, nil
+}
+
+// loginPollAuth builds the host record for a finished sign-in.
+//
+// The credential belongs in the file a re-login named, and in a freshly derived
+// one only for a new account: the derived identity is the STS access key, which
+// rotates on every exchange, so deriving here would leave the account the user
+// re-authorised in place and add a second entry beside it.
+func loginPollAuth(credential *Credential, request pluginapi.AuthLoginPollRequest) (pluginapi.AuthData, error) {
+	target, _ := request.Metadata["target"].(string)
+	return authDataFor(credential, authNameForHost(target, "", "", credential))
 }
 
 // handleAuthLoginPoll advances an in-flight sign-in. Network work happens here
@@ -168,7 +208,7 @@ func handleAuthLoginPoll(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if status, message, credential, finished := session.snapshot(); finished {
 		defer forgetLoginSession(request.State)
 		if status == pluginapi.AuthLoginStatusSuccess && credential != nil {
-			auth, errAuth := authDataFor(credential, "")
+			auth, errAuth := loginPollAuth(credential, request)
 			if errAuth != nil {
 				return nil, errAuth
 			}
@@ -188,7 +228,7 @@ func handleAuthLoginPoll(h *abiboot.Host, raw json.RawMessage) (any, error) {
 			}
 			credential := credentialFromToken(token, session.PKCE.Verifier, session.KeyPair)
 			session.finish(credential, "登录成功")
-			auth, errAuth := authDataFor(credential, "")
+			auth, errAuth := loginPollAuth(credential, request)
 			if errAuth != nil {
 				return nil, errAuth
 			}
@@ -205,7 +245,7 @@ func handleAuthLoginPoll(h *abiboot.Host, raw json.RawMessage) (any, error) {
 			}
 			if credential != nil {
 				session.finish(credential, "登录成功")
-				auth, errAuth := authDataFor(credential, "")
+				auth, errAuth := loginPollAuth(credential, request)
 				if errAuth != nil {
 					return nil, errAuth
 				}
@@ -253,7 +293,7 @@ func handleAuthRefresh(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	refreshed.UserName = credential.UserName
 	refreshed.ModelRateLimits = credential.ModelRateLimits
 
-	auth, errAuth := authDataFor(refreshed, request.AuthID)
+	auth, errAuth := authDataFor(refreshed, authNameForHost(request.AuthID, request.Attributes["path"], request.Attributes["source"], refreshed))
 	if errAuth != nil {
 		return nil, errAuth
 	}

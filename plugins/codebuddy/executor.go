@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authfile"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -575,17 +576,20 @@ func sendChat(h *abiboot.Host, call *chatCall, credential *Credential, authID st
 }
 
 // persistRefreshed writes a refreshed credential back to its auth file. It is
-// best effort: the host's save callback only accepts a file name, so a runtime
-// auth index is skipped rather than turned into a duplicate file.
+// best effort: the host's save callback only accepts a file name, and the
+// executor receives the auth record id — the file name for a file-backed
+// credential, a runtime index otherwise. A runtime index is skipped by name
+// resolution rather than turned into a duplicate file.
 func persistRefreshed(h *abiboot.Host, authID string, credential *Credential) {
-	if h == nil || !strings.HasSuffix(authID, ".json") {
+	name := authfile.Name(nil, authID)
+	if h == nil || name == "" {
 		return
 	}
 	storage, errEncode := credential.Encode()
 	if errEncode != nil {
 		return
 	}
-	if _, errSave := h.SaveAuth(authID, storage); errSave != nil {
+	if _, errSave := h.SaveAuth(name, storage); errSave != nil {
 		h.Log("warn", "CodeBuddy 刷新后的凭据写回失败", map[string]any{
 			"auth_id": authID,
 			"error":   errSave.Error(),

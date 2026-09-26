@@ -239,10 +239,10 @@ func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
 }
 
 // TestSecondAccountGetsItsOwnCredentialFile is the guarantee 新建账号 relies on:
-// the auth file name carries a random suffix, so every completed login writes a
-// NEW file and leaves the credentials already on disk alone. The host saves by
-// exactly this name (it feeds AuthData.FileName), and no code path in this
-// plugin deletes a credential.
+// the auth file name is derived from the account's own identity, so a second
+// account writes a NEW file and leaves the credentials already on disk alone.
+// The host saves by exactly this name (it feeds AuthData.FileName), and no code
+// path in this plugin deletes a credential.
 func TestSecondAccountGetsItsOwnCredentialFile(t *testing.T) {
 	alice := &Credential{AccessToken: "tok-a", UserID: "u-1", Nickname: "alice", Product: ProductCodeBuddy}
 	bob := &Credential{AccessToken: "tok-b", UserID: "u-2", Nickname: "bob", Product: ProductCodeBuddy}
@@ -250,13 +250,40 @@ func TestSecondAccountGetsItsOwnCredentialFile(t *testing.T) {
 	if firstName == secondName {
 		t.Fatalf("two accounts share the file name %q: a second login would overwrite the first account", firstName)
 	}
-	// Even a repeat login of the SAME account gets its own file here, because the
-	// suffix is random rather than derived from the identity.
-	if again := defaultAuthFileName(alice); again == firstName {
-		t.Fatalf("a repeat login reused %q, want a fresh file", again)
+	// The same account must land in the SAME file: this name is what the host
+	// writes a completed login — and every later renewal — to, so a name that
+	// moved would leave one duplicate entry per login behind (Bug A).
+	if again := defaultAuthFileName(&Credential{AccessToken: "tok-a2", UserID: "u-1", Nickname: "alice"}); again != firstName {
+		t.Fatalf("a repeat login of the same account derived %q after %q, want the same file", again, firstName)
 	}
 	if !strings.HasPrefix(firstName, ProviderKey+"-") || !strings.HasSuffix(firstName, ".json") {
 		t.Fatalf("auth file name = %q, want %s-*.json", firstName, ProviderKey)
+	}
+	// A Chinese nickname (the live case: 黎明文铮) sanitises down to nothing, so
+	// the user id has to decide — collapsing to the shared constant "account"
+	// is what produced two files named codebuddy-account-<random>.json on disk.
+	cjkA := defaultAuthFileName(&Credential{AccessToken: "tok", UserID: "u-3", Nickname: "黎明文铮"})
+	cjkB := defaultAuthFileName(&Credential{AccessToken: "tok", UserID: "u-4", Nickname: "张三"})
+	if cjkA == cjkB {
+		t.Fatalf("two CJK-nicknamed accounts share the file name %q", cjkA)
+	}
+	if cjkA != ProviderKey+"-u-3.json" {
+		t.Fatalf("CJK nickname derived %q, want the user id to decide", cjkA)
+	}
+}
+
+// The product is pinned at build time (one artifact per product), so the page for
+// a fresh instance must not send the user into the config file: that instruction
+// died with the build-variant change and is wrong for every artifact.
+func TestNoAccountPageDoesNotAskForTheProductSetting(t *testing.T) {
+	body := string(renderStatusPage(nil, pluginapi.ManagementRequest{Query: map[string][]string{}}).Body)
+	if strings.Contains(body, "请先在插件配置里选定") {
+		t.Fatalf("the no-account page still asks for the product setting:\n%s", body)
+	}
+	for _, want := range []string{"构建产物里已经固定", "独立插件"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the no-account page does not explain the build-pinned product (%q missing):\n%s", want, body)
+		}
 	}
 }
 

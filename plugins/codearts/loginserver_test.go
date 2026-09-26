@@ -47,7 +47,7 @@ func TestPinnedCallbackPortBelowPortalMinimumFailsFast(t *testing.T) {
 	cfg.CallbackPort = minCallbackPort - 1
 
 	withSettings(t, cfg, func() {
-		session, errStart := startLoginSession(LoginFlowOAuth)
+		session, errStart := startLoginSession(LoginFlowOAuth, "")
 		if errStart == nil {
 			session.fail("test teardown")
 			t.Fatalf("startLoginSession with callback_port=%d succeeded, want a fast failure", cfg.CallbackPort)
@@ -75,7 +75,7 @@ func TestPinnedCallbackPortBindsExactlyThatPort(t *testing.T) {
 	cfg.CallbackBindHost = "127.0.0.1"
 
 	withSettings(t, cfg, func() {
-		session, errStart := startLoginSession(LoginFlowOAuth)
+		session, errStart := startLoginSession(LoginFlowOAuth, "")
 		if errStart != nil {
 			t.Fatalf("startLoginSession: %v", errStart)
 		}
@@ -109,13 +109,13 @@ func TestRetryWithPinnedPortSupersedesPreviousAttempt(t *testing.T) {
 	cfg.CallbackBindHost = "127.0.0.1"
 
 	withSettings(t, cfg, func() {
-		first, errFirst := startLoginSession(LoginFlowOAuth)
+		first, errFirst := startLoginSession(LoginFlowOAuth, "")
 		if errFirst != nil {
 			t.Fatalf("first startLoginSession: %v", errFirst)
 		}
 
 		// Exactly what the panel does when the user presses 重试.
-		second, errSecond := startLoginSession(LoginFlowOAuth)
+		second, errSecond := startLoginSession(LoginFlowOAuth, "")
 		if errSecond != nil {
 			first.fail("test teardown")
 			t.Fatalf("retry failed, want the previous attempt superseded: %v", errSecond)
@@ -151,7 +151,7 @@ func TestUnpinnedCallbackPortKeepsEphemeralBehaviour(t *testing.T) {
 	}
 
 	withSettings(t, cfg, func() {
-		session, errStart := startLoginSession(LoginFlowOAuth)
+		session, errStart := startLoginSession(LoginFlowOAuth, "")
 		if errStart != nil {
 			t.Fatalf("startLoginSession: %v", errStart)
 		}
@@ -239,13 +239,13 @@ func TestCallbackListenerOutlivesTheSession(t *testing.T) {
 	cfg, port := pinnedPortSettings(t)
 
 	withSettings(t, cfg, func() {
-		first, errFirst := startLoginSession(LoginFlowOAuth)
+		first, errFirst := startLoginSession(LoginFlowOAuth, "")
 		if errFirst != nil {
 			t.Fatalf("first startLoginSession: %v", errFirst)
 		}
 		first.fail("test teardown")
 
-		second, errSecond := startLoginSession(LoginFlowOAuth)
+		second, errSecond := startLoginSession(LoginFlowOAuth, "")
 		if errSecond != nil {
 			t.Fatalf("sign-in after a finished session: %v", errSecond)
 		}
@@ -319,7 +319,7 @@ func TestRepeatedPinnedPortSignInsNeverFail(t *testing.T) {
 	withSettings(t, cfg, func() {
 		sessions := make([]*loginSession, 0, 5)
 		for attempt := 1; attempt <= 5; attempt++ {
-			session, errStart := startLoginSession(LoginFlowOAuth)
+			session, errStart := startLoginSession(LoginFlowOAuth, "")
 			if errStart != nil {
 				t.Fatalf("sign-in %d failed: %v", attempt, errStart)
 			}
@@ -356,13 +356,13 @@ func TestFlowSwitchRebindsTheSharedListener(t *testing.T) {
 	cfg, port := pinnedPortSettings(t)
 
 	withSettings(t, cfg, func() {
-		oauthSession, errOAuth := startLoginSession(LoginFlowOAuth)
+		oauthSession, errOAuth := startLoginSession(LoginFlowOAuth, "")
 		if errOAuth != nil {
 			t.Fatalf("oauth startLoginSession: %v", errOAuth)
 		}
 		oauthSession.fail("test teardown")
 
-		ticketSession, errTicket := startLoginSession(LoginFlowTicket)
+		ticketSession, errTicket := startLoginSession(LoginFlowTicket, "")
 		if errTicket != nil {
 			t.Fatalf("ticket startLoginSession on the same pinned port: %v", errTicket)
 		}
@@ -387,7 +387,7 @@ func TestShutdownReleasesTheSharedListener(t *testing.T) {
 	cfg, port := pinnedPortSettings(t)
 
 	withSettings(t, cfg, func() {
-		if _, errStart := startLoginSession(LoginFlowOAuth); errStart != nil {
+		if _, errStart := startLoginSession(LoginFlowOAuth, ""); errStart != nil {
 			t.Fatalf("startLoginSession: %v", errStart)
 		}
 
@@ -399,7 +399,7 @@ func TestShutdownReleasesTheSharedListener(t *testing.T) {
 		}
 		_ = listener.Close()
 
-		session, errRestart := startLoginSession(LoginFlowOAuth)
+		session, errRestart := startLoginSession(LoginFlowOAuth, "")
 		if errRestart != nil {
 			t.Fatalf("sign-in after shutdown: %v", errRestart)
 		}

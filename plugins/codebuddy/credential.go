@@ -44,6 +44,19 @@ type Credential struct {
 	// (b) the status page can show it. Auth files imported from Jet-Hub lack
 	// the field; those fall back to the configured product.
 	Product string `json:"product,omitempty"`
+
+	// Type is the CPA auth file discriminator. The host decides which provider
+	// an auth file belongs to by reading this TOP-LEVEL field
+	// (`internal/pluginhost/auth_callbacks.go:184` for the listing every status
+	// page reads, `:324` for the auth load); without it the file is reported as
+	// "unknown" or claimed by whichever other plugin parses it first, and a
+	// successful login looks like no account was ever added.
+	//
+	// The value is always the build-injected ProviderKey var, never a literal:
+	// this one source tree builds four plugins (codebuddy / codebuddy-intl /
+	// workbuddy-cn / workbuddy), and a literal would make all four stamp the
+	// same key and fight over each other's auth files.
+	Type string `json:"type,omitempty"`
 }
 
 // buddyToken mirrors `BuddyToken` (buddy.ts:123-131).
@@ -82,8 +95,16 @@ func ParseCredential(raw []byte) (*Credential, error) {
 }
 
 // Encode serialises the credential for storage in the CPA auth file.
+//
+// The `type` discriminator is filled in here, at the single point every save
+// path goes through, so a credential that arrived without one (imported from
+// Jet-Hub, written by an older build, or hand-edited) is repaired on its next
+// save instead of being persisted unattributed.
 func (c *Credential) Encode() (json.RawMessage, error) {
 	c.sanitize()
+	if strings.TrimSpace(c.Type) == "" {
+		c.Type = ProviderKey
+	}
 	raw, err := json.Marshal(c)
 	if err != nil {
 		return nil, abiboot.Errorf("encode_credential", "encode CodeBuddy credential: %v", err)
@@ -440,6 +461,9 @@ func buildCredential(token buddyToken, account buddyAccount, product productConf
 		EnterpriseID:     account.EnterpriseID,
 		AccountType:      account.AccountType,
 		Product:          product.ConfigValue,
+		// Stamped at construction as well as in Encode, so the in-memory
+		// credential already names its owner before anything is persisted.
+		Type: ProviderKey,
 	}
 	credential.sanitize()
 	return credential

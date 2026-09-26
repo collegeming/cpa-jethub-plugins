@@ -514,6 +514,17 @@ func startLogin(h *abiboot.Host, cfg Config) (*loginStartResult, error) {
 	return &loginStartResult{Session: session, AuthURL: decorated, State: state, ExpiresAt: session.ExpiresAt}, nil
 }
 
+// loginPollAuth builds the host record for a finished sign-in.
+//
+// The credential belongs in the file the same account already lives in — the
+// host saves whichever name this record carries — and only an account the host
+// does not know yet gets a freshly derived one. Without this, logging into an
+// account whose file was named by an older build (a random suffix, which no
+// derivation can reproduce) adds a second entry beside it.
+func loginPollAuth(h *abiboot.Host, credential *Credential) (pluginapi.AuthData, error) {
+	return authDataFor(credential, authNameForHost(existingAuthFileName(h, credential), "", "", credential))
+}
+
 // pollLogin advances one login session by a single poll step and returns the
 // CPA status reply. It performs at most one token request and one account
 // request per invocation.
@@ -528,7 +539,7 @@ func pollLogin(h *abiboot.Host, state string) pluginapi.AuthLoginPollResponse {
 	if status, message, credential, finished := session.snapshot(); finished {
 		forgetLoginSession(state)
 		if status == pluginapi.AuthLoginStatusSuccess && credential != nil {
-			auth, errAuth := authDataFor(credential, "")
+			auth, errAuth := loginPollAuth(h, credential)
 			if errAuth != nil {
 				return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: errAuth.Error()}
 			}
@@ -571,7 +582,7 @@ func pollLogin(h *abiboot.Host, state string) pluginapi.AuthLoginPollResponse {
 	credential := buildCredential(*token, *account, product)
 	session.finish(credential, "登录成功")
 	forgetLoginSession(state)
-	auth, errAuth := authDataFor(credential, "")
+	auth, errAuth := loginPollAuth(h, credential)
 	if errAuth != nil {
 		return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: errAuth.Error()}
 	}

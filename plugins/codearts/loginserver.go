@@ -45,6 +45,12 @@ type loginSession struct {
 	CreatedAt time.Time
 	ExpiresAt time.Time
 
+	// TargetName is the auth file a re-login has to update: the account page
+	// names the account it is re-authorising, and the credential must land back
+	// in that file. It stays empty for 新建账号, where the derived name is what
+	// makes the new account land in a new file.
+	TargetName string
+
 	status     pluginapi.AuthLoginStatus
 	message    string
 	credential *Credential
@@ -173,7 +179,10 @@ func dispatchCallbacks(server *oauthcb.Server) {
 
 // startLoginSession publishes a sign-in under a fresh random state value, using
 // the plugin's shared callback listener as the portal's redirect target.
-func startLoginSession(flow string) (*loginSession, error) {
+//
+// target names the auth file this sign-in re-authorises, or is empty for a new
+// account.
+func startLoginSession(flow, target string) (*loginSession, error) {
 	state, errState := randomHex(16)
 	if errState != nil {
 		return nil, errState
@@ -185,11 +194,12 @@ func startLoginSession(flow string) (*loginSession, error) {
 	}
 
 	session := &loginSession{
-		State:     state,
-		Flow:      flow,
-		TicketID:  ticketID,
-		CreatedAt: time.Now(),
-		status:    pluginapi.AuthLoginStatusPending,
+		State:      state,
+		Flow:       flow,
+		TicketID:   ticketID,
+		TargetName: strings.TrimSpace(target),
+		CreatedAt:  time.Now(),
+		status:     pluginapi.AuthLoginStatusPending,
 	}
 
 	if flow == LoginFlowOAuth {

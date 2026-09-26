@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authfile"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -31,7 +32,7 @@ func handleAuthParse(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 		// Not one of ours: let the host try other providers.
 		return pluginapi.AuthParseResponse{Handled: false}, nil
 	}
-	auth, errAuth := authDataFor(credential, request.FileName)
+	auth, errAuth := authDataFor(credential, authNameForHost(request.FileName, request.Path, "", credential))
 	if errAuth != nil {
 		return nil, errAuth
 	}
@@ -111,7 +112,7 @@ func handleAuthRefresh(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errRefresh != nil {
 		return nil, errRefresh
 	}
-	auth, errAuth := authDataFor(refreshed, request.AuthID)
+	auth, errAuth := authDataFor(refreshed, authNameForHost(request.AuthID, request.Attributes["path"], request.Attributes["source"], refreshed))
 	if errAuth != nil {
 		return nil, errAuth
 	}
@@ -120,6 +121,21 @@ func handleAuthRefresh(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		next = refreshed.ExpiresAt().Add(-refreshLead)
 	}
 	return pluginapi.AuthRefreshResponse{Auth: auth, NextRefreshAfter: next}, nil
+}
+
+// authNameForHost resolves the auth file name the host already uses for this
+// credential: the name it supplies on `auth.parse` (the file it read the
+// credential from) or on `auth.refresh` (the auth record id, which for a
+// file-backed credential is that same file name), and failing both, the
+// `path`/`source` attribute naming that file.
+//
+// Deriving a name is the brand-new-login case only: the derived identity walks
+// down to the first eight characters of the access token when the credential
+// carries neither a label nor an account id, and that token rotates on every
+// refresh — a refresh that derived a name would leave the file the host asked
+// us to renew behind and write a second one.
+func authNameForHost(incoming, path, source string, credential *Credential) string {
+	return authfile.Name(func() string { return defaultAuthFileName(credential) }, incoming, path, source)
 }
 
 // authDataFor converts a credential into the host-facing AuthData record.

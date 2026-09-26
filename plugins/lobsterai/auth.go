@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authfile"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -306,6 +307,20 @@ func applyRefresh(previous *Credential, payload tokenPayload, now time.Time) *Cr
 	return &refreshed
 }
 
+// authNameForHost resolves the auth file name the host already uses for this
+// credential: the name it supplies on `auth.parse` (the file it read the
+// credential from) or on `auth.refresh` (the auth record id, which for a
+// file-backed credential is that same file name), and failing both, the
+// `path`/`source` attribute naming that file.
+//
+// Deriving a name is the brand-new-login case only. The derived identity is the
+// uid, then the user id, then the nickname; a credential that arrived without
+// any of them would otherwise be renamed on the next save, which is how one
+// account ends up with several auth files.
+func authNameForHost(incoming, path, source string, credential *Credential) string {
+	return authfile.Name(func() string { return defaultAuthFileName(credential) }, incoming, path, source)
+}
+
 // authDataFor converts a credential into the host-facing AuthData record.
 func authDataFor(credential *Credential, fileName string) (pluginapi.AuthData, error) {
 	storage, errEncode := credential.Encode()
@@ -410,7 +425,7 @@ func handleAuthParse(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errParse != nil {
 		return pluginapi.AuthParseResponse{Handled: false}, nil
 	}
-	auth, errAuth := authDataFor(credential, request.FileName)
+	auth, errAuth := authDataFor(credential, authNameForHost(request.FileName, request.Path, "", credential))
 	if errAuth != nil {
 		return nil, errAuth
 	}
@@ -431,7 +446,7 @@ func handleAuthRefresh(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errRenew != nil {
 		return nil, errRenew
 	}
-	auth, errAuth := authDataFor(refreshed, request.AuthID)
+	auth, errAuth := authDataFor(refreshed, authNameForHost(request.AuthID, request.Attributes["path"], request.Attributes["source"], refreshed))
 	if errAuth != nil {
 		return nil, errAuth
 	}

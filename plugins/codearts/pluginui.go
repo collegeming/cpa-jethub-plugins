@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -52,6 +53,16 @@ func codeartsAccounts(h *abiboot.Host) []pluginapi.HostAuthFileEntry {
 		}
 	}
 	return out
+}
+
+// accountQuery is the query string that names an account on a page link. It is
+// empty when the host gave the entry no runtime index, so a link never carries a
+// dangling selector.
+func accountQuery(entry pluginapi.HostAuthFileEntry) string {
+	if strings.TrimSpace(entry.AuthIndex) == "" {
+		return ""
+	}
+	return "auth_index=" + entry.AuthIndex
 }
 
 // selectAccount resolves which credential a page should act on. Without an
@@ -146,7 +157,10 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 
 	body = append(body, plugui.Card("账号", plugui.Fields(accountFields...),
 		plugui.Action{Label: "签到", Query: "action=checkin", Kind: "primary"},
-		plugui.Action{Label: "重新登录", Path: "login"},
+		// 重新登录 names the account it re-authorises, so the new credential
+		// replaces that account's file instead of adding a second entry; 新建账号
+		// deliberately names no account and derives a fresh file name.
+		plugui.Action{Label: "重新登录", Path: "login", Query: accountQuery(entry)},
 		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
 	))
 	if len(creditFields) > 0 {
@@ -278,7 +292,7 @@ func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi
 func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	switch strings.ToLower(strings.TrimSpace(request.Query.Get("action"))) {
 	case "login", "start":
-		return startLoginPage()
+		return startLoginPage(h, request)
 	case "poll":
 		return pollLoginPage(h, request)
 	}
@@ -302,12 +316,20 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 }
 
 // startLoginPage begins a login session and shows the authorization URL.
-func startLoginPage() pluginapi.ManagementResponse {
-	session, errStart := startLoginSession(settings().Flow)
+//
+// The account a re-login targets, when there is one, rides along the poll link:
+// that page has to know which file the finished credential belongs in.
+func startLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	target := loginTargetName(h, request)
+	session, errStart := startLoginSession(settings().Flow, target)
 	if errStart != nil {
 		return plugui.HTML("CodeArts 登录",
 			plugui.Card("无法发起登录", plugui.Notice("danger", errStart.Error()),
 				plugui.Action{Label: "重试", Query: "action=login", Kind: "primary"}))
+	}
+	pollQuery := "action=poll&state=" + session.State
+	if target != "" {
+		pollQuery += "&target=" + url.QueryEscape(target)
 	}
 	return plugui.HTML("CodeArts 登录",
 		plugui.Card("在浏览器中完成授权",
@@ -319,16 +341,64 @@ func startLoginPage() pluginapi.ManagementResponse {
 					plugui.Field{Label: "有效期", Value: "5 分钟"},
 				),
 			),
-			plugui.Action{Label: "检查登录结果", Query: "action=poll&state=" + session.State, Kind: "primary"},
+			plugui.Action{Label: "检查登录结果", Query: pollQuery, Kind: "primary"},
 			plugui.Action{Label: "返回状态", Path: "status"},
 		),
 	)
 }
 
+// loginTargetName resolves the auth file a re-login has to update, or "" when
+// this page is adding an account.
+//
+// The page names the account as an auth_index (the status page's 重新登录 link)
+// or as a target file name (the login page's poll link). Either way the value is
+// only accepted when it is one of THIS plugin's own accounts: the page must
+// never be able to point a save at an unrelated credential's file.
+func loginTargetName(h *abiboot.Host, request pluginapi.ManagementRequest) string {
+	if plugui.IsAddAccountRequest(request) {
+		return ""
+	}
+	wanted := strings.TrimSpace(request.Query.Get("target"))
+	if wanted == "" {
+		wanted = strings.TrimSpace(request.Query.Get("auth_index"))
+	}
+	if wanted == "" {
+		wanted = strings.TrimSpace(request.Query.Get("auth_id"))
+	}
+	if wanted == "" {
+		return ""
+	}
+	for _, entry := range codeartsAccounts(h) {
+		if entry.Name == wanted || entry.ID == wanted || entry.AuthIndex == wanted {
+			return strings.TrimSpace(entry.Name)
+		}
+	}
+	return ""
+}
+
+// loginTargetNameFromMetadata is loginTargetName for the manager-driven login,
+// which forwards its query string as metadata instead of as a page request.
+func loginTargetNameFromMetadata(h *abiboot.Host, metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	query := url.Values{}
+	for _, key := range []string{"target", "auth_index", "auth_id", "name", "file_name"} {
+		value, _ := metadata[key].(string)
+		if strings.TrimSpace(value) != "" {
+			query.Set(key, strings.TrimSpace(value))
+		}
+	}
+	if len(query) == 0 {
+		return ""
+	}
+	return loginTargetName(h, pluginapi.ManagementRequest{Query: query})
+}
+
 // pollLoginPage polls a login session, persisting the credential on success.
 func pollLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	state := strings.TrimSpace(request.Query.Get("state"))
-	response, errPoll := pollLoginForManagement(h, state)
+	response, errPoll := pollLoginForManagement(h, state, loginTargetName(h, request))
 	if errPoll != nil {
 		return plugui.HTML("CodeArts 登录",
 			plugui.Card("检查失败", plugui.Notice("danger", errPoll.Error()),
@@ -367,12 +437,16 @@ func pollLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugina
 //
 // On the normal login path the host saves the credential the poll returns, but
 // this page drives the poll directly, so saving is this function's job.
-func pollLoginForManagement(h *abiboot.Host, state string) (pluginapi.AuthLoginPollResponse, error) {
+func pollLoginForManagement(h *abiboot.Host, state string, target string) (pluginapi.AuthLoginPollResponse, error) {
 	var empty pluginapi.AuthLoginPollResponse
 	if state == "" {
 		return empty, abiboot.Errorf("missing_state", "缺少 state 参数，请重新发起登录")
 	}
-	raw, errMarshal := json.Marshal(pluginapi.AuthLoginPollRequest{State: state})
+	poll := pluginapi.AuthLoginPollRequest{State: state}
+	if strings.TrimSpace(target) != "" {
+		poll.Metadata = map[string]any{"target": strings.TrimSpace(target)}
+	}
+	raw, errMarshal := json.Marshal(poll)
 	if errMarshal != nil {
 		return empty, abiboot.Errorf("encode_poll", "encode poll request: %v", errMarshal)
 	}

@@ -217,7 +217,8 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 			plugui.Card("尚未添加账号",
 				plugui.Group(
 					plugui.Notice("warning", "当前实例还没有 CodeBuddy / WorkBuddy 账号。先在浏览器完成一次登录授权即可。"),
-					plugui.Notice("", "本插件一次只服务一个产品；请先在插件配置里选定 product（codebuddy / codebuddy-intl / workbuddy-cn / workbuddy）。"),
+					plugui.Notice("", "本插件一次只服务一个产品，产品在构建产物里已经固定 —— 就是下面「产品」一栏的「插件配置产品」。"+
+						"要用别的产品，请安装对应的独立插件（codebuddy / codebuddy-intl / workbuddy-cn / workbuddy），不需要也不建议在配置里再写 product。"),
 				),
 				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 			),
@@ -490,18 +491,54 @@ func pollLoginForManagement(h *abiboot.Host, state string) (pluginapi.AuthLoginP
 		return response, nil
 	}
 	name := strings.TrimSpace(response.Auth.FileName)
-	if name == "" {
-		if credential, errParse := ParseCredential(response.Auth.StorageJSON); errParse == nil {
+	if credential, errParse := ParseCredential(response.Auth.StorageJSON); errParse == nil {
+		// An account the host already keeps answers where its credential lives:
+		// re-logging into it must update that file, not add a second entry next
+		// to it (files written by older builds carry a random name that no
+		// derivation can reproduce).
+		if existing := existingAuthFileName(h, credential); existing != "" {
+			name = existing
+		} else if name == "" {
 			name = defaultAuthFileName(credential)
-		} else {
-			name = ProviderKey + "-" + time.Now().Format("20060102150405") + ".json"
 		}
+	} else if name == "" {
+		name = ProviderKey + "-" + time.Now().Format("20060102150405") + ".json"
 	}
 	if _, errSave := h.SaveAuth(name, response.Auth.StorageJSON); errSave != nil {
 		return empty, abiboot.Errorf("save_auth", "保存凭据失败：%v", errSave)
 	}
 	forgetLoginSession(state)
 	return response, nil
+}
+
+// existingAuthFileName returns the auth file the host already keeps for this
+// account, or "" when it keeps none.
+//
+// A freshly minted credential names its account (the user id), never its token —
+// tokens rotate — so it can be matched against the credentials on disk. Reusing
+// that file is what turns a second login of the SAME account into an update,
+// while a login of a different account still gets a file of its own.
+func existingAuthFileName(h *abiboot.Host, credential *Credential) string {
+	if h == nil || credential == nil || strings.TrimSpace(credential.UserID) == "" {
+		return ""
+	}
+	for _, entry := range codebuddyAccounts(h) {
+		if strings.TrimSpace(entry.AuthIndex) == "" {
+			continue
+		}
+		stored, errGet := h.GetAuth(entry.AuthIndex)
+		if errGet != nil {
+			continue
+		}
+		existing, errParse := ParseCredential(stored.JSON)
+		if errParse != nil {
+			continue
+		}
+		if strings.TrimSpace(existing.UserID) == strings.TrimSpace(credential.UserID) {
+			return strings.TrimSpace(entry.Name)
+		}
+	}
+	return ""
 }
 
 // renderCheckinPage renders the daily check-in page, performing the claim when

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authfile"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -36,7 +37,7 @@ func handleAuthParse(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 		// Not one of ours: let the host try other providers.
 		return pluginapi.AuthParseResponse{Handled: false}, nil
 	}
-	auth, errAuth := authDataFor(credential, request.FileName)
+	auth, errAuth := authDataFor(credential, authNameForHost(request.FileName, request.Path, "", credential))
 	if errAuth != nil {
 		return nil, errAuth
 	}
@@ -71,7 +72,7 @@ func handleAuthRefresh(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errProbe := probeCredential(h, credential, cfg); errProbe != nil {
 		return nil, errProbe
 	}
-	auth, errAuth := authDataFor(credential, request.AuthID)
+	auth, errAuth := authDataFor(credential, authNameForHost(request.AuthID, request.Attributes["path"], request.Attributes["source"], credential))
 	if errAuth != nil {
 		return nil, errAuth
 	}
@@ -98,6 +99,21 @@ func nextProbeAfter(credential *Credential, now time.Time) time.Time {
 		return candidate
 	}
 	return now.Add(time.Duration(CredentialHealthIntervalMS) * time.Millisecond)
+}
+
+// authNameForHost resolves the auth file name the host already uses for this
+// credential: the name it supplies on `auth.parse` (the file it read the
+// credential from) or on the probe the host calls `auth.refresh` (the auth
+// record id, which for a file-backed credential is that same file name), and
+// failing both, the `path`/`source` attribute naming that file.
+//
+// The probe returns the credential unchanged, so a derived name would be
+// harmless today — but Loomy's name comes from the phone number, and a
+// credential whose phone and user id are both missing would fall back to a
+// constant ("account") shared by every such account. Keeping the host's name
+// means the probe can never move a credential into another file.
+func authNameForHost(incoming, path, source string, credential *Credential) string {
+	return authfile.Name(func() string { return defaultAuthFileName(credential) }, incoming, path, source)
 }
 
 // authDataFor converts a credential into the host-facing AuthData record.
