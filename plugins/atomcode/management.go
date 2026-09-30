@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
@@ -89,8 +90,21 @@ type accountSummary struct {
 	AccountID   string `json:"account_id"`
 	Username    string `json:"username"`
 	Refreshable bool   `json:"refreshable"`
+	// ExpiresAt is the human-readable expiry; ExpiresAtMS and Expired are the
+	// machine-readable pair the hub's channel overview reads
+	// (`plugins/hub/overview.go`, expiryFacts: `accounts.0.expires_at_ms`,
+	// `accounts.0.expired`).
 	ExpiresAt   string `json:"expires_at,omitempty"`
+	ExpiresAtMS int64  `json:"expires_at_ms,omitempty"`
+	Expired     bool   `json:"expired"`
 	Current     bool   `json:"current"`
+	// Remaining and Total are the rolling call-quota figures for this account.
+	// The hub renders them as "剩余 R / T" and puts them on the account's own
+	// line (`plugins/hub/overview.go`, creditFacts + accountFigures). The free
+	// tier's quota is a call count per window, so these are call counts, not
+	// tokens.
+	Remaining *int64 `json:"remaining,omitempty"`
+	Total     *int64 `json:"total,omitempty"`
 }
 
 // summariseAccount renders one account for the listing.
@@ -110,6 +124,8 @@ func summariseAccount(entry pluginapi.HostAuthFileEntry, credential *Credential,
 	summary.Refreshable = credential.Refreshable()
 	if expiry := credential.Expiry(); !expiry.IsZero() {
 		summary.ExpiresAt = expiry.Format("2006-01-02 15:04")
+		summary.ExpiresAtMS = expiry.UnixMilli()
+		summary.Expired = credential.Expired()
 	}
 	return summary
 }
@@ -153,7 +169,20 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		if isSelected {
 			selectedCredential = credential
 		}
-		listing = append(listing, summariseAccount(entry, credential, isSelected))
+		summary := summariseAccount(entry, credential, isSelected)
+		// Best effort: a failed quota read must not hide the account itself.
+		if status, errStatus := fetchStatus(h, cfg, credential); errStatus == nil {
+			if windows := status.quotaWindows(); len(windows) > 0 {
+				remaining := windows[0].CallLimit - windows[0].CallsUsed
+				if remaining < 0 {
+					remaining = 0
+				}
+				limit := windows[0].CallLimit
+				summary.Remaining = &remaining
+				summary.Total = &limit
+			}
+		}
+		listing = append(listing, summary)
 	}
 	body["accounts"] = listing
 	body["auth_index"] = selected.AuthIndex
@@ -178,6 +207,16 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 	entries := staticModelEntries(h, cfg, selectedCredential)
 	body["models"] = modelInfos(entries, cfg, selectedCredential)
 	body["model_source"] = modelSource(h, cfg, selectedCredential)
+	// Fields the hub's channel overview renders (`plugins/hub/overview.go`):
+	// `model_count` -> "模型 N", `expires_at`/`expires_at_ms`/`expired` -> the
+	// credential's validity line. Without them the row falls back to
+	// "provider 只返回了本页不展示的配置字段" and the channel looks inert.
+	body["model_count"] = len(entries)
+	if expiry := selectedCredential.Expiry(); !expiry.IsZero() {
+		body["expires_at"] = expiry.Format(time.RFC3339)
+		body["expires_at_ms"] = expiry.UnixMilli()
+		body["expired"] = selectedCredential.Expired()
+	}
 	return jsonManagementResponse(http.StatusOK, body)
 }
 
