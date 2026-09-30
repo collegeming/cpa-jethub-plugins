@@ -164,6 +164,22 @@
         "Hub",
         "Checkin"
       ]
+    },
+    {
+      "id": "atomcode",
+      "name": "AtomCode（AtomGit）",
+      "description": "AtomGit AtomCode 免费套餐接入：浏览器 OAuth 登录与令牌轮换续期、OpenAI Chat Completions 原生转发（qwen3.8-27b / glm5.3-flash 等）、服务端模型目录、套餐领取级联与 60 天用量。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "AtomGit",
+        "AtomCode",
+        "OpenAI",
+        "Credits"
+      ]
     }
   ]
 }

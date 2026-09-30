@@ -19,6 +19,7 @@ dist/
 /trae
 /zcode
 /minimax
+/atomcode
 
 # release packaging output
 release/

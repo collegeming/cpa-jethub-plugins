@@ -134,6 +134,11 @@ plugins:
       enabled: true
       model_prefix: false
       region: cn                  # 当前只接入中国版
+    atomcode:
+      enabled: true
+      model_prefix: false
+      # gateway_base: https://api-ai.gitcode.com/v1   # 默认值。不要改成官方默认的
+      # llm-api.atomgit.com/v1：那个网关要求闭源请求签名，无签名一律 403 ATOMCODE_SIG_MISSING
     trae:
       enabled: true
       model_prefix: false
@@ -159,6 +164,7 @@ plugins:
 | zcode | CLI 授权 URL + 轮询（可导入官方客户端登录态） | `/v0/resource/plugins/zcode/login` |
 | minimax | OAuth 设备码 + PKCE（登录与推理已在真实服务端验证；**续期尚未观察到**，见下） | `/v0/resource/plugins/minimax/login` |
 | trae | 回调端口登录 | `/v0/resource/plugins/trae/login` |
+| atomcode | 浏览器 OAuth（AtomGit 账号，两步式；已走通登录→推理全链路） | `/v0/resource/plugins/atomcode/login` |
 
 在浏览器中打开管理面板（CPAMP），进入「插件管理」→ 对应渠道 → 「登录」，按页面提示完成授权。
 
@@ -169,6 +175,25 @@ plugins:
 | 「新建账号」 | 添加**第二个**账号（链接到登录页并带 `add=1`） | 状态页「全部账号」卡片 |
 | 「重新登录」 | **替换**已有账号的凭据（带 `auth_index`，覆盖同一条） | 状态页账号卡片 |
 | 「去登录」 | 一个账号都没有时的首次登录 | 状态页空账号卡片 |
+
+#### AtomCode 的网关与签名
+
+AtomCode 官方客户端会给聊天请求加一套闭源签名（`atomcode-codingplan-crypto`，开源源码树里只有 `unreachable!()` 占位），官方默认网关 `llm-api.atomgit.com` 因此**不能**在 CPA 里使用。
+
+实测（同一 token、同一请求体，只改 `User-Agent`）：
+
+| `User-Agent` | 结果 |
+|---|---|
+| `atomcode/5.2.0`（官方客户端） | `403 {"detail":{"code":"ATOMCODE_SIG_MISSING"}}` |
+| 任意其它值，含本插件的 `cpa-jethub-atomcode/0.1.0` | `200`，正常返回推理结果 |
+
+所以插件有三条硬性约定，改动前请先看 `plugins/atomcode/config.go` 的注释：
+
+- 请求标识固定为 `cpa-jethub-atomcode/<版本>`，**不得**改成 `atomcode/<版本>`；
+- 网关固定为 `https://api-ai.gitcode.com/v1`（同一服务、同一令牌、同一模型目录，但不校验签名）；
+- `models-v2` 里每个模型自带的 `base_url` 指向需要签名的官方网关，插件**只展示不采用**，路由一律走 `gateway_base`。
+
+模型目录是服务端驱动的：`GET /coding-plan/models-v2?plan_type=<档位>`，只有 `plan_available=true` 的条目会被注册；档位由 `status-v2` 的套餐名推断（`auto`，当前账号为 `Lite`）。检索不到时回退内置快照（`qwen3.8-27b` / `glm5.3-flash` / `deepseek-flash`）。平台没有把这些模型写进 `/v1/models`，两套名单并不一致。
 
 > **MiniMax 的一处固有限制**：服务端不下发账号标识（访问令牌不是 JWT，也没有 `nickname`），所以**同一账号重复点「新建账号」会得到多条记录**（凭据文件名取自令牌前缀，每次登录都会变）。给已有账号换凭据请用「重新登录」。这是上游参考实现同样存在的缺口——它把凭据存在单个固定 ref 下，因此不暴露这个问题。
 

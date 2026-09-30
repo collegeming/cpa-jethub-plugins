@@ -18,6 +18,7 @@ import (
 var channelOrder = []string{
 	"codearts", "codebuddy", "codebuddy-intl", "workbuddy-cn", "workbuddy",
 	"lobsterai", "qoder", "trae", "cline", "loomy", "raccoon", "zcode", "minimax",
+	"atomcode",
 }
 
 // TestChannelOverviewOrderAndIcons pins the row order and the marks: every
@@ -41,6 +42,7 @@ func TestChannelOverviewOrderAndIcons(t *testing.T) {
 		"raccoon":        brandicons.Raccoon,
 		"zcode":          brandicons.ZCode,
 		"minimax":        brandicons.MiniMax,
+		"atomcode":       brandicons.AtomCode,
 	}
 	for index, id := range channelOrder {
 		entry := catalogue[index]

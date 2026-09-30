@@ -31,16 +31,18 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | `raccoon` | Raccoon（商汤小浣熊） | 状态、登录、一次性奖励 | 7 | 商汤 Raccoon Work，**仅**微信扫码登录（手机验证码需要人机验证，未实现），模型价格随名称显示；**没有每日签到** |
 | `zcode` | ZCode（智谱） | 状态、登录、签到 | 9 | 智谱 ZCode 免费额度，CLI 设备码登录，Anthropic Messages 流式推理；推理**不需要**验证码 |
 | `minimax` | MiniMax Code（中国版） | 状态、登录、签到 | 9 | MiniMax Code 中国版，OAuth 设备码 + PKCE，Anthropic Messages 流式推理，思考形态按模型区分 |
+| `atomcode` | AtomCode（AtomGit） | 状态、登录、签到 | 11 | AtomGit AtomCode 免费套餐，浏览器 OAuth 登录，上游就是 OpenAI Chat Completions 所以**原样转发**；令牌每次续期都会轮换 |
 | `hub` | Jet Hub | 状态、一键签到 | 4 | 编排型插件：读取各 provider 状态并一次点击完成全部签到 |
 | `codebuddy-intl` 等 | CodeBuddy／WorkBuddy | 状态、登录、签到 | 9 | 见下方「产品变体」——同一份代码按产品构建的独立插件 |
 
-十个适配器都实现了完整方法面（另有一个编排型的 `hub`）：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器声明 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
+十一个适配器都实现了完整方法面（另有一个编排型的 `hub`）：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器声明 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
 
 执行器的入出格式按渠道的**上游协议**声明，而不是一律 `chat-completions`：
 
 | 渠道 | 上游协议 | 执行器声明 |
 | --- | --- | --- |
-| 多数渠道 | OpenAI Chat Completions | `chat-completions` 入出 |
+| 多数渠道 | OpenAI Chat Completions | `chat-completions` 入出（`trae`／`codearts`／`qoder` 等仍需转换上游私有载荷）|
+| `atomcode` | OpenAI Chat Completions | `chat-completions` 入出，**无转换**——它是唯一上游协议与宿主协议一致的渠道，请求体除模型名外原样转发 |
 | `zcode` | Anthropic Messages | `anthropic` 入出 |
 | `minimax` | Anthropic Messages | `anthropic` 入出 |
 
@@ -70,10 +72,11 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | `trae` | `region` | `trae`（国内，默认）、`trae-intl` |
 | `codearts` | `flow` | `oauth`（浏览器 PKCE，默认）、`ticket`（旧版票据轮询） |
 | `minimax` | `region` | `cn`（中国版，当前唯一） |
+| `atomcode` | `gateway_base` | `https://api-ai.gitcode.com/v1`（默认，无需签名）；**不要**改成官方默认的 `llm-api.atomgit.com`，那个网关要求闭源请求签名 |
 
 其余字段（模型发现开关、超时、Max 模式、签到开关、通道选择等）在管理面板里都有中文说明，或见各插件的 `ConfigFields()`。
 
-### 两个需要知情的实现取舍
+### 几个需要知情的实现取舍
 
 - **Qoder 加密推理**：加密请求的签名头由 Jet-Hub 的 `qoder-auth-wasm.wasm`（约 292 KB 第三方编译产物）生成。本仓库**不包含**该二进制——再分发属于仓库所有者的授权决定。把 `wasm_path` 指向你本地的副本即启用加密路径；留空则只走公开的 OpenAI 兼容端点。
 - **Loomy（讯飞）与其余七个都不同源**，有三点必须知情：
@@ -90,6 +93,14 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
   每个 provider 的 `status?format=json` 都有一个 `accounts` 数组：**每个账号一项**，带该账号自己的额度／签到字段（字段名与该 provider 顶层所选账号的一致），另有数字型的 `account_count`；所选账号的字段同时保留在顶层，读旧字段的调用方不受影响。渠道总览据此**按账号逐行**显示余额，而不再是一个渠道一个数字（同一份数据也出现在 hub 自己的 `channels[].account_details` 里）；宿主凭据列表与 provider 自报账号数的交叉核对仍然保留，两边不一致时照旧标出。
 - **Cline 的 `workos:` 前缀是承载语义的**：鉴权头是 `Authorization: Bearer workos:<token>`，前缀**不能剥离**——同一个凭据 `Bearer workos:eyJ…` 返回 200，剥掉前缀后返回 401，而且错误信息会误导成「请升级 Cline 客户端」。登录走 WorkOS **设备码轮询**，**不监听任何本地端口**，因此不受本文档前述容器回调问题的影响。
 - **Cline 的余额单位是推断值**：接口返回 `balance: 500000`，参考实现按 ÷100000 当作美元（微美元）展示，但这**没有任何来源证据**。本仓库把它做成配置项 `balance_divisor`，状态页同时显示原始值，用真实账号跑一次即可确定。
+- **`atomcode` 的网关只看 `User-Agent`**：官方客户端签名用的是闭源 crate（`atomcode-codingplan-crypto`，开源树里只有 `unreachable!()` 占位），官方默认网关 `llm-api.atomgit.com` 因此**无法**在 CPA 里使用。实测（同一 token、同一请求体，仅换 UA）：
+  | `User-Agent` | 结果 |
+  | --- | --- |
+  | `atomcode/5.2.0`（官方） | `403 {"detail":{"code":"ATOMCODE_SIG_MISSING"}}` |
+  | 任意其它（含本插件的 `cpa-jethub-atomcode/0.1.0`） | `200` 正常推理 |
+
+  所以本插件**如实表明自己不是官方客户端**，并把网关固定在不要求签名的 `api-ai.gitcode.com`（同一个服务、同一个令牌、同一个模型目录）。这也解释了为什么任何把 UA 写成 `atomcode/*` 的探测脚本只会看到 403。
+  另外两点：`deepseek-flash`、`Qwen/Qwen3-32B` 这类不在 `models-v2` 名单里的模型同样能调用——`model is not enabled for codingplan` 只在带官方 UA 时出现，它不是真实的权限判定；以及 `claim-v2` 没有任何幂等标记，重复领取会再次返回 `success:true`，所以 HUB 的一键领取会如实报成「已领取」而不是假装刚刚发放。
 - **配置解析**：用 `gopkg.in/yaml.v3` 解析为映射后逐键宽松取值，因此 block 与 flow 两种 YAML 风格都生效，`no`／`off`／`yes`／`on` 等写法也可用，且单个坏值只损失它自己的默认值，不会让整份配置回退。
 
 ## 构建

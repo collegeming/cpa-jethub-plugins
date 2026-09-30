@@ -28,6 +28,7 @@ func allAccounts() []pluginapi.HostAuthFileEntry {
 		account("cline", "cl-1", "cline-1.json"),
 		account("zcode", "zc-1", "zcode-1.json"),
 		account("minimax", "mm-1", "minimax-1.json"),
+		account("atomcode", "at-1", "atomcode-1.json"),
 	}
 }
 
@@ -77,6 +78,7 @@ func providerStatusRoutes() []route {
 		// the shape the channel overview reads.
 		jsonRoute("/zcode/status?", `{"provider":"zcode","account_count":1,"model_count":2,"accounts":[{"auth_index":"zc-1","name":"zcode-1.json"}]}`),
 		jsonRoute("/minimax/status?", `{"provider":"minimax","account_count":1,"model_count":4,"accounts":[{"auth_index":"mm-1","name":"minimax-1.json"}]}`),
+		jsonRoute("/atomcode/status?", `{"provider":"atomcode","account_count":1,"models":[],"accounts":[{"auth_index":"at-1","name":"atomcode-1.json","label":"黎明文铮"}]}`),
 	}
 }
 
@@ -98,6 +100,9 @@ func checkinRoutes() []route {
 		// minimax needs no action parameter: its /checkin claims unconditionally
 		// and reports the idempotent repeat through claim_result.
 		jsonRoute("/minimax/checkin?", `{"status":"already-claimed","message":"今天已领取","amount":0}`),
+		// atomcode's claim runs the Max -> Pro -> Lite cascade and answers with
+		// its own status word; a repeat reports the held tier.
+		jsonRoute("/atomcode/checkin?", `{"status":"already-claimed","message":"已领取","plan_name":"CodingPlan Lite-体验版"}`),
 		htmlRoute("/codearts/status?action=checkin", `<div class="notice success">签到成功，获得 5.00 额度</div>`),
 	}
 }
@@ -360,6 +365,7 @@ func TestAggregatedVerdicts(t *testing.T) {
 		"cline":          kindUnsupported,
 		"zcode":          kindClaimed,
 		"minimax":        kindAlreadyClaimed,
+		"atomcode":       kindAlreadyClaimed,
 	}
 	for provider, kind := range want {
 		rows := rowsFor(t, result, provider)
@@ -397,15 +403,15 @@ func TestAggregatedVerdicts(t *testing.T) {
 	}
 
 	summary := result.summary()
-	if summary["total"] != 14 {
-		t.Fatalf("summary total = %d, want 14: %v", summary["total"], summary)
+	if summary["total"] != 15 {
+		t.Fatalf("summary total = %d, want 15: %v", summary["total"], summary)
 	}
 	for _, pair := range []struct {
 		kind rowKind
 		want int
 	}{
 		{kindClaimed, 6},
-		{kindAlreadyClaimed, 3},
+		{kindAlreadyClaimed, 4},
 		{kindUnavailable, 3},
 		// cline and raccoon both have no check-in endpoint upstream.
 		{kindUnsupported, 2},

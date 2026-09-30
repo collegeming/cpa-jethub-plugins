@@ -190,6 +190,17 @@ func targetCatalogue() []target {
 			// (`plugins/minimax/management.go`, checkinResponse).
 			Note: "领取每日积分；服务端以 claim_result 判幂等，重复领取如实报告「已领取」",
 		},
+		{
+			ID: "atomcode", Label: "AtomCode（AtomGit）", Icon: brandicons.AtomCode,
+			Support:     supportJSON,
+			CheckinPath: "/checkin",
+			// REQUIRED: atomcode's `/checkin` only runs the claim cascade when
+			// the query carries `action=claim`; a plain load renders the plan
+			// state and the 60-day usage without claiming anything
+			// (`plugins/atomcode/pluginui.go`, renderCheckinPage).
+			CheckinQuery: url.Values{"action": {"claim"}},
+			Note:         "领取按 Max → Pro → Lite 依次尝试，命中即停；套餐未生效时网关会以 403 拒绝全部请求，所以这一步是渠道可用的前提",
+		},
 	}
 }
 
