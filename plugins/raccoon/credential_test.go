@@ -244,3 +244,19 @@ func TestAuthDataForModelPrefixToggle(t *testing.T) {
 		t.Fatalf("Prefix = %q, want empty when model_prefix is false", off.Prefix)
 	}
 }
+
+// TestExpiresAtMSAcceptsTheSpellingTheHostWritesBack guards the format CPA
+// normalises to; see the sibling note in plugins/loomy. The JWT fallback covers
+// a token that happens to be a JWT, but it must not be the only thing standing
+// between a rotated credential and a silently disabled renewal path.
+func TestExpiresAtMSAcceptsTheSpellingTheHostWritesBack(t *testing.T) {
+	if got := (&Credential{ExpiresAt: "1790798726000"}).ExpiresAtMS(); got != 1_790_798_726_000 {
+		t.Fatalf("digit millis = %d", got)
+	}
+	if got := (&Credential{ExpiresAt: "2026-10-08T01:48:18Z"}).ExpiresAtMS(); got != 1_791_424_098_000 {
+		t.Fatalf("rfc3339 = %d, want the host's spelling to be readable", got)
+	}
+	if got := (&Credential{ExpiresAt: "not a time"}).ExpiresAtMS(); got != 0 {
+		t.Fatalf("junk = %d, want absent", got)
+	}
+}

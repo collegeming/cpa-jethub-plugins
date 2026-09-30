@@ -81,11 +81,40 @@ func (c *Credential) ExpiresAtMS() int64 {
 	if text == "" {
 		return 0
 	}
-	value, errParse := strconv.ParseInt(text, 10, 64)
-	if errParse != nil || value <= 0 {
-		return 0
+	if isDecimalDigits(text) {
+		value, errParse := strconv.ParseInt(text, 10, 64)
+		if errParse != nil || value <= 0 {
+			return 0
+		}
+		return value
 	}
-	return value
+	// RFC3339 is what the HOST writes back: a plugin saves a digit timestamp,
+	// CPA re-serialises the record and normalises `expires_at` to RFC3339
+	// (observed live on the MiniMax credential, 2026-10-01). Reading only
+	// digits therefore makes the expiry look ABSENT after the first save, the
+	// credential is never considered due, and renewal stops silently.
+	for _, layout := range []string{
+		time.RFC3339Nano, time.RFC3339,
+		"2006-01-02T15:04:05Z", "2006-01-02 15:04:05", "2006-01-02T15:04:05",
+	} {
+		if parsed, errParse := time.Parse(layout, text); errParse == nil {
+			return parsed.UnixMilli()
+		}
+	}
+	return 0
+}
+
+// isDecimalDigits reports whether a string is a non-empty run of ASCII digits.
+func isDecimalDigits(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, r := range text {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Expiry renders the local expiry, or the zero time when it is unknown.

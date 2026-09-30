@@ -65,34 +65,56 @@ func (c *Credential) Refreshable() bool {
 
 // ExpiresAtMS parses `expires_at`.
 //
-// ⚠️ ONLY a pure decimal string is accepted, and a value at or below the
-// millisecond/second boundary is read as SECONDS and scaled
-// (`minimax.ts:minimaxCredentialExpiresAtMs`). Two consequences the reference
-// spells out and this port keeps:
+// Two spellings are accepted, because both reach this field in practice:
 //
-//   - `Number(' 123 ')` silently becomes 123 and `Number(”)` becomes 0 in
-//     JavaScript, so a lenient parse would turn an empty or padded field into
-//     a bogus instant. A non-numeric value is therefore treated as ABSENT.
-//   - a seconds value read as milliseconds lands in 1970, which reads as
-//     "always expired" and triggers a pointless renewal on every single use.
+//   - a pure decimal string (or the JSON number the host writes back after a
+//     round trip) holding a millisecond timestamp — a value at or below the
+//     millisecond/second boundary is read as SECONDS and scaled
+//     (`minimax.ts:minimaxCredentialExpiresAtMs`);
+//   - an RFC3339 timestamp, which is what the credential actually carried on
+//     disk when this was found: `"expires_at": "2026-09-30T17:48:18Z"`.
 //
-// A missing or unusable value counts as ABSENT (0), which is a different thing
-// from "expired at the epoch".
+// ⚠️ The second one is not hypothetical. The reader used to accept ONLY the
+// digit form, and a non-numeric value counts as ABSENT, which this provider
+// deliberately treats as "not expired". The credential therefore looked
+// forever-valid: `NeedsRefresh` stayed false, no renewal ever ran, and the
+// account died with a 401 while every local signal said it was fine. The
+// upstream token lives 3600s, so the gap shows up within the hour.
+//
+// A value that is neither form is ABSENT (0) rather than a guess: reading a
+// seconds value as milliseconds lands in 1970, which would read as "always
+// expired" and fire a pointless renewal on every single use.
 func (c *Credential) ExpiresAtMS() int64 {
 	if c == nil {
 		return 0
 	}
 	text := strings.TrimSpace(c.ExpiresAt)
-	if text == "" || !isDecimalDigits(text) {
+	if text == "" {
 		return 0
 	}
-	value, errParse := strconv.ParseInt(text, 10, 64)
-	if errParse != nil || value <= 0 {
-		return 0
+	if isDecimalDigits(text) {
+		value, errParse := strconv.ParseInt(text, 10, 64)
+		if errParse != nil || value <= 0 {
+			return 0
+		}
+		return scaleEpoch(value)
 	}
-	// Values beyond 1e12 are already milliseconds; anything smaller is seconds.
+	for _, layout := range []string{
+		time.RFC3339Nano, time.RFC3339,
+		"2006-01-02T15:04:05Z", "2006-01-02 15:04:05", "2006-01-02T15:04:05",
+	} {
+		if parsed, errParse := time.Parse(layout, text); errParse == nil {
+			return parsed.UnixMilli()
+		}
+	}
+	return 0
+}
+
+// scaleEpoch normalises an epoch value: anything at or below the
+// millisecond/second boundary is seconds and is widened to milliseconds.
+func scaleEpoch(value int64) int64 {
 	if value <= 1_000_000_000_000 {
-		value *= 1000
+		return value * 1000
 	}
 	return value
 }

@@ -250,3 +250,23 @@ func TestAuthDataForModelPrefixToggle(t *testing.T) {
 		t.Fatalf("Prefix = %q, want empty when model_prefix is false", off.Prefix)
 	}
 }
+
+// TestExpiresAtMSAcceptsTheSpellingTheHostWritesBack guards the format CPA
+// normalises to. A plugin saves a digit timestamp; the host re-serialises the
+// record and stores `expires_at` as RFC3339 (observed live on the MiniMax
+// credential, 2026-10-01). A digits-only reader then sees no expiry at all,
+// never considers the credential due, and renewal stops without a single error.
+func TestExpiresAtMSAcceptsTheSpellingTheHostWritesBack(t *testing.T) {
+	if got := (&Credential{ExpiresAt: "1791639272840"}).ExpiresAtMS(); got != 1_791_639_272_840 {
+		t.Fatalf("digit millis = %d", got)
+	}
+	if got := (&Credential{ExpiresAt: "2026-10-08T01:48:18Z"}).ExpiresAtMS(); got != 1_791_424_098_000 {
+		t.Fatalf("rfc3339 = %d, want the host's spelling to be readable", got)
+	}
+	if got := (&Credential{ExpiresAt: "2026-10-08T01:48:18.698Z"}).ExpiresAtMS(); got != 1_791_424_098_698 {
+		t.Fatalf("rfc3339 nano = %d", got)
+	}
+	if got := (&Credential{ExpiresAt: "not a time"}).ExpiresAtMS(); got != 0 {
+		t.Fatalf("junk = %d, want absent", got)
+	}
+}

@@ -24,6 +24,14 @@ func TestCredentialRoundTripAndExpiry(t *testing.T) {
 		{"junk rejected", "1700ms", 0},
 		{"zero absent", "0", 0},
 		{"negative absent", "-1", 0},
+		// RFC3339 spellings. The credential CPA actually held for this provider
+		// carried exactly the first of these, and while it was rejected as
+		// "absent" the account could never renew: a 3600-second token sat dead
+		// for an hour while every local signal reported it healthy.
+		{"rfc3339 observed on disk", "2026-09-30T17:48:18Z", 1_790_790_498_000},
+		{"rfc3339 nano", "2026-09-30T17:48:18.698Z", 1_790_790_498_698},
+		{"rfc3339 with offset", "2026-10-01T01:48:18+08:00", 1_790_790_498_000},
+		{"naive spelling parsed as UTC", "2026-09-30 17:48:18", 1_790_790_498_000},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {

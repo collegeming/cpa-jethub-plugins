@@ -37,13 +37,27 @@ const (
 //   - LoginVerified: a device-code authorization completed against
 //     account.minimax.cn and the resulting `mmoat_`/`mmort_` credential was
 //     stored and then accepted by the inference endpoint. Verified 2026-10-01.
+//
 //   - InferenceVerified: independently re-confirmed here — MiniMax-M2.7 and
 //     MiniMax-M3.1-Flash-Preview both answered HTTP 200 through CPA with
 //     content, reasoning and usage.
-//   - RefreshVerified: NOT yet observed. The refresh grant is implemented from
-//     the desktop client's own flow (`minimax-oauth.ts`), but no renewal has
-//     happened yet because the access token outlives the session that issued it.
-//     Do not claim this works until a renewal is seen.
+//
+//   - RefreshVerified: NOW OBSERVED, and only after the reason it was missing
+//     got fixed. Two separate things were true and both had to be:
+//
+//     (a) the grant itself works — POST /oauth2/token with
+//     `grant_type=refresh_token` returns a new `mmoat_`/`mmort_` pair and
+//     `expires_in: 3600`;
+//     (b) it never ran, because the stored `expires_at` was RFC3339 while the
+//     reader accepted only digit strings, and an unreadable expiry counts as
+//     ABSENT — which this provider deliberately treats as "not expired". The
+//     credential therefore looked permanently healthy and died with a 401.
+//
+//     Verified 2026-10-01 by placing the credential 120 s from expiry (inside
+//     the 300 s window) and issuing one inference call through CPA: the call
+//     returned 200 AND the stored access token changed, i.e. renewal ran before
+//     the request. A follow-up call with the new token ~1 h out did NOT rotate
+//     it again, so renewal is demand-driven rather than per-request.
 const (
 	// LoginVerified reports that the device-code login is proven against the
 	// live service.
@@ -52,8 +66,8 @@ const (
 	// live service.
 	InferenceVerified = true
 	// RefreshVerified reports that token renewal is proven against the live
-	// service. It is false: renewal has not been observed yet.
-	RefreshVerified = false
+	// service. Verified 2026-10-01; see the note above for the exact evidence.
+	RefreshVerified = true
 )
 
 // Timeouts and polling budgets, mirroring the reference constants
