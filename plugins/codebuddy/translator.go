@@ -11,10 +11,11 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // handleRequestTranslate is an identity transform.
@@ -146,11 +147,86 @@ func isContextWindowExceeded(body string) bool {
 	return false
 }
 
+// contentRejectionCodeRe matches the safety-policy business code as a field
+// rather than as a bare substring: `requestId` is a UUID and any digit run can
+// appear inside it, so a plain "contains 11140" test would misfire.
+var contentRejectionCodeRe = regexp.MustCompile(`"code"\s*:\s*"?11140"?`)
+
+// contentRejectionMarkerRe matches the two server wordings for the same block.
+// The server's Chinese explanation (displayMsg.zh) is one of the observed
+// spellings of the message itself, hence it is part of the predicate.
+var contentRejectionMarkerRe = regexp.MustCompile(`(?i)request illegal|安全审核|safety review`)
+
+// isContentRejection reports whether an upstream body is the Tencent safety
+// policy block (business code 11140). buddy-adapter.ts:414-428.
+//
+// Three independent signals, any of which is enough (buddy-adapter.ts:424-428):
+// the business code, the `msg` wording, the `displayMsg` text.
+//
+// ⚠️ The block is **account-scoped**, not content-scoped: the same request body
+// sent to the 7 pooled accounts measured 2×200, 4×403/11140, 1×429
+// (buddy-adapter.ts:397-408). The operator action is therefore to switch the
+// account, exactly like an auth failure — never to re-login and never to edit
+// the prompt. That is why the caller below maps it to PERMISSION_DENIED.
+func isContentRejection(body string) bool {
+	if body == "" {
+		return false
+	}
+	return contentRejectionCodeRe.MatchString(body) || contentRejectionMarkerRe.MatchString(body)
+}
+
+// isRateLimitBody reports whether a body states a rate limit without the HTTP
+// status saying so. llm-adapter.ts:1900-1903 (`isRateLimited`), where 429 is
+// handled by the status and these two signals are the fallback for a limit the
+// gateway wrapped in a 200/400 (or delivered inside the SSE stream).
+//
+// The business code is read from the decoded JSON top level rather than by
+// matching the text, for the same reason as above: `requestId` is a UUID and any
+// digit run can appear inside it (llm-adapter.ts:1498-1501).
+func isRateLimitBody(body string) bool {
+	if body == "" {
+		return false
+	}
+	var decoded map[string]any
+	if errUnmarshal := json.Unmarshal([]byte(body), &decoded); errUnmarshal == nil {
+		switch code := decoded["code"].(type) {
+		case float64:
+			if code == RateLimitBusinessCode {
+				return true
+			}
+		case string:
+			if code == itoa(RateLimitBusinessCode) {
+				return true
+			}
+		}
+	}
+	return rateLimitTextRe.MatchString(body)
+}
+
+// RateLimitBusinessCode is the CodeBuddy business code for "usage exceeds the
+// frequency limit". llm-adapter.ts:1474.
+const RateLimitBusinessCode = 6004
+
+// rateLimitTextRe is the natural-language fallback for rate limits that carry no
+// usable business code. The list is copied verbatim from llm-adapter.ts:1492-1493:
+// both languages are required because the China line answers in Chinese and the
+// international line in English, and missing one of them is a measured defect.
+var rateLimitTextRe = regexp.MustCompile(`(?i)频率限制|频率超出|使用量已超出|重置|限流|rate.?limit|frequency limit|usage exceeds|too many requests`)
+
 // httpErrorCode maps an HTTP status to a CPA/harness error code.
-// buddy-adapter.ts:412-422.
+// buddy-adapter.ts:653-666 (the TS shape) plus the 11140 branch of
+// buddy-adapter.ts:1313-1321.
 func httpErrorCode(status int, body string) string {
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		// ⚠️ 403 does **not** imply an auth failure on the Tencent gateway: the
+		// safety-policy block (11140) answers 403 as well, and classifying it as
+		// AUTH makes the UI replace the whole message with "API 密钥无效" — which
+		// sends the operator to re-login while every token is in fact valid
+		// (buddy-adapter.ts:468-491). PERMISSION_DENIED, never AUTH.
+		if isContentRejection(body) {
+			return "PERMISSION_DENIED"
+		}
 		return "AUTH"
 	case status == http.StatusTooManyRequests:
 		return "RATE_LIMIT"
@@ -167,11 +243,23 @@ func httpErrorCode(status int, body string) string {
 }
 
 // errorDetail extracts a readable reason from an upstream error body.
-// buddy-adapter.ts:367-384.
+// buddy-adapter.ts:564-591.
+//
+// The Tencent products report failures with `msg` + `displayMsg.{zh,en}` and
+// have no `message` field at all, so `displayMsg` must be read **first**: it is
+// the only human-readable explanation the server gives, and dropping it left the
+// user staring at the raw JSON (buddy-adapter.ts:568-575).
 func errorDetail(body string) string {
 	var decoded map[string]any
 	if errUnmarshal := json.Unmarshal([]byte(body), &decoded); errUnmarshal == nil {
 		parts := []string{}
+		if display, ok := decoded["displayMsg"].(map[string]any); ok {
+			if text, okText := display["zh"].(string); okText && text != "" {
+				parts = append(parts, text)
+			} else if text, okText := display["en"].(string); okText && text != "" {
+				parts = append(parts, text)
+			}
+		}
 		if nested, ok := decoded["error"].(map[string]any); ok {
 			for _, key := range []string{"code", "type", "message"} {
 				if text, okText := nested[key].(string); okText {
@@ -195,10 +283,51 @@ func errorDetail(body string) string {
 	return truncate(body, 500)
 }
 
+// streamErrorKind classifies a failure the provider reported **inside** the
+// stream (HTTP 200), which is the only channel some Tencent errors use.
+type streamErrorKind int
+
+const (
+	// streamErrorNone means the frame carries no failure.
+	streamErrorNone streamErrorKind = iota
+	// streamErrorServer is the default: an upstream failure with no better code.
+	streamErrorServer
+	// streamErrorContextWindow means the context overflowed and DSH must compact.
+	streamErrorContextWindow
+	// streamErrorContentRejection is the safety-policy block (code 11140).
+	streamErrorContentRejection
+	// streamErrorRateLimit is a streamed rate limit (business code 6004).
+	streamErrorRateLimit
+)
+
+// streamErrorEnvelope turns a classified in-stream failure into the CPA error
+// envelope. Kept next to the classification so both call sites (collectChunks
+// and handleExecutorExecuteStream) report identical codes and statuses.
+//
+// ⚠️ The 502/SERVER default is only correct for failures with no better
+// classification: a caught rate limit re-reported as SERVER tells CPA to retry
+// the same account, and a caught policy block re-reported as SERVER hides the
+// one action that helps (switch the account).
+func streamErrorEnvelope(kind streamErrorKind, detail string) error {
+	switch kind {
+	case streamErrorContextWindow:
+		return abiboot.HTTPError("CONTEXT_WINDOW_EXCEEDED", http.StatusBadRequest,
+			"CodeBuddy 上下文超限：%s", detail)
+	case streamErrorContentRejection:
+		return abiboot.HTTPError("PERMISSION_DENIED", http.StatusForbidden,
+			"CodeBuddy 安全策略拦截（该拦截按账号生效，请更换账号后重试）：%s", detail)
+	case streamErrorRateLimit:
+		return abiboot.HTTPError("RATE_LIMIT", http.StatusTooManyRequests,
+			"CodeBuddy 限流：%s", detail)
+	default:
+		return abiboot.HTTPError("SERVER", http.StatusBadGateway, "CodeBuddy: %s", detail)
+	}
+}
+
 // chunkErrorPayload returns a non-empty error description when the frame
-// carries an upstream failure, and whether the failure is a context overflow.
-// buddy-adapter.ts:1242-1255.
-func chunkErrorPayload(chunk *chatChunk) (string, bool) {
+// carries an upstream failure, plus how that failure must be classified.
+// buddy-adapter.ts:1242-1255, 1790-1810.
+func chunkErrorPayload(chunk *chatChunk) (string, streamErrorKind) {
 	if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
 		var nested map[string]any
 		_ = json.Unmarshal(chunk.Error, &nested)
@@ -208,7 +337,7 @@ func chunkErrorPayload(chunk *chatChunk) (string, bool) {
 		} else if msg, ok := nested["msg"].(string); ok && msg != "" {
 			detail = msg
 		}
-		return detail, isContextWindowExceeded(string(chunk.Error))
+		return detail, classifyStreamFailure(string(chunk.Error), isContextWindowExceeded(string(chunk.Error)))
 	}
 	// HTTP 200 with a business error code instead of choices.
 	if len(chunk.Choices) == 0 && chunk.Code != nil {
@@ -223,9 +352,26 @@ func chunkErrorPayload(chunk *chatChunk) (string, bool) {
 			detail = marshalCompact(chunk.Code)
 		}
 		raw := marshalCompact(chunk)
-		return detail, isContextWindowExceeded(raw)
+		return detail, classifyStreamFailure(raw, isContextWindowExceeded(raw))
 	}
-	return "", false
+	return "", streamErrorNone
+}
+
+// classifyStreamFailure picks the code for one in-stream failure from its raw
+// JSON. The order mirrors the HTTP path: a context overflow must keep its code
+// so DSH compacts, then the 11140 policy block (which never carries `choices` —
+// see the gate in chunkErrorPayload), then the streamed 6004 rate limit.
+func classifyStreamFailure(raw string, exceeded bool) streamErrorKind {
+	switch {
+	case exceeded:
+		return streamErrorContextWindow
+	case isContentRejection(raw):
+		return streamErrorContentRejection
+	case isRateLimitBody(raw):
+		return streamErrorRateLimit
+	default:
+		return streamErrorServer
+	}
 }
 
 // ── 非流式聚合 ──

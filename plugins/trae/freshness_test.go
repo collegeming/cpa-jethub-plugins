@@ -11,8 +11,8 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // This file pins the self-healing contract of the TRAE plugin: the page sweep,

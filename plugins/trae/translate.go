@@ -1241,6 +1241,30 @@ func toolCallFields(call map[string]any) (name, arguments, id string) {
 	return readStringField(fn, "name"), readStringField(fn, "arguments"), readStringField(call, "id")
 }
 
+// usableToolCallName reports whether a SOLO tool call carries a name upstream
+// will accept, and returns it (`sse.ts:81-83`).
+//
+// ⚠️ The test must be `typeof name === 'string' && name.trim().length > 0`, not a
+// length check on a stringified value: a missing / `null` name would become the
+// NON-empty literals `"undefined"` / `"null"` and be judged usable. Upstream only
+// checks that `function.name` is non-empty, not that the tool exists — measured:
+// `"unknown_tool"` answers 200 while `""` / `null` / a missing name is rejected
+// with HTTP 400 `code 11133` (`docs/agents/trae.md:32`).
+func usableToolCallName(call map[string]any) (string, bool) {
+	fn, ok := asMap(call["function"])
+	if !ok {
+		fn, ok = asMap(call["function_call"])
+	}
+	if !ok {
+		return "", false
+	}
+	name, okName := fn["name"].(string)
+	if !okName || strings.TrimSpace(name) == "" {
+		return "", false
+	}
+	return name, true
+}
+
 // openAIChunk is one `chat.completion.chunk` payload. The reference helper emits
 // an empty model and no `finish_reason` unless one is supplied
 // (trae.ts:1605-1633); this adapter always fills the requested model so clients
@@ -1283,6 +1307,11 @@ func TranslateSOLOStream(body []byte, model, completionID string, created int64)
 	var usage map[string]any
 	finishReason := ""
 	toolCallCount := 0
+	// droppedUnnamed records that an entry was skipped because its name was not
+	// usable. Discarding it is right, but letting the turn end as `stop` tells
+	// the client the model simply chose not to call a tool (see the finish-reason
+	// rule below).
+	droppedUnnamed := false
 
 	emit := func(delta map[string]any, finish *string) {
 		if !roleSent && finish == nil {
@@ -1317,11 +1346,20 @@ func TranslateSOLOStream(body []byte, model, completionID string, created int64)
 			if len(event.ToolCalls) > 0 {
 				calls := make([]any, 0, len(event.ToolCalls))
 				for position, call := range event.ToolCalls {
+					// ⚠️ A call whose name is not usable must emit NOTHING
+					// (trae-adapter.ts:1174-1205): forwarding `name:""` gets the
+					// whole request rejected 400 code 11133, and persisting the
+					// block poisons every later turn of the conversation.
+					name, okName := usableToolCallName(call)
+					if !okName {
+						droppedUnnamed = true
+						continue
+					}
 					index := position
 					if raw, ok := readNumberField(call, "index"); ok {
 						index = int(raw)
 					}
-					name, arguments, id := toolCallFields(call)
+					_, arguments, id := toolCallFields(call)
 					entry := map[string]any{
 						"index": index,
 						"type":  "function",
@@ -1336,7 +1374,9 @@ func TranslateSOLOStream(body []byte, model, completionID string, created int64)
 					calls = append(calls, entry)
 					toolCallCount++
 				}
-				delta["tool_calls"] = calls
+				if len(calls) > 0 {
+					delta["tool_calls"] = calls
+				}
 			}
 			if len(delta) > 0 {
 				emit(delta, nil)
@@ -1353,9 +1393,16 @@ func TranslateSOLOStream(body []byte, model, completionID string, created int64)
 	}
 
 	if finishReason == "" {
-		if toolCallCount > 0 {
+		switch {
+		case droppedUnnamed && toolCallCount == 0:
+			// Upstream's third rule (trae-adapter.ts:1308-1318): an unnamed call
+			// was discarded and no usable call remains, so this is an incomplete
+			// turn that may be retried — never `stop`, which would claim the model
+			// deliberately answered without a tool.
+			finishReason = "length"
+		case toolCallCount > 0:
 			finishReason = "tool_calls"
-		} else {
+		default:
 			finishReason = "stop"
 		}
 	}

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // usageBody is the response shape measured against a real account

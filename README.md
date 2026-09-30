@@ -29,10 +29,22 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | `cline` | Cline | 状态、登录 | 9 | Cline（cline.bot），WorkOS 设备码登录，标准 OpenAI 兼容推理 |
 | `loomy` | Loomy（讯飞） | 状态、登录、签到 | 10 | 讯飞 Loomy，微信扫码登录（备用：短信验证码），两个积分池 + 新手任务 |
 | `raccoon` | Raccoon（商汤小浣熊） | 状态、登录、一次性奖励 | 7 | 商汤 Raccoon Work，**仅**微信扫码登录（手机验证码需要人机验证，未实现），模型价格随名称显示；**没有每日签到** |
+| `zcode` | ZCode（智谱） | 状态、登录、签到 | 9 | 智谱 ZCode 免费额度，CLI 设备码登录，Anthropic Messages 流式推理；推理**不需要**验证码 |
+| `minimax` | MiniMax Code（中国版） | 状态、登录、签到 | 9 | MiniMax Code 中国版，OAuth 设备码 + PKCE，Anthropic Messages 流式推理，思考形态按模型区分 |
 | `hub` | Jet Hub | 状态、一键签到 | 4 | 编排型插件：读取各 provider 状态并一次点击完成全部签到 |
 | `codebuddy-intl` 等 | CodeBuddy／WorkBuddy | 状态、登录、签到 | 9 | 见下方「产品变体」——同一份代码按产品构建的独立插件 |
 
-八个适配器都实现了完整方法面（另有一个编排型的 `hub`）：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器统一声明 `chat-completions` 入出格式且 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
+十个适配器都实现了完整方法面（另有一个编排型的 `hub`）：`auth.identifier`／`parse`／`login.start`／`login.poll`／`refresh`，`model.register`／`static`／`for_auth`，`executor.identifier`／`execute`／`execute_stream`／`count_tokens`，`request.translate`、`response.translate`，`management.register`／`handle`，以及 `quota.identifier`／`describe`／`fetch`／`reset`。执行器声明 `executor_model_scope=oauth`，跨协议转换由宿主完成，插件不重复实现。
+
+执行器的入出格式按渠道的**上游协议**声明，而不是一律 `chat-completions`：
+
+| 渠道 | 上游协议 | 执行器声明 |
+| --- | --- | --- |
+| 多数渠道 | OpenAI Chat Completions | `chat-completions` 入出 |
+| `zcode` | Anthropic Messages | `anthropic` 入出 |
+| `minimax` | Anthropic Messages | `anthropic` 入出 |
+
+宿主按声明做双向翻译（`anthropic` → Claude 格式），所以客户端仍可用 OpenAI 协议访问这些渠道。
 
 ### 选择平台／区域
 
@@ -57,6 +69,7 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | `qoder` | `region` | `qoder`（国际，默认）、`qoder-cn` |
 | `trae` | `region` | `trae`（国内，默认）、`trae-intl` |
 | `codearts` | `flow` | `oauth`（浏览器 PKCE，默认）、`ticket`（旧版票据轮询） |
+| `minimax` | `region` | `cn`（中国版，当前唯一） |
 
 其余字段（模型发现开关、超时、Max 模式、签到开关、通道选择等）在管理面板里都有中文说明，或见各插件的 `ConfigFields()`。
 

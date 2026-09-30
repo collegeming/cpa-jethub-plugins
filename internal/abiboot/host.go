@@ -7,8 +7,8 @@ import (
 	"net/http"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/credjson"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Host is the per-invocation handle passed to every method handler. It carries

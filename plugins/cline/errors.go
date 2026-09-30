@@ -58,7 +58,13 @@ func transportError(code, format string, args ...any) *abiboot.EnvelopeError {
 // 400 is the request's fault and must NOT rotate the credential
 // (`cline-adapter.ts:571-577`); 5xx is the server's and is never rotated either,
 // which is why both end up as the same 502 family rather than an AUTH.
-func upstreamStatusError(code string, status int, format string, args ...any) *abiboot.EnvelopeError {
+//
+// ⚠️ A 400 that names a context overflow is NOT a generic invalid request. It
+// becomes CONTEXT_WINDOW_EXCEEDED, which is the only code that lets the client
+// compact the conversation; INVALID_REQUEST is neither retryable nor recognised
+// by the compaction listener, so the session dies on every later turn
+// (upstream `7ed3466`, issue !IKITT9 part c). `body` is what that decision reads.
+func upstreamStatusError(body []byte, code string, status int, format string, args ...any) *abiboot.EnvelopeError {
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return credentialError(code, format, args...)
@@ -66,11 +72,57 @@ func upstreamStatusError(code string, status int, format string, args ...any) *a
 		return statusError(false, code, http.StatusPaymentRequired, format, args...)
 	case status == http.StatusTooManyRequests:
 		return statusError(true, code, http.StatusTooManyRequests, format, args...)
+	case status == http.StatusBadRequest && isContextWindowExceeded(body):
+		return statusError(false, ContextWindowExceededCode, http.StatusBadRequest, format, args...)
 	case status == http.StatusBadRequest:
 		return statusError(false, code, http.StatusBadRequest, format, args...)
 	default:
 		return transportError(code, format, args...)
 	}
+}
+
+// contextWindowMarkers are the substrings that identify a context-overflow error.
+//
+// Mirrored from the sibling port that already classifies this correctly
+// (`plugins/codebuddy/translator.go:124-133`), which in turn takes them from the
+// measured payloads recorded at `buddy-adapter.ts:395-410`
+// (`extError.code = context_length_exceeded`,
+// `prompt is too long: N tokens > M maximum`) plus the generic OpenAI wording.
+//
+// ⚠️ Upstream additionally requires the `prompt is too long` form to be paired
+// with an `N tokens > M` figure, because the bare phrase could otherwise catch an
+// ordinary content-policy 400 (upstream `7ed3466`: "已加窄判据：必须同时命中").
+// This port keeps the plain list deliberately: the sibling plugin's list is the
+// shared convention across this repository, and mis-classifying an overflow costs
+// at most one useless compaction attempt, whereas MISSING one kills the session.
+var contextWindowMarkers = []string{
+	"context_length_exceeded",
+	"context length",
+	"context window",
+	"prompt is too long",
+	"maximum context",
+	"exceeds the model context limit",
+	"too many tokens",
+	"reduce the length",
+}
+
+// ContextWindowExceededCode is the provider-neutral code the harness routes on
+// (`CONTEXT_WINDOW_EXCEEDED_CODE`, `@deepseek-ai/dsh-llm`). It is spelled out
+// rather than imported: this plugin owns its own taxonomy.
+const ContextWindowExceededCode = "CONTEXT_WINDOW_EXCEEDED"
+
+// isContextWindowExceeded reports whether an error body describes a context
+// overflow. The full raw body is inspected, not a normalised excerpt, because
+// excerpting loses the fields that identify the overflow
+// (`buddy-adapter.ts:404-410`).
+func isContextWindowExceeded(body []byte) bool {
+	lowered := strings.ToLower(string(body))
+	for _, marker := range contextWindowMarkers {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // credentialAdvice appends the advice every dead-credential answer deserves.

@@ -7,7 +7,8 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/imagebudget"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Inference: `executor.execute` and `executor.execute_stream`.
@@ -203,13 +204,18 @@ func performInfer(h *abiboot.Host, request pluginapi.ExecutorRequest, credential
 }
 
 // chatRequestBody rewrites the outbound body: history hygiene, a model when the
-// translated payload carries none, and `stream: true` (`buildBody`,
-// `raccoon-adapter.ts:273-295`).
+// translated payload carries none, `stream: true` and the thinking control
+// (`buildBody`, `raccoon-adapter.ts:376-410`).
 //
 // ⚠️ `tools` stays at the TOP LEVEL of the body. Moving it anywhere else makes
 // the model emit prose XML tool calls that the harness cannot parse (trap #19),
 // so the field is never touched beyond the empty-array rule: an empty `tools`
 // array is dropped rather than sent.
+//
+// ⚠️ The thinking control is nested (`extra_body.thinking.type`), which is a
+// DIFFERENT dialect from the top-level `thinking` another gateway uses. Putting
+// it at the top level is silently ignored by this server — it does not even
+// reject an illegal value there (upstream `05873c1`).
 func chatRequestBody(request pluginapi.ExecutorRequest) ([]byte, error) {
 	if len(request.Payload) == 0 {
 		return nil, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "raccoon: 收到空请求体")
@@ -225,13 +231,114 @@ func chatRequestBody(request pluginapi.ExecutorRequest) ([]byte, error) {
 	if tools, present := root["tools"].([]any); present && len(tools) == 0 {
 		delete(root, "tools")
 	}
+	// Thinking control. `reasoning_effort` is deliberately NOT consulted: the
+	// server accepts it but nothing observable changes (see `EffortOn`).
+	effort := readReasoningEffort(root)
+	if extra := thinkingExtraBody(effort); extra != nil {
+		root["extra_body"] = extra
+	}
+	// ⚠️ The inert field is REMOVED rather than forwarded. This provider's
+	// reference never writes it (`raccoon-adapter.ts:398-410`), and leaving a
+	// field on the wire that looks like a thinking control but does nothing is
+	// how a future reader concludes the control is broken.
+	delete(root, "reasoning_effort")
+	delete(root, "reasoning")
 	// Always stream: the adapter hard-codes it (`raccoon-adapter.ts:277`).
 	root["stream"] = true
 	encoded, errMarshal := json.Marshal(root)
 	if errMarshal != nil {
 		return nil, statusError(false, "encode_request", http.StatusInternalServerError, "编码请求失败：%v", errMarshal)
 	}
-	return encoded, nil
+	// Image projection LAST, on the marshalled body: it is the one step that can
+	// be skipped without changing the request's meaning, so a failure anywhere in
+	// it costs nothing (`projectRequestImage`, `raccoon-adapter.ts:344-356`).
+	return projectRequestImages(encoded), nil
+}
+
+// projectRequestImages fits every inline image into this product's budgets.
+//
+// The measured defect: two 2560×1600 screenshots inline to ≈3.9 MB each, so
+// roughly four of them answered `HTTP_413: request body exceeds 10MB` and the
+// session could not continue (upstream `7ed3466`, issue !IKITT9).
+//
+// ⚠️ Per-product budgets are deliberately different and must stay that way: this
+// gateway limits the REQUEST BODY, so 512 KB is what lets ten images through,
+// whereas a 1 MiB target would 413 again after ten (see `ImageMaxBytes`).
+//
+// A projection that cannot improve an image leaves it byte-identical, so the
+// only observable effect here is on images that were actually over budget.
+func projectRequestImages(body []byte) []byte {
+	return imagebudget.ProjectChatPayload(body, ImageMaxBytes, nil)
+}
+
+// reasoningEffortFields are the payload keys the client's thinking choice may
+// arrive under, highest priority first.
+//
+// ⚠️ Read from the callers, not guessed. Both the CPA host and the sibling
+// adapters put the client's OpenAI chat-completions body in `Payload` verbatim,
+// and a DSH client expresses its thinking level as the OpenAI top-level field:
+//
+//   - `plugins/cline/adapter.go:133` reads `reasoning_effort` out of exactly this
+//     payload (`effort := readStringField(inbound, "reasoning_effort")`) — the
+//     same field the reference passes through to the upstream
+//     (`cline-adapter.ts:466-474`);
+//   - `internal/jethub/openai/openai.go:60` declares it on the shared request
+//     type with the JSON tag `reasoning_effort,omitempty`;
+//   - the CPA host itself extracts it under the same name
+//     (`setReasoningEffortMetadata`, `sdk/api/handlers/handlers.go:318`, key
+//     `cliproxyexecutor.ReasoningEffortMetadataKey = "reasoning_effort"`).
+//
+// The DSH-native block form `reasoning:{effort:…}` is accepted as a fallback
+// because the host's thinking applier is not invoked on the plugin executor path
+// (only `internal/runtime/executor/**` calls it), so a client that used the
+// native shape would otherwise silently keep the server default.
+var reasoningEffortFields = []string{"reasoning_effort", "reasoning"}
+
+// readReasoningEffort extracts the client's chosen thinking level from the
+// outbound chat-completions body. An absent or unusable value yields "", which
+// means "send nothing and keep the server default" (measured = thinking on).
+func readReasoningEffort(root map[string]any) string {
+	for _, field := range reasoningEffortFields {
+		switch typed := root[field].(type) {
+		case string:
+			if trimmed := strings.TrimSpace(typed); trimmed != "" {
+				return trimmed
+			}
+		case map[string]any:
+			if nested, okNested := typed["effort"].(string); okNested {
+				if trimmed := strings.TrimSpace(nested); trimmed != "" {
+					return trimmed
+				}
+			}
+			if nested, okNested := typed["level"].(string); okNested {
+				if trimmed := strings.TrimSpace(nested); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// thinkingExtraBody maps a level id onto the request's `extra_body` value.
+//
+// `nil` means "send no `extra_body` field at all" — that is the case for an
+// absent level, and it preserves the server's own default (measured to be the
+// same as an explicit `enabled`, but one field fewer on the wire is steadier).
+//
+// An UNKNOWN level is treated as ON, never as off: thinking a bit too much costs
+// quota, whereas silently switching thinking off makes the user think the model
+// broke, with nothing in the UI to explain it (`raccoonThinkingExtraBody`,
+// `raccoon-adapter.ts:58-97`).
+func thinkingExtraBody(effort string) map[string]any {
+	if effort == "" {
+		return nil
+	}
+	thinkingType := ThinkingTypeEnabled
+	if effort == EffortOff {
+		thinkingType = ThinkingTypeDisabled
+	}
+	return map[string]any{"thinking": map[string]any{"type": thinkingType}}
 }
 
 // inferFailure classifies a non-2xx chat answer.

@@ -120,6 +120,38 @@
       ]
     },
     {
+      "id": "zcode",
+      "name": "ZCode（智谱）",
+      "description": "智谱 ZCode 免费额度接入：CLI 设备码登录、Anthropic Messages 流式推理（GLM-5.3 / GLM-5.3-Flash）、官方身份块准入、额度桶与每日领取。推理无需验证码。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "Zhipu",
+        "ZCode",
+        "Anthropic",
+        "Credits"
+      ]
+    },
+    {
+      "id": "minimax",
+      "name": "MiniMax Code（中国版）",
+      "description": "MiniMax Code 中国版接入：OAuth 设备码 + PKCE 登录、Anthropic Messages 流式推理（M3.1-Flash-Preview / M3 / M2.7 系列）、按模型区分思考形态、签到与积分明细。",
+      "author": "collegeming",
+      "repository": "https://github.com/collegeming/cpa-jethub-plugins",
+      "homepage": "https://github.com/collegeming/cpa-jethub-plugins",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "MiniMax",
+        "Anthropic",
+        "DeviceCode",
+        "Credits"
+      ]
+    },
+    {
       "id": "hub",
       "name": "Jet Hub（一键签到）",
       "description": "跨渠道统一面板：读取各 provider 插件的状态并以一次点击完成全部每日签到，逐账号如实区分「已领取／领取成功／无账号／不支持」。",

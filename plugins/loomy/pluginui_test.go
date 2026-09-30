@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // renderPage drives one management page request and returns the HTML.

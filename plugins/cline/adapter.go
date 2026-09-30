@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/imagebudget"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // This file is the port of the wire-facing half of the TypeScript adapter:
@@ -142,7 +143,21 @@ func buildChatBody(payload []byte, model string, cfg Config) ([]byte, string, er
 	if errMarshal != nil {
 		return nil, "", statusError(false, "encode_request", http.StatusInternalServerError, "encode Cline 请求失败：%v", errMarshal)
 	}
-	return encoded, modelID, nil
+	// Image projection LAST, on the marshalled body: it is the one step whose
+	// failure costs nothing, because an image it cannot improve is left exactly
+	// as it was (`projectRequestImage`, `cline-adapter.ts:414-424`).
+	return projectRequestImages(encoded), modelID, nil
+}
+
+// projectRequestImages fits every inline image into this product's budgets.
+//
+// The measured defect: 24 full-size 2560×1600 images passed, 32 of them (≈122 MiB
+// of request body) died with `TRANSPORT` (upstream `7ed3466`, issue !IKITT9).
+// Nothing scaled them, so the request grew without bound.
+//
+// ⚠️ The byte budget is deliberately NOT raccoon's: see `ImageMaxBytes`.
+func projectRequestImages(body []byte) []byte {
+	return imagebudget.ProjectChatPayload(body, ImageMaxBytes, nil)
 }
 
 // clampMaxTokens is `clampClineMaxTokens` (`cline-adapter.ts:75-80`):
@@ -1024,6 +1039,16 @@ func upstreamError(response *pluginapi.HTTPResponse) error {
 		return statusError(false, "quota_exceeded", http.StatusPaymentRequired, "Cline 额度已耗尽：%s", detail)
 	case status == http.StatusTooManyRequests:
 		return statusError(true, "rate_limited", http.StatusTooManyRequests, "Cline 限流：%s", detail)
+	case status == http.StatusBadRequest && isContextWindowExceeded(response.Body):
+		// ⚠️ This MUST be decided before the generic 400 AND before the quota
+		// marker: the marker table contains the bare word `exceeded`, which the
+		// structured overflow body `{"extError":{"code":"context_length_exceeded"}}`
+		// contains. Checked later, every overflow would be reported as an
+		// exhausted balance and the session would still die — the very
+		// misclassification this branch exists to remove (upstream `7ed3466`,
+		// part c).
+		return statusError(false, ContextWindowExceededCode, http.StatusBadRequest,
+			"Cline 上下文超限（HTTP 400）：%s", detail)
 	case status >= 400 && status < 500 && hasQuotaMarker(response.Body):
 		return statusError(false, "quota_exceeded", http.StatusPaymentRequired,
 			"Cline 账号额度不足（HTTP %d）：%s", status, detail)

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // TestMenuCount guards the repository-wide rule documented in the README: the

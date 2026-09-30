@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"regexp"
@@ -9,7 +10,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Model catalogue, ported from `src/loomy.ts:111-191` and
@@ -107,11 +108,17 @@ type modelDescriptor struct {
 	// image generation (`loomy.ts:165-167`, trap #16).
 	SupportsImage bool
 	// SupportsThinking is `capabilities.reasoning === true`
-	// (`loomy-adapter.ts:95`). It is parsed for display only: the provider
-	// declares no thinking LEVELS, because neither `listModels` nor
-	// `resolveModel` emits any reasoning control in the source
-	// (`loomy-adapter.ts:209-215,224-235`, §7.6).
+	// (`loomy-adapter.ts:95`). The declared LEVELS are `Efforts`, not this flag.
 	SupportsThinking bool
+	// Efforts are the selectable thinking levels (`reasoning_efforts`). DSH's
+	// thinking selector renders ONLY from the declared model metadata, so a level
+	// the remote publishes but this plugin never declares is a level the user can
+	// never pick (`loomy-adapter.ts:316-351`). An empty list means the model
+	// offers no level choice and no `Thinking` block is emitted for it.
+	Efforts []string
+	// DefaultEffort is the remote `default_reasoning_effort`. It is kept for
+	// diagnostics only — see the note on `Thinking` below.
+	DefaultEffort string
 	// Remote marks an entry that came from the live endpoint.
 	Remote bool
 }
@@ -153,9 +160,27 @@ func (m modelDescriptor) info(now time.Time) pluginapi.ModelInfo {
 		SupportedInputModalities:   modalities,
 		SupportedOutputModalities:  []string{"text"},
 	}
-	// No Thinking block: §7.6 — the source never surfaces reasoning controls.
+	if len(m.Efforts) > 0 {
+		// Declaring the levels is what makes the thinking selector appear at all;
+		// it is NOT enough for the remote to publish them (`loomy-adapter.ts:316-351`).
+		//
+		// ⚠️ The reference declares `defaultEffort: high` here (deliberately not the
+		// remote `low`, which would make the default thinking shallower). The host's
+		// `ThinkingSupport` has no default field, so only the level list can be
+		// declared — the same limitation the TRAE plugin documents
+		// (`plugins/trae/models.go`). `m.DefaultEffort` is parsed and kept for
+		// diagnostics rather than invented into a field the host does not have.
+		info.Thinking = &pluginapi.ThinkingSupport{Levels: append([]string(nil), m.Efforts...)}
+	}
 	return info
 }
+
+// loomyEfforts is the level list the remote publishes for all 8 chat models
+// (measured identical on every one, `loomy-adapter.ts:112-127`). The fallback
+// table carries the same values so an offline catalogue still declares levels;
+// naming them once keeps an upstream change from being applied to only some
+// entries.
+var loomyEfforts = []string{"none", "low", "medium", "high", "xhigh"}
 
 // fallbackCatalogue is the bundled table (`loomy-product.ts:74-83`).
 //
@@ -168,16 +193,24 @@ func (m modelDescriptor) info(now time.Time) pluginapi.ModelInfo {
 // through a local override. This port follows the remote value and keeps
 // 1_048_576; switch it to 262144 if long-context requests are rejected in
 // practice (`loomy-product.ts:69-72`, `README.md:1455-1457`).
-var fallbackCatalogue = []modelDescriptor{
-	{ID: "deepseek-v4-flash-0731", Name: "DeepSeek V4 Flash 0731 · x3.0", ContextLength: 1_048_576, SupportsThinking: true},
-	{ID: "MiniMax-M3", Name: "MiniMax M3 （x4.0）", ContextLength: 1_048_576, SupportsThinking: true},
-	{ID: "Kimi-k2.6", Name: "Kimi k2.6 · x6.5", ContextLength: 262_144, SupportsThinking: true},
-	{ID: "qwen-3.8-max", Name: "Qwen 3.8 Max (x12.0)", ContextLength: 1_000_000, SupportsThinking: true},
-	{ID: "GLM-5.3-Flash", Name: "GLM 5.3 Flash(x0.8)", ContextLength: 1_048_576, SupportsThinking: true},
-	{ID: "qwen3.8-flash", Name: "qwen 3.8 flash · x0.8", ContextLength: 1_000_000, SupportsThinking: true},
-	{ID: "spark-x", Name: "Spark X2.5 · x0.1", ContextLength: 1_048_576, SupportsThinking: true},
-	{ID: "mimo-v2.5", Name: "MiMo V2.5 · x3.3", ContextLength: 1_048_576, SupportsThinking: true},
-}
+var fallbackCatalogue = func() []modelDescriptor {
+	entries := []modelDescriptor{
+		{ID: "deepseek-v4-flash-0731", Name: "DeepSeek V4 Flash 0731 · x3.0", ContextLength: 1_048_576, SupportsThinking: true},
+		{ID: "MiniMax-M3", Name: "MiniMax M3 （x4.0）", ContextLength: 1_048_576, SupportsThinking: true},
+		{ID: "Kimi-k2.6", Name: "Kimi k2.6 · x6.5", ContextLength: 262_144, SupportsThinking: true},
+		{ID: "qwen-3.8-max", Name: "Qwen 3.8 Max (x12.0)", ContextLength: 1_000_000, SupportsThinking: true},
+		{ID: "GLM-5.3-Flash", Name: "GLM 5.3 Flash(x0.8)", ContextLength: 1_048_576, SupportsThinking: true},
+		{ID: "qwen3.8-flash", Name: "qwen 3.8 flash · x0.8", ContextLength: 1_000_000, SupportsThinking: true},
+		{ID: "spark-x", Name: "Spark X2.5 · x0.1", ContextLength: 1_048_576, SupportsThinking: true},
+		{ID: "mimo-v2.5", Name: "MiMo V2.5 · x3.3", ContextLength: 1_048_576, SupportsThinking: true},
+	}
+	// The reference keeps the fallback levels identical to the remote ones
+	// (`loomy-adapter.ts:181-186`), so an offline catalogue still offers them.
+	for index := range entries {
+		entries[index].Efforts = append([]string(nil), loomyEfforts...)
+	}
+	return entries
+}()
 
 // fallbackModels renders the bundled table.
 func fallbackModels() []modelDescriptor {
@@ -214,6 +247,54 @@ type remoteModel struct {
 		InputModalities []string `json:"input_modalities"`
 		Reasoning       *bool    `json:"reasoning"`
 	} `json:"capabilities"`
+	// ReasoningEfforts is `reasoning_efforts` (for example
+	// `["none","low","medium","high","xhigh"]`). The server also publishes
+	// `reasoning_catalog_version`, so the levels track the service without a code
+	// change (loomy-adapter.ts:52-66).
+	//
+	// It is kept raw so one malformed element cannot fail the whole catalogue
+	// decode: see [readReasoningEfforts].
+	ReasoningEfforts json.RawMessage `json:"reasoning_efforts"`
+	// DefaultReasoningEffort is the remote default. It is parsed for diagnostics
+	// only: DSH's `ThinkingSupport` has no default field, and the reference
+	// deliberately sends its own `high` rather than the remote `low`
+	// (loomy-adapter.ts:56-58, :112-127).
+	DefaultReasoningEffort flexText `json:"default_reasoning_effort"`
+}
+
+// readReasoningEfforts reads raw `reasoning_efforts` into a de-duplicated list,
+// preserving the remote order (which IS the display order) and dropping blank or
+// non-string entries (loomy-adapter.ts:129-142).
+//
+// The field is decoded from raw JSON on purpose. Decoding straight into
+// `[]string` makes the WHOLE catalogue fail as soon as one element is `null` or a
+// number, which would silently drop every model — the reference instead skips
+// that element and keeps the rest. A field that is not an array at all yields no
+// levels, matching `if (!Array.isArray(raw)) return []`.
+func readReasoningEfforts(raw json.RawMessage) []string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	var items []any
+	if errUnmarshal := json.Unmarshal(trimmed, &items); errUnmarshal != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		text, okText := item.(string)
+		if !okText {
+			continue
+		}
+		trimmedText := strings.TrimSpace(text)
+		if trimmedText == "" || seen[trimmedText] {
+			continue
+		}
+		seen[trimmedText] = true
+		out = append(out, trimmedText)
+	}
+	return out
 }
 
 // parseLoomyRemoteModels parses a `/models` body (`loomy-adapter.ts:73-99`).
@@ -264,6 +345,10 @@ func parseLoomyRemoteModels(body []byte) []modelDescriptor {
 		if entry.Capabilities.Reasoning != nil {
 			descriptor.SupportsThinking = *entry.Capabilities.Reasoning
 		}
+		// Levels come straight from the remote; an absent / empty list means the
+		// model offers no level choice, so nothing is declared for it.
+		descriptor.Efforts = readReasoningEfforts(entry.ReasoningEfforts)
+		descriptor.DefaultEffort = strings.TrimSpace(entry.DefaultReasoningEffort.String())
 		out = append(out, descriptor)
 	}
 	return out
@@ -362,6 +447,50 @@ func activeCatalogue(h *abiboot.Host, credential *Credential, cfg Config) []mode
 		return fallbackModels()
 	}
 	return catalogueForAuth(h, credential, cfg)
+}
+
+// catalogueEntryFor looks one model up in the active catalogue, falling back to
+// the bundled table (`loomy-adapter.ts:432-434`: remote first, fallback second).
+//
+// The lookup is done by bare name because the host strips its `<account>/` model
+// prefix before dispatching, and the bundled table is consulted as well so an
+// entry still resolves when discovery is off or the remote call failed.
+func catalogueEntryFor(h *abiboot.Host, credential *Credential, cfg Config, model string) (modelDescriptor, bool) {
+	wanted := strings.TrimSpace(model)
+	if wanted == "" {
+		return modelDescriptor{}, false
+	}
+	entries := activeCatalogue(h, credential, cfg)
+	for _, entry := range entries {
+		if entry.ID == wanted {
+			return entry, true
+		}
+	}
+	return modelDescriptor{}, false
+}
+
+// declaredEffortsFor returns the thinking levels declared for one model. The
+// second result reports whether the model declares any at all.
+func declaredEffortsFor(h *abiboot.Host, credential *Credential, cfg Config, model string) ([]string, bool) {
+	entry, ok := catalogueEntryFor(h, credential, cfg, model)
+	if !ok || len(entry.Efforts) == 0 {
+		return nil, false
+	}
+	return entry.Efforts, true
+}
+
+// containsEffort reports whether a level is one of the declared ones.
+func containsEffort(levels []string, wanted string) bool {
+	trimmed := strings.TrimSpace(wanted)
+	if trimmed == "" {
+		return false
+	}
+	for _, level := range levels {
+		if level == trimmed {
+			return true
+		}
+	}
+	return false
 }
 
 // handleModelRegister reports the static fallback catalog. It is used when no

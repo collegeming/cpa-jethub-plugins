@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestNormalizeToolArguments(t *testing.T) {
@@ -348,30 +348,30 @@ func TestErrorDetail(t *testing.T) {
 func TestChunkErrorPayload(t *testing.T) {
 	overflow := chatChunk{Error: json.RawMessage(
 		`{"message":"prompt is too long","extError":{"code":"context_length_exceeded"}}`)}
-	detail, exceeded := chunkErrorPayload(&overflow)
-	if detail == "" || !exceeded {
-		t.Errorf("inline overflow = (%q, %v), want a detail and exceeded=true", detail, exceeded)
+	detail, kind := chunkErrorPayload(&overflow)
+	if detail == "" || kind != streamErrorContextWindow {
+		t.Errorf("inline overflow = (%q, %v), want a detail and a context-overflow kind", detail, kind)
 	}
 
 	plain := chatChunk{Error: json.RawMessage(`{"message":"boom"}`)}
-	detail, exceeded = chunkErrorPayload(&plain)
-	if detail != "boom" || exceeded {
-		t.Errorf("inline error = (%q, %v)", detail, exceeded)
+	detail, kind = chunkErrorPayload(&plain)
+	if detail != "boom" || kind != streamErrorServer {
+		t.Errorf("inline error = (%q, %v)", detail, kind)
 	}
 
 	// A business code with no choices (HTTP 200) is also a failure.
 	coded := chatChunk{Code: float64(11102), Msg: "model service info not found"}
-	detail, exceeded = chunkErrorPayload(&coded)
+	detail, kind = chunkErrorPayload(&coded)
 	if !strings.Contains(detail, "11102") && !strings.Contains(detail, "model service") {
 		t.Errorf("coded failure detail = %q", detail)
 	}
-	if exceeded {
-		t.Error("a coded failure is not a context overflow")
+	if kind != streamErrorServer {
+		t.Errorf("a coded failure kind = %v, want streamErrorServer", kind)
 	}
 
 	healthy := chatChunk{Choices: []streamChoice{{Index: 0}}}
-	if detail, exceeded = chunkErrorPayload(&healthy); detail != "" || exceeded {
-		t.Errorf("a healthy chunk must not be an error: (%q, %v)", detail, exceeded)
+	if detail, kind = chunkErrorPayload(&healthy); detail != "" || kind != streamErrorNone {
+		t.Errorf("a healthy chunk must not be an error: (%q, %v)", detail, kind)
 	}
 }
 

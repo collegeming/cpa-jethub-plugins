@@ -10,7 +10,7 @@ import (
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Inference path selection.
@@ -391,11 +391,21 @@ func itoaInt(value int) string {
 // The status is normalised rather than passed through: the host uses it to decide
 // whether the request was at fault (and therefore whether the credential should
 // be rotated), and an upstream 404 or 403 says nothing useful about that.
+//
+// ⚠️ A 401/403 body is READ before the status decides anything, because Qoder
+// sends TWO conditions that arrive as 403 and neither of which is an auth
+// failure: the queue code `10605` and the quota code `110`
+// (`qoder-adapter.ts:747-757`, `:795-820`). Classifying them by status alone
+// rotates a perfectly healthy credential, and the rotation cannot help because
+// the credential was never the problem.
 func upstreamError(response *pluginapi.HTTPResponse) error {
 	detail := truncate(string(response.Body), 300)
 	status := response.StatusCode
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		if kind, parsed := classifyBusinessBody(string(response.Body)); kind != businessUnknown {
+			return businessErrorFor(kind, parsed, status)
+		}
 		return credentialError("auth", "Qoder 凭据无效（HTTP %d）：%s%s", status, detail, credentialAdvice(status))
 	case status == http.StatusPaymentRequired:
 		return statusError(false, "quota_exhausted", http.StatusPaymentRequired, "Qoder 额度已耗尽：%s", detail)
@@ -406,6 +416,54 @@ func upstreamError(response *pluginapi.HTTPResponse) error {
 	default:
 		return transportError("upstream_error", "Qoder 返回 HTTP %d：%s", status, detail)
 	}
+}
+
+// businessErrorFor builds the classified failure for a recognised business body.
+// The SSE-frame channel and this HTTP-level one share it so they can never drift
+// into handling only one of them — the defect recorded at
+// `qoder-adapter.ts:786-788`.
+//
+// `origin` is only woven into the message (the frame channel passes 0 because the
+// HTTP status there was a successful 200 and naming it would mislead); the
+// classification itself is identical on both channels.
+func businessErrorFor(kind businessKind, parsed businessError, origin int) error {
+	where := "加密端点帧内"
+	if origin > 0 {
+		where = "HTTP " + itoaInt(origin)
+	}
+	switch kind {
+	case businessQuota:
+		// Non-retryable: the daily quota cannot recover within a retry budget,
+		// so retrying only burns the backoff schedule (`2c1af59`) and the host
+		// must rotate the credential instead.
+		return statusError(false, "QUOTA_EXCEEDED", http.StatusPaymentRequired,
+			"Qoder 额度已耗尽（不可重试，%s）：%s", where, parsed.text())
+	case businessQueue:
+		delay, hasDelay := parsed.Queue.delayMS()
+		if hasDelay {
+			// The server stated how long the queue needs; honour it, clamped to
+			// QueueMaxDelayMS (`model-queue.ts:138`). Without a stated delay the
+			// host applies its own backoff — the `QUEUE` code already tells it
+			// this is a queue and not an upstream fault.
+			queueSleep(time.Duration(delay) * time.Millisecond)
+		}
+		return statusError(true, "QUEUE", http.StatusTooManyRequests,
+			"Qoder 模型排队中（等待 %dms，%s）：%s", delay, where, parsed.text())
+	default:
+		return statusError(true, "upstream_error", http.StatusBadGateway,
+			"Qoder 加密端点返回业务错误（%s）：%s", where, parsed.text())
+	}
+}
+
+// classifyBusinessBody parses a body and reports what it means. A body that is
+// not a JSON object at all is businessUnknown, so an HTML 403 error page keeps
+// the auth classification.
+func classifyBusinessBody(body string) (businessKind, businessError) {
+	parsed, ok := parseBusinessError(body)
+	if !ok {
+		return businessUnknown, businessError{}
+	}
+	return classifyBusinessError(parsed), parsed
 }
 
 // publicRequestBody rewrites the model and stream fields of the outgoing body.
@@ -499,6 +557,18 @@ func collectChatChunks(body []byte, encrypted bool) ([]openai.Chunk, error) {
 // The encrypted endpoint wraps every frame, so a frame without `choices` is an
 // error and must be raised rather than skipped — silently dropping it is exactly
 // the "no reply, no error" bug (`qoder-envelope.ts:18-22`).
+//
+// ⚠️ A frame without `choices` is NOT automatically an upstream fault. The
+// measured bodies carry a business `code`, and two of them must reach the host
+// as something other than 502/retryable:
+//
+//   - quota (`110`, `Billing daily count exceeded`) is DETERMINISTIC, so it
+//     becomes a non-retryable 402 and the host rotates the credential instead of
+//     paying five backoffs for a result that cannot change (`2c1af59`);
+//   - queue (`10605`) is TEMPORARY and carries the delay the server wants, which
+//     is waited out here, the same place upstream waits (`daf9fb1`).
+//
+// Everything else keeps the historical generic classification.
 func normalizeFrame(payload string, encrypted bool) (string, error) {
 	if payload == sse.Done {
 		return sse.Done, nil
@@ -515,13 +585,34 @@ func normalizeFrame(payload string, encrypted bool) (string, error) {
 		return "", nil
 	}
 	if !looksLikeChatFrame(inner) {
-		return "", abiboot.HTTPError("upstream_error", http.StatusBadGateway,
-			"Qoder 加密端点返回业务错误：%s", envelopeErrorMessage(inner))
+		return "", businessFrameError(inner)
 	}
 	if strings.TrimSpace(inner) == sse.Done {
 		return sse.Done, nil
 	}
 	return inner, nil
+}
+
+// businessFrameError classifies the inner body of an error frame.
+//
+// The body is parsed recursively before anything is decided; the frame's own
+// `code` is never used as a gate, because the measured queue frame wraps the
+// business code one JSON-string layer down (`model-queue.ts:14-22`, upstream
+// `daf9fb1`).
+//
+// The frame channel and the HTTP channel deliberately share `businessErrorFor`,
+// so a future change to either classification lands on both. Handling only one
+// of them is the defect recorded at `qoder-adapter.ts:786-788`.
+func businessFrameError(inner string) error {
+	parsed, ok := parseBusinessError(inner)
+	if !ok {
+		// Not a JSON object at all: the `[FAIL]node:… msg:…` text frame keeps
+		// the generic upstream failure and its own text, which is the only
+		// detail available.
+		return statusError(true, "upstream_error", http.StatusBadGateway,
+			"Qoder 加密端点返回业务错误：%s", envelopeErrorMessage(inner))
+	}
+	return businessErrorFor(classifyBusinessError(parsed), parsed, 0)
 }
 
 // chunksFromCompletion projects a whole completion into one delta chunk.

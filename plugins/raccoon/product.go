@@ -1,5 +1,7 @@
 package main
 
+import "github.com/collegeming/cpa-jethub-plugins/internal/jethub/imagebudget"
+
 // Provider identity. One plugin instance owns exactly one provider key.
 const (
 	// ProviderKey is the stable provider identifier written into CPA auth files
@@ -122,6 +124,56 @@ const (
 	DefaultMaxOutputTokens = 65_536
 )
 
+// Thinking control (`raccoon-product.ts:44-95`, upstream `05873c1`).
+//
+// ⚠️ This provider exposes exactly TWO states, on and off, and the only effective
+// channel is `extra_body.thinking.type` — a provider-level dialect, NOT the
+// top-level `thinking` another gateway uses. Measured on `reasoning_tokens`:
+//
+//	baseline (nothing sent)          mean 222, 6/6 had reasoning
+//	extra_body.thinking={disabled}   6/6 AND 8/8 all zero  → really off
+//	extra_body.thinking={enabled}    mean 218              → equivalent to default
+//
+// ⚠️ `reasoning_effort` is accepted by the server (eight enum values) but is
+// INERT: in an 8-round paired experiment `max - minimal` was positive 4 times and
+// negative 4 times. It is therefore never sent for this provider, and no effort
+// level other than on/off is offered.
+const (
+	// EffortOn is the `on` level id: `thinking:{type:'enabled'}`. It is called
+	// `on` rather than `high` because `high` only exists on the inert
+	// `reasoning_effort` channel, and offering it would imply selectable depth
+	// this provider cannot deliver.
+	EffortOn = "on"
+	// EffortOff is the `off` level id: `thinking:{type:'disabled'}`.
+	EffortOff = "off"
+	// ThinkingTypeEnabled is the measured wire value for "think".
+	ThinkingTypeEnabled = "enabled"
+	// ThinkingTypeDisabled is the measured wire value for "do not think".
+	ThinkingTypeDisabled = "disabled"
+)
+
+// ReasoningEfforts is the level list in the reference's display order
+// (`RACCOON_REASONING_EFFORTS`, `raccoon-product.ts:88-91`). Every model offers
+// both levels: `extra_body.thinking` is a provider-level dialect, so per-model
+// dispatch would be an invention.
+var ReasoningEfforts = []string{EffortOn, EffortOff}
+
+// ReasoningLevelNames are the display names DSH renders verbatim
+// (`RACCOON_EFFORT_NAMES`, `raccoon-product.ts:78-83`).
+//
+// ⚠️ "开启 / 关闭" rather than "深度思考 / 关闭思考": only the boolean dimension
+// exists, and the stronger wording would make users look for a depth level that
+// is not there.
+var ReasoningLevelNames = map[string]string{
+	EffortOn:  "开启",
+	EffortOff: "关闭",
+}
+
+// DefaultEffort is `on`: the measured default behaviour is already thinking
+// (baseline 222 ≈ explicit enabled 218), so declaring `on` describes the server
+// rather than changing it.
+const DefaultEffort = EffortOn
+
 // Points constants (`raccoon-credits.ts:38-41`).
 const (
 	// LoginRewardPoints is the fallback amount reported for the one-off desktop
@@ -144,4 +196,28 @@ const (
 	qrStatusLogging  = "logging"
 	qrStatusCanceled = "canceled"
 	qrStatusSuccess  = "success"
+)
+
+// Image request budgets (upstream `7ed3466`, issue !IKITT9).
+const (
+	// ImageMaxBytes is this product's per-image encoded byte target: **512 KB**.
+	//
+	// Source: `RACCOON_REQUEST_IMAGE_MAX_BYTES` in `src/image-budget.ts`, wired
+	// in as `RACCOON.imageMaxBytes` (`raccoon-product.ts:172-176,284-285`).
+	//
+	// This gateway limits the REQUEST BODY, not the visual-token budget the
+	// Tencent endpoints use: it answered `HTTP_413: request body exceeds 10MB`
+	// after roughly four 2560×1600 screenshots. 512 KB base64-expands to ≈683 KB
+	// per image, so the 10 MB allowance holds ≈14 of them (the originals held 2).
+	//
+	// ⚠️ Deliberately NOT the same number as cline's 1 MiB: at 1 MiB this hard
+	// limit would be hit again after ten images. Upstream kept the two values
+	// apart on purpose — do not unify them.
+	ImageMaxBytes = 512 * 1024
+	// ImagePixelBudget is this product's per-image pixel budget.
+	//
+	// Byte volume is the binding constraint here, so the pixel budget only keeps
+	// an image from being so large that the encoder cannot reach ImageMaxBytes.
+	// The value is the shared `DEFAULT_IMAGE_PIXEL_BUDGET`.
+	ImagePixelBudget = imagebudget.PixelBudget
 )

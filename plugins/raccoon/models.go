@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Model catalogue, ported from `raccoon-auth.ts:118-164,380-410,532-567` and
@@ -140,6 +140,22 @@ func (m catalogueEntry) info(now time.Time) pluginapi.ModelInfo {
 		SupportedGenerationMethods: []string{"chat.completions"},
 		SupportedInputModalities:   modalities,
 		SupportedOutputModalities:  []string{"text"},
+		// Thinking levels. Declared for EVERY model because `extra_body.thinking`
+		// is a provider-level dialect, not a per-model capability
+		// (`raccoonReasoningInfo`, `raccoon-adapter.ts:99-116`).
+		//
+		// Without this block no selector is offered at all, which is the defect
+		// this declaration fixes: the client could not choose, and the request
+		// carried no `extra_body` regardless.
+		//
+		// ⚠️ `ZeroAllowed` is true because `off` is MEASURED to work: with
+		// `{type:'disabled'}` the server reported zero `reasoning_tokens` in 6/6
+		// and 8/8 runs (upstream `05873c1`). Declaring it false would hide the one
+		// level that has hard evidence behind it.
+		Thinking: &pluginapi.ThinkingSupport{
+			Levels:      append([]string(nil), ReasoningEfforts...),
+			ZeroAllowed: true,
+		},
 	}
 }
 

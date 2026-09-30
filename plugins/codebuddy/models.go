@@ -25,7 +25,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // ── 展示名兜底表（buddy.ts:384-405）──

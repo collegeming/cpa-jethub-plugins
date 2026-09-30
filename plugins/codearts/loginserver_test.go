@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/oauthcb"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // freePort returns a port that was free a moment ago. Tests use it for the

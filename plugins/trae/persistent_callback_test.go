@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/oauthcb"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // getCallbackStatus performs the GET the browser performs against the loopback

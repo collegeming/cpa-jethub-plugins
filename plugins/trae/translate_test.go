@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // nativeRequest builds a DSH-native request: the shape that must be serialized
@@ -520,6 +520,159 @@ func TestTranslateSOLOStreamEmptyResponse(t *testing.T) {
 	}
 	if len(frames) == 0 {
 		t.Fatal("even an empty stream must produce a terminal chunk and [DONE]")
+	}
+}
+
+// translateToolCallNames extracts every `function.name` from the `tool_calls`
+// deltas of a translated stream.
+func translateToolCallNames(t *testing.T, frames [][]byte) []string {
+	t.Helper()
+	names := []string{}
+	for _, frame := range frames {
+		var decoded struct {
+			Choices []struct {
+				Delta struct {
+					ToolCalls []struct {
+						Function struct {
+							Name string `json:"name"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if errUnmarshal := json.Unmarshal(frame, &decoded); errUnmarshal != nil {
+			t.Fatalf("frame is not JSON: %v (%s)", errUnmarshal, frame)
+		}
+		for _, choice := range decoded.Choices {
+			for _, call := range choice.Delta.ToolCalls {
+				names = append(names, call.Function.Name)
+			}
+		}
+	}
+	return names
+}
+
+// translateFinishReason returns the `finish_reason` of the terminal frame.
+func translateFinishReason(t *testing.T, frames [][]byte) string {
+	t.Helper()
+	for _, frame := range frames {
+		var decoded struct {
+			Choices []struct {
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if errUnmarshal := json.Unmarshal(frame, &decoded); errUnmarshal != nil {
+			continue
+		}
+		for _, choice := range decoded.Choices {
+			if choice.FinishReason != nil {
+				return *choice.FinishReason
+			}
+		}
+	}
+	t.Fatalf("no frame carried a finish_reason: %s", joinFrames(frames))
+	return ""
+}
+
+// TestTranslateSOLOStreamDropsUnnamedToolCalls: a SOLO `output` event whose
+// `tool_calls` entry has no usable name must emit ZERO tool-call frames and end
+// the turn as `length` — not `stop`. Emitting `name:""` is rejected by upstream
+// with HTTP 400 code 11133 and is persisted into the conversation, and finishing
+// as `stop` would tell the client the model chose not to call a tool
+// (trae-adapter.ts:1174-1205, :1308-1318).
+//
+// The predicate has to test the RAW value: `String(name).length > 0` would accept
+// a missing / null name because it stringifies to the non-empty literal
+// `"undefined"` / `"null"` (`sse.ts:81-83`) — that is the pitfall the two nullish
+// cases below pin down.
+func TestTranslateSOLOStreamDropsUnnamedToolCalls(t *testing.T) {
+	cases := []struct {
+		name       string
+		toolCalls  string
+		wantNames  []string
+		wantFinish string
+	}{
+		{
+			// The exact regression fixture: index 2, an id, arguments, no name.
+			name:       "the only call has no name at all",
+			toolCalls:  `[{"index":2,"id":"call_x","function":{"arguments":"{}"}}]`,
+			wantNames:  nil,
+			wantFinish: "length",
+		},
+		{
+			name:       "empty name string",
+			toolCalls:  `[{"index":0,"id":"call_x","function":{"name":"","arguments":"{}"}}]`,
+			wantNames:  nil,
+			wantFinish: "length",
+		},
+		{
+			name:       "blank name is not usable either",
+			toolCalls:  `[{"index":0,"function":{"name":"   ","arguments":"{}"}}]`,
+			wantNames:  nil,
+			wantFinish: "length",
+		},
+		{
+			name:       "a JSON null name is not the string null",
+			toolCalls:  `[{"index":0,"function":{"name":null,"arguments":"{}"}}]`,
+			wantNames:  nil,
+			wantFinish: "length",
+		},
+		{
+			name:       "a missing function object is unusable",
+			toolCalls:  `[{"index":0,"id":"call_x"}]`,
+			wantNames:  nil,
+			wantFinish: "length",
+		},
+		{
+			name:       "one usable call is kept and the finish reason is untouched",
+			toolCalls:  `[{"index":0,"id":"call_ok","function":{"name":"read","arguments":"{}"}},{"index":1,"id":"call_x","function":{"arguments":"{}"}}]`,
+			wantNames:  []string{"read"},
+			wantFinish: "tool_calls",
+		},
+		{
+			// ⚠️ The pitfall is the REVERSE of rejecting this: a missing / null
+			// name is what `String(name)` turns INTO the literal "undefined", which
+			// is a non-empty string. A literal string on the wire is a real (if
+			// bogus) name, and upstream only checks non-emptiness — measured:
+			// "unknown_tool" answers 200 (`sse.ts:81-83`).
+			name:       "a literal undefined string is a real name upstream accepts",
+			toolCalls:  `[{"index":0,"function":{"name":"undefined","arguments":"{}"}}]`,
+			wantNames:  []string{"undefined"},
+			wantFinish: "tool_calls",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			body := "event:output\ndata:{\"tool_calls\":" + testCase.toolCalls + "}\n\n"
+			frames, streamErr, sawEvent := TranslateSOLOStream([]byte(body), "glm-5.2", "id", 1)
+			if streamErr != nil {
+				t.Fatalf("unexpected stream error: %v", streamErr)
+			}
+			if !sawEvent {
+				t.Fatal("sawEvent must be true")
+			}
+			got := translateToolCallNames(t, frames)
+			if strings.Join(got, ",") != strings.Join(testCase.wantNames, ",") {
+				t.Fatalf("emitted tool-call names = %#v, want %#v", got, testCase.wantNames)
+			}
+			if reason := translateFinishReason(t, frames); reason != testCase.wantFinish {
+				t.Fatalf("finish_reason = %q, want %q", reason, testCase.wantFinish)
+			}
+		})
+	}
+}
+
+// TestTranslateSOLOStreamUnnamedDoesNotOverrideExplicitFinish: an explicit
+// upstream `finish_reason` still wins over the dropped-unnamed fallback.
+func TestTranslateSOLOStreamUnnamedDoesNotOverrideExplicitFinish(t *testing.T) {
+	body := "event:output\ndata:{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\",\"function\":{\"arguments\":\"{}\"}}]}\n\n" +
+		"event:done\ndata:{\"finish_reason\":\"length\"}\n\n"
+	frames, _, _ := TranslateSOLOStream([]byte(body), "glm-5.2", "id", 1)
+	if got := translateFinishReason(t, frames); got != "length" {
+		t.Fatalf("finish_reason = %q, want the explicit length", got)
+	}
+	if names := translateToolCallNames(t, frames); len(names) != 0 {
+		t.Fatalf("tool-call names = %#v, want none", names)
 	}
 }
 

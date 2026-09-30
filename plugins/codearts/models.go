@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // defaultModelIDs is the fallback list used when model discovery is disabled or
@@ -36,6 +36,23 @@ var contextWindows = map[string]int64{
 
 // defaultMaxOutputTokens is the per-response cap advertised to the host.
 const defaultMaxOutputTokens = 65536
+
+// thinkingLevels are the two thinking levels declared for EVERY model
+// (`llm-adapter.ts:841-849`).
+//
+// The gateway's only effective thinking control is the top-level `thinking.type`
+// (see prepareRequestBody). `reasoning_effort` — all of low/high/none/minimal —
+// and the nested `reasoning.effort` are accepted but completely inert: judged by
+// the server-reported `reasoning_tokens`, which stayed inside baseline noise
+// (`none` kept thinking too). `{type:'enabled'}` is equivalent to sending
+// nothing, because the server defaults to thinking on. Upstream therefore
+// refused to invent a low/high/max ladder — that would be three fake levels —
+// and declares exactly on / off, in that display order.
+//
+// The levels are declared even though deepseek-v4 is the model family actually
+// measured thinking: no endpoint publishes per-model capability, and the
+// upstream adapter declares them for every model rather than guessing.
+var thinkingLevels = []string{"on", "off"}
 
 // modelCache memoises a discovered model list for a bounded time.
 type modelCache struct {
@@ -116,6 +133,17 @@ func modelInfoFor(id, displayName string) pluginapi.ModelInfo {
 		SupportedGenerationMethods: []string{"chat.completions"},
 		SupportedInputModalities:   []string{"text"},
 		SupportedOutputModalities:  []string{"text"},
+	}
+	// Declared for every model, mirroring the sibling adapters that get this
+	// right (`cline/models.go:349-355`). Without it the host renders no thinking
+	// selector at all, which is the defect this pins (`llm-adapter.ts:831-849`).
+	info.Thinking = &pluginapi.ThinkingSupport{
+		// The display order is load-bearing: `on` first, matching upstream.
+		Levels: append([]string(nil), thinkingLevels...),
+		// `off` is a real, measured level: `thinking:{type:'disabled'}` drove
+		// `reasoning_tokens` to 0 in 3/3 runs while the answer text stayed
+		// correct, so disabling reasoning is genuinely supported.
+		ZeroAllowed: true,
 	}
 	if info.ContextLength == 0 {
 		info.InputTokenLimit = 0

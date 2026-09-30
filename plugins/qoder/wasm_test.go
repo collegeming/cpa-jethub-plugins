@@ -564,7 +564,10 @@ func TestInferAskFromRequestSplitsTheSystemPrompt(t *testing.T) {
 	if !ask.IsReasoning || ask.IsVL == nil || !*ask.IsVL {
 		t.Fatalf("catalog capability flags were not applied: %#v", ask)
 	}
-	if ask.DisplayName != "Qwen3.8-Flash" || ask.MaxInputTokens != 180_000 {
+	// `maxInputTokens` is the fallback entry's tier-table window
+	// (`qoder-adapter.ts:727-729`), NOT the catalog's `max_input_tokens` — see
+	// the `catalogModel.ContextWindow` note (upstream `db5af3c`).
+	if ask.DisplayName != "Qwen3.8-Flash" || ask.MaxInputTokens != 1_000_000 {
 		t.Fatalf("catalog metadata was not applied: %#v", ask)
 	}
 	if ask.MaxTokens == nil || *ask.MaxTokens != 64 {
@@ -611,7 +614,7 @@ func TestBuildInferPayloadShape(t *testing.T) {
 		ModelKey: "qfmodel", UserText: "hi", SystemText: "sys",
 		History:     []inferMessage{{Role: "user", Content: "hi"}},
 		IsReasoning: true, MaxTokens: &maxTokens, ReasoningEffort: "low",
-		DisplayName: "Qwen3.8-Flash", MaxInputTokens: 180_000,
+		DisplayName: "Qwen3.8-Flash", MaxInputTokens: 1_000_000,
 		SessionType: "qodercli", Business: map[string]any{"type": "agent"},
 	}
 	encoded, errPayload := buildInferPayload(ask)

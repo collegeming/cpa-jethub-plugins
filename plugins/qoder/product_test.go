@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -201,8 +202,102 @@ func TestStaticModelInfosKeepsFreeAndImageCapability(t *testing.T) {
 	if len(flash.modalities) != 2 || flash.modalities[1] != "image" {
 		t.Errorf("qfmodel modalities = %v, want text+image (is_vl=true)", flash.modalities)
 	}
-	if flash.contextSize != 180_000 {
-		t.Errorf("qfmodel context = %d, want 180000", flash.contextSize)
+	if flash.contextSize != 1_000_000 {
+		t.Errorf("qfmodel context = %d, want 1000000 (the tier table's maximum)", flash.contextSize)
+	}
+}
+
+// TestContextWindowsComeFromTheTierTable is the regression guard for upstream
+// `db5af3c`: `ContextWindow` must be the catalog's `context_config` MAXIMUM tier,
+// never its `max_input_tokens`. `dmodel` is the reported case — the catalog
+// publishes 96000 while the tier table reaches 1M, and the official client only
+// honours the latter, so a 96K value makes DSH compress at 76.8K instead of 800K.
+func TestContextWindowsComeFromTheTierTable(t *testing.T) {
+	cases := []struct {
+		region Region
+		key    string
+		want   int64
+	}{
+		// The measured case, in BOTH regions: `dmodel` is 1M, not 96K.
+		{RegionCN, "dmodel", 1_000_000},
+		{RegionGlobal, "dmodel", 1_000_000},
+		// `auto` is the one entry with no tier table: it legitimately stays 200K.
+		{RegionCN, "auto", 200_000},
+		{RegionGlobal, "auto", 200_000},
+		// CN `mmodel`'s tier table holds the 200K tier alone.
+		{RegionCN, "mmodel", 200_000},
+		// Every other real model publishes a 1M tier.
+		{RegionCN, "qmodel", 1_000_000},
+		{RegionCN, "qmodel_latest", 1_000_000},
+		{RegionCN, "qfmodel", 1_000_000},
+		{RegionCN, "gmodel", 1_000_000},
+		{RegionGlobal, "qfmodel", 1_000_000},
+		{RegionGlobal, "kmodel", 1_000_000},
+		{RegionGlobal, "mmodel", 1_000_000},
+		{RegionGlobal, "smodel", 1_000_000},
+		{RegionGlobal, "efficient", 1_000_000},
+	}
+	for _, testCase := range cases {
+		t.Run(string(testCase.region)+"/"+testCase.key, func(t *testing.T) {
+			model, known := catalogModelFor(productByID(string(testCase.region)), testCase.key)
+			if !known {
+				t.Fatalf("%s is missing from the %s catalog", testCase.key, testCase.region)
+			}
+			if model.ContextWindow != testCase.want {
+				t.Fatalf("%s/%s ContextWindow = %d, want %d", testCase.region, testCase.key,
+					model.ContextWindow, testCase.want)
+			}
+		})
+	}
+}
+
+// TestNoCatalogEntryKeepsAStaleWindow sweeps both tables: no entry may carry one
+// of the values the tier-table rule retires (the old 180K placeholder, or
+// `dmodel`'s 96K from `max_input_tokens`).
+func TestNoCatalogEntryKeepsAStaleWindow(t *testing.T) {
+	stale := map[int64]string{
+		180_000: "the pre-db5af3c placeholder",
+		96_000:  "dmodel's max_input_tokens (the wrong field)",
+	}
+	for _, p := range allProducts {
+		for _, model := range p.ModelCatalog {
+			if why, bad := stale[model.ContextWindow]; bad {
+				t.Errorf("%s/%s ContextWindow = %d, which is %s",
+					p.ID, model.Key, model.ContextWindow, why)
+			}
+		}
+	}
+}
+
+// TestModelInfoForReportsTheTableWindow pins the host-facing projection: both
+// `ContextLength` and `InputTokenLimit` must equal the (corrected) table value,
+// because the compaction threshold is derived from them.
+func TestModelInfoForReportsTheTableWindow(t *testing.T) {
+	cases := []struct {
+		region Region
+		key    string
+		want   int64
+	}{
+		{RegionCN, "dmodel", 1_000_000},
+		{RegionCN, "auto", 200_000},
+		{RegionGlobal, "dmodel", 1_000_000},
+		{RegionGlobal, "auto", 200_000},
+	}
+	for _, testCase := range cases {
+		t.Run(string(testCase.region)+"/"+testCase.key, func(t *testing.T) {
+			p := productByID(string(testCase.region))
+			model, known := catalogModelFor(p, testCase.key)
+			if !known {
+				t.Fatalf("%s is missing from the %s catalog", testCase.key, testCase.region)
+			}
+			info := modelInfoFor(model, ts(12, 0))
+			if info.ContextLength != testCase.want {
+				t.Errorf("ContextLength = %d, want %d", info.ContextLength, testCase.want)
+			}
+			if info.InputTokenLimit != testCase.want {
+				t.Errorf("InputTokenLimit = %d, want %d", info.InputTokenLimit, testCase.want)
+			}
+		})
 	}
 }
 
@@ -226,5 +321,137 @@ func TestStaticModelInfosAddsDeclaredPublicModels(t *testing.T) {
 	}
 	if len(infos) != len(qoderModelCatalog)+1 {
 		t.Fatalf("model count = %d, want the catalog plus one declared name", len(infos))
+	}
+}
+
+// TestThinkingLevelsForAppendsOffOnlyWhenDisableIsAllowed is the two-dimension
+// rule from upstream `c94c3fa`: effort tiers come from the catalog, and "turn
+// thinking off" is a SEPARATE flag that appends `none` (the client's `gU()`).
+func TestThinkingLevelsForAppendsOffOnlyWhenDisableIsAllowed(t *testing.T) {
+	cases := []struct {
+		name  string
+		model catalogModel
+		want  []string
+	}{
+		{
+			name:  "efforts without a disabled branch gain nothing",
+			model: catalogModel{Efforts: []string{"high", "low", "max"}},
+			want:  []string{"high", "low", "max"},
+		},
+		{
+			name:  "efforts plus a disabled branch gain none",
+			model: catalogModel{Efforts: []string{"high", "max"}, ThinkingDisableAllowed: true},
+			want:  []string{"high", "max", "none"},
+		},
+		{
+			name:  "no efforts but a disabled branch is off alone",
+			model: catalogModel{ThinkingDisableAllowed: true},
+			want:  []string{"none"},
+		},
+		{
+			name:  "neither dimension yields nothing",
+			model: catalogModel{},
+			want:  nil,
+		},
+		{
+			name:  "an effort list already holding none is not duplicated",
+			model: catalogModel{Efforts: []string{"none", "high"}, ThinkingDisableAllowed: true},
+			want:  []string{"none", "high"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := thinkingLevelsFor(testCase.model); !slices.Equal(got, testCase.want) {
+				t.Fatalf("thinkingLevelsFor = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestThinkingDeclaredForEveryModelThatCanThink pins the host-facing block across
+// BOTH regions, including the case upstream `c94c3fa` was reported for: an entry
+// with no effort list must still declare the block so "off" stays selectable.
+func TestThinkingDeclaredForEveryModelThatCanThink(t *testing.T) {
+	cases := []struct {
+		region      Region
+		key         string
+		wantLevels  []string
+		wantZero    bool
+		wantNilInfo bool
+	}{
+		// Efforts present, disable allowed.
+		{RegionCN, "dmodel", []string{"high", "max", "none"}, true, false},
+		{RegionCN, "dfmodel", []string{"high", "max", "low", "none"}, true, false},
+		{RegionCN, "gm51model", []string{"high", "max", "none"}, true, false},
+		{RegionCN, "qmodel_38max", []string{"xhigh", "low", "medium", "none"}, true, false},
+		// Efforts present, disable NOT allowed — `none` must be absent, and
+		// ZeroAllowed must stay false (there is no `disabled` branch upstream).
+		{RegionCN, "gmodel", []string{"high", "low", "max"}, false, false},
+		{RegionCN, "gfmodel", []string{"high", "max"}, false, false},
+		{RegionCN, "kmodel_latest", []string{"high", "low", "max"}, false, false},
+		// The reported CN case: NO efforts at all, thinking supported, can turn
+		// off. Declaring nothing here is the defect.
+		{RegionCN, "qmodel", []string{"none"}, true, false},
+		{RegionCN, "qmodel_latest", []string{"none"}, true, false},
+		// No `thinking_config` at all upstream → no block.
+		{RegionCN, "auto", nil, false, true},
+		{RegionCN, "q37fmodel", nil, false, true},
+		{RegionCN, "mmodel", nil, false, true},
+		// International equivalents.
+		{RegionGlobal, "dmodel", []string{"high", "max", "none"}, true, false},
+		{RegionGlobal, "dfmodel", []string{"high", "max", "low", "none"}, true, false},
+		{RegionGlobal, "ultimate", []string{"xhigh", "high", "low", "max", "medium", "none"}, true, false},
+		{RegionGlobal, "gmodel", []string{"high", "low", "max"}, false, false},
+		{RegionGlobal, "smodel", []string{"xhigh", "high", "low", "max", "medium"}, false, false},
+		{RegionGlobal, "kmodel", []string{"high", "low", "max"}, false, false},
+		{RegionGlobal, "qmodel", []string{"none"}, true, false},
+		{RegionGlobal, "auto", nil, false, true},
+		{RegionGlobal, "mmodel", nil, false, true},
+	}
+	for _, testCase := range cases {
+		t.Run(string(testCase.region)+"/"+testCase.key, func(t *testing.T) {
+			model, known := catalogModelFor(productByID(string(testCase.region)), testCase.key)
+			if !known {
+				t.Fatalf("%s is missing from the %s catalog", testCase.key, testCase.region)
+			}
+			info := modelInfoFor(model, ts(12, 0))
+			if testCase.wantNilInfo {
+				if info.Thinking != nil {
+					t.Fatalf("Thinking = %#v, want none (the catalog publishes no thinking_config)", info.Thinking)
+				}
+				return
+			}
+			if info.Thinking == nil {
+				t.Fatal("Thinking is nil: the model can think, so the selector would never appear")
+			}
+			if !slices.Equal(info.Thinking.Levels, testCase.wantLevels) {
+				t.Errorf("Levels = %v, want %v", info.Thinking.Levels, testCase.wantLevels)
+			}
+			if info.Thinking.ZeroAllowed != testCase.wantZero {
+				t.Errorf("ZeroAllowed = %v, want %v", info.Thinking.ZeroAllowed, testCase.wantZero)
+			}
+		})
+	}
+}
+
+// TestThinkingGmodelCannotBeTurnedOff is the trap quoted at
+// `qoder-product.ts:539`: `gmodel` has effort tiers with no `disabled` branch, so
+// offering "off" would send a request the model cannot honour.
+func TestThinkingGmodelCannotBeTurnedOff(t *testing.T) {
+	for _, region := range []Region{RegionCN, RegionGlobal} {
+		model, known := catalogModelFor(productByID(string(region)), "gmodel")
+		if !known {
+			t.Fatalf("gmodel is missing from the %s catalog", region)
+		}
+		info := modelInfoFor(model, ts(12, 0))
+		if info.Thinking == nil {
+			t.Fatalf("%s/gmodel declared no thinking support at all", region)
+		}
+		if info.Thinking.ZeroAllowed {
+			t.Errorf("%s/gmodel ZeroAllowed = true, want false (no `disabled` branch upstream)", region)
+		}
+		if slices.Contains(info.Thinking.Levels, "none") {
+			t.Errorf("%s/gmodel Levels = %v, must not offer `none`", region, info.Thinking.Levels)
+		}
 	}
 }

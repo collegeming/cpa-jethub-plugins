@@ -126,6 +126,14 @@ plugins:
     raccoon:
       enabled: true
       model_prefix: false
+    zcode:
+      enabled: true
+      model_prefix: false
+      app_version: "3.14.4"       # 官方客户端版本；推理无需 captcha
+    minimax:
+      enabled: true
+      model_prefix: false
+      region: cn                  # 当前只接入中国版
     trae:
       enabled: true
       model_prefix: false
@@ -148,6 +156,8 @@ plugins:
 | loomy | 浏览器登录 | `/v0/resource/plugins/loomy/login` |
 | qoder | 设备码（PKCE） | `/v0/resource/plugins/qoder/login` |
 | raccoon | 浏览器登录 | `/v0/resource/plugins/raccoon/login` |
+| zcode | CLI 授权 URL + 轮询（可导入官方客户端登录态） | `/v0/resource/plugins/zcode/login` |
+| minimax | OAuth 设备码 + PKCE（登录/续期协议已按官方客户端实现，尚待真实账号验证） | `/v0/resource/plugins/minimax/login` |
 | trae | 回调端口登录 | `/v0/resource/plugins/trae/login` |
 
 在浏览器中打开管理面板（CPAMP），进入「插件管理」→ 对应渠道 → 「登录」，按页面提示完成授权。

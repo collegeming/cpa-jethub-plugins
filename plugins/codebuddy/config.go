@@ -86,8 +86,18 @@ const (
 	LoginTimeoutMS = 5 * 60 * 1000
 	// PollIntervalMS is the upstream polling cadence. buddy.ts:46.
 	PollIntervalMS = 1000
-	// StateRequestTimeoutMS bounds POST auth/state. buddy.ts:48.
-	StateRequestTimeoutMS = 5000
+	// StateRequestTimeoutMS is the upstream deadline for POST auth/state.
+	// buddy.ts:60 (10_000).
+	//
+	// ⚠️ 上游原为 5 秒（对齐 IDE 的 timeout:5e3），实测**不够**：Jet Hub 对
+	// WorkBuddy（国际版）点「+ 新建账号」时该请求发往 www.workbuddy.ai，连测 6 次
+	// 稳定耗时 5860–7525 ms，即每一次都会撞上 5 秒超时，用户侧表现为「无法获取
+	// WorkBuddy (国际版) 登录地址」。放宽到 10 秒后覆盖上述区间并留出余量。
+	//
+	// ⚠️ 本插件**自己不施加**这个截止时间：CPA 宿主传输层是同步的、没有
+	// per-request deadline，真实超时由宿主传输层决定（见 oauth.go 的 doJSON 注释）。
+	// 这里只保留常量与上游同值，避免与上游口径漂移。
+	StateRequestTimeoutMS = 10000
 	// RequestTimeoutMS bounds the remaining control-plane calls. buddy.ts:50.
 	RequestTimeoutMS = 60000
 )

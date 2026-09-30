@@ -17,6 +17,8 @@ dist/
 /qoder
 /raccoon
 /trae
+/zcode
+/minimax
 
 # release packaging output
 release/

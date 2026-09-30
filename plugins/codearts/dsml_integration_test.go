@@ -7,7 +7,7 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // dsmlExampleBlock is the literal shape the system prompt teaches, using the

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Remote model catalog parsing and the model-facing handlers. Everything here
@@ -348,9 +348,29 @@ func parseTraeConfigEntry(entry map[string]any, channel string, nowSec int64) (r
 }
 
 // ParseBatchModelList parses a `batch_get_detail_param` response
-// (trae.ts:1050-1086). Later channels overwrite earlier ones for the same
-// config_name because they tend to carry the fuller configuration, and the three
-// hard filters are applied while merging:
+// (trae.ts:1191-1258). The merge rule for a `config_name` seen in several
+// channels used to be an unconditional "later wins", justified by the claim that
+// later entries carry the fuller configuration. That claim is the REVERSE of the
+// measured data — the reference lists the EMPTY-effort channels
+// (`solo_work_lite`, `solo_design_remote`) LAST — so the rule erased levels that
+// another channel had correctly declared (upstream 47a7447, issue IKI7WT/IKILR7:
+// 13 models silently lost `reasoning_effort_config` and the thinking selector
+// disappeared). The three rules are now:
+//
+//  1. an entry that declares NO reasoning options must never overwrite one that
+//     does;
+//  2. when both declare options, the entry from the higher-priority channel wins,
+//     where priority is the channel's index in `DefaultChannels` (lower = higher);
+//  3. otherwise last wins, which keeps the channels of every model without
+//     levels byte-for-byte unchanged.
+//
+// The predicate is [declaresReasoningOptions], which is exactly the condition the
+// host-facing descriptor below uses to emit a `Thinking` block, so a whole entry
+// is preferred rather than its `reasoning_effort_config` being copied onto another
+// channel's entry — announcing levels on a channel that itself says
+// `support_thinking:false` is precisely what must not happen.
+//
+// The three hard filters are applied while merging:
 //
 //  1. `usage` must be `chat_completion` (the batch table also lists summary /
 //     multimodal / custom entries);
@@ -370,8 +390,27 @@ func ParseBatchModelList(body []byte, nowSec int64) []remoteModel {
 		return nil
 	}
 
+	// Channel priority for rule 2. `DefaultChannels` is ordered by priority
+	// ("order IS the priority", trae-product.ts:256-268); a channel it does not
+	// list ranks lowest.
+	priority := splitList(DefaultChannels)
+	rankOf := func(channel string) int {
+		if channel == "" {
+			return maxChannelRank
+		}
+		for index, candidate := range priority {
+			if candidate == channel {
+				return index
+			}
+		}
+		return maxChannelRank
+	}
+
 	order := []string{}
 	byID := map[string]remoteModel{}
+	// chosenRank is the `DefaultChannels` index of the entry that won, per model
+	// id; it is what makes rule 2 a plain comparison.
+	chosenRank := map[string]int{}
 	for _, rawGroup := range groups {
 		group, ok := asMap(rawGroup)
 		if !ok {
@@ -403,10 +442,30 @@ func ParseBatchModelList(body []byte, nowSec int64) []remoteModel {
 			if model.IsHidden != nil && *model.IsHidden {
 				continue
 			}
-			if _, exists := byID[model.ID]; !exists {
+			incumbent, present := byID[model.ID]
+			if !present {
 				order = append(order, model.ID)
+				byID[model.ID] = model
+				chosenRank[model.ID] = rankOf(model.Channel)
+				continue
 			}
+			incumbentLevels := declaresReasoningOptions(incumbent)
+			candidateLevels := declaresReasoningOptions(model)
+			// Rule 1: an empty-effort entry never overwrites one with levels.
+			if incumbentLevels && !candidateLevels {
+				continue
+			}
+			// Rule 2: both declare levels, so the higher-priority channel wins.
+			// An incumbent outside the priority list (MAX) imposes no limit,
+			// which falls through to rule 3 rather than inventing an ordering.
+			if incumbentLevels && candidateLevels {
+				if current := chosenRank[model.ID]; current != maxChannelRank && rankOf(model.Channel) >= current {
+					continue
+				}
+			}
+			// Rule 3: everything else keeps the historical "later wins".
 			byID[model.ID] = model
+			chosenRank[model.ID] = rankOf(model.Channel)
 		}
 	}
 
@@ -554,16 +613,39 @@ func modelInfoForRemote(model remoteModel, cfg Config) pluginapi.ModelInfo {
 		SupportedInputModalities:   modalities,
 		SupportedOutputModalities:  []string{"text"},
 	}
-	if model.Reasoning != nil && len(model.Reasoning.Options) > 0 {
-		// `support_thinking === false` means "do not offer a level that does
-		// nothing" (trae-adapter.ts:606-611). The reference also picks the
-		// strongest level as the default; CPA's ThinkingSupport has no default
-		// field, so only the level list is declared here.
-		if model.Reasoning.SupportThinking == nil || *model.Reasoning.SupportThinking {
-			info.Thinking = &pluginapi.ThinkingSupport{Levels: model.Reasoning.Options}
-		}
+	if declaresReasoningOptions(model) {
+		// CPA's `ThinkingSupport` has no default field, so the reference's
+		// `defaultEffort` choice (and the `default_level` it now honours) cannot
+		// be declared here — only the level list is.
+		info.Thinking = &pluginapi.ThinkingSupport{Levels: model.Reasoning.Options}
 	}
 	return info
+}
+
+// maxChannelRank marks a channel that `DefaultChannels` does not list. Such a
+// channel ranks below every listed one, which is what makes it impose no
+// ordering constraint when it is the incumbent (see rule 2 of
+// [ParseBatchModelList]).
+const maxChannelRank = int(^uint(0) >> 1)
+
+// declaresReasoningOptions reports whether an entry can really declare thinking
+// levels (trae.ts:1268-1274).
+//
+// The predicate must stay identical to the condition the host-facing descriptor
+// uses (and to the reference's `TraeAdapter.reasoningFor`): the config exists
+// **and** does not say `support_thinking:false` **and** carries a non-empty
+// option list. Testing "the config exists" alone is not enough —
+// `{support_thinking:false, options:['high']}` has a config yet still yields no
+// declared levels, so preferring such an entry would merge wrongly and leave the
+// UI exactly as broken.
+func declaresReasoningOptions(model remoteModel) bool {
+	if model.Reasoning == nil {
+		return false
+	}
+	if model.Reasoning.SupportThinking != nil && !*model.Reasoning.SupportThinking {
+		return false
+	}
+	return len(model.Reasoning.Options) > 0
 }
 
 // staticModelInfos renders the product-level fallback catalog. Hidden entries are

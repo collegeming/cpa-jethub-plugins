@@ -73,12 +73,39 @@ type catalogModel struct {
 	Key string
 	// Display is the catalog `display_name`.
 	Display string
-	// ContextWindow is the catalog `max_input_tokens` (`qoder-product.ts:258`).
+	// ContextWindow is the TOTAL context window DSH compresses against (it uses
+	// `contextWindow × 0.8`), taken from the catalog's `context_config` TIER
+	// TABLE — the maximum tier — and NOT from `max_input_tokens`
+	// (`qoder-product.ts:38-45`).
+	//
+	// ⚠️ The two catalog fields contradict each other and only the tier table is
+	// authoritative: `isContextWindowSupportedByModel()` converts the value and
+	// hands it to `zX()`, which checks MEMBERSHIP in the tier table and never
+	// executes its `max_input_tokens` branch (`t <= n`) when that table exists
+	// (asar evidence quoted at `qoder-product.ts:485-493`). CN `dmodel` publishes
+	// `max_input_tokens: 96000` while its table reaches 1M, and it does accept
+	// ~853K in practice — filling in the reported number makes DSH compress far
+	// earlier than the official client does (upstream `db5af3c`).
+	//
+	// Upstream rule, confirmed per model by measurement (upstream `db5af3c`):
+	// every real model gets 1M because its tier table contains a 1M tier; `auto`
+	// has no tier table and stays at 200K (CN `mmodel`'s table holds 200K alone).
 	ContextWindow int64
 	// SupportsImage is the catalog `is_vl` (`qoder-product.ts:259`).
 	SupportsImage bool
 	// SupportsThinking is the catalog `is_reasoning` (`qoder-product.ts:260`).
 	SupportsThinking bool
+	// ThinkingDisableAllowed mirrors `QoderFallbackModel.supportsDisable`
+	// (`qoder-product.ts:128-136`): the catalog carries a
+	// `thinking_config.disabled` branch, i.e. the user may turn thinking OFF.
+	//
+	// ⚠️ It is an INDEPENDENT dimension from Efforts, not a synonym for "no
+	// efforts". `gmodel` / `gfmodel` / `kmodel*` publish effort tiers with NO
+	// `disabled` branch (so they cannot be switched off), while CN `qmodel` /
+	// `qmodel_latest` publish no efforts at all yet CAN be switched off.
+	// Upstream appends `none` for the latter (`qoder-adapter.ts:156-159`,
+	// `gU()`), which is why the two flags must stay separate.
+	ThinkingDisableAllowed bool
 	// IsFree is the catalog `is_free` (`qoder-product.ts:261`).
 	IsFree bool
 	// PriceFactor is the catalog `price_factor` (`qoder-product.ts:64`).
@@ -172,36 +199,53 @@ var qoderCN = product{
 // qoderCNModelCatalog is the CN catalog: 14 entries. The CN endpoint does not
 // serve five international entries (ultimate/performance/efficient/smodel/
 // cmodel) and adds two of its own (q37fmodel/gm51model); `mmodel` is
-// MiniMax-M2.7 here. Context windows and price factors are calibrated against
-// the live catalog once the first credential logs in — the international
-// numbers are kept as placeholders where the reference has not measured CN.
+// MiniMax-M2.7 here. Every value below is read from
+// `QODER_CN_FALLBACK_MODELS` (`qoder-product.ts:480-560`), measured against a
+// live catalog on 2026-09-27.
+//
+// ⚠️ `ContextWindow` follows the tier-table rule documented on the field: all
+// entries are 1M except `auto` (no tier table) and `mmodel` (its tier table
+// holds the 200K tier alone). See upstream `db5af3c`.
+//
+// ⚠️ Thinking is declared from `Efforts` PLUS `ThinkingDisableAllowed`
+// (`qoder-product.ts:508-512`): `qmodel` / `qmodel_latest` publish no effort
+// list but do carry a `disabled` branch, so "turn thinking off" is the only
+// option they offer.
 var qoderCNModelCatalog = []catalogModel{
 	{Key: "auto", Display: "Auto", ContextWindow: 200_000, SupportsImage: true, PriceFactor: float64Ptr(0.5)},
-	{Key: "qmodel_38max", Display: "Qwen3.8-Max", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
-		PriceFactor: float64Ptr(0.2), Efforts: []string{"xhigh", "low", "medium"}},
-	{Key: "qfmodel", Display: "Qwen3.8-Flash", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
-		PriceFactor: float64Ptr(0), Efforts: []string{"xhigh", "low", "medium"}},
-	{Key: "q37fmodel", Display: "Qwen3.7-Flash", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
+	{Key: "qmodel_38max", Display: "Qwen3.8-Max", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
+		PriceFactor: float64Ptr(0.2), Efforts: []string{"xhigh", "low", "medium"}, ThinkingDisableAllowed: true},
+	{Key: "qfmodel", Display: "Qwen3.8-Flash", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
+		PriceFactor: float64Ptr(0), Efforts: []string{"xhigh", "low", "medium"}, ThinkingDisableAllowed: true},
+	{Key: "q37fmodel", Display: "Qwen3.7-Flash", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		PriceFactor: float64Ptr(0.1)},
-	{Key: "qmodel_latest", Display: "Qwen3.7-Max", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: false,
-		PriceFactor: float64Ptr(0.1)},
-	{Key: "qmodel", Display: "Qwen3.7-Plus", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: false,
-		PriceFactor: float64Ptr(0.04)},
-	{Key: "kmodel_latest", Display: "Kimi-K3", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: false,
+	// ⚠️ No `efforts` but yes `supportsDisable`: "turn thinking off" is the only
+	// option the catalog offers (`qoder-product.ts:525-535`). Declaring nothing
+	// at all would remove the selector entirely.
+	{Key: "qmodel_latest", Display: "Qwen3.7-Max", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
+		PriceFactor: float64Ptr(0.1), ThinkingDisableAllowed: true},
+	{Key: "qmodel", Display: "Qwen3.7-Plus", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
+		PriceFactor: float64Ptr(0.04), ThinkingDisableAllowed: true},
+	{Key: "kmodel_latest", Display: "Kimi-K3", ContextWindow: 1_000_000, SupportsImage: true,
 		PriceFactor: float64Ptr(1.4), Efforts: []string{"high", "low", "max"}},
-	{Key: "kmodel", Display: "Kimi-K2.8-Preview", ContextWindow: 200_000, SupportsImage: true, SupportsThinking: false,
+	{Key: "kmodel", Display: "Kimi-K2.8-Preview", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		PriceFactor: float64Ptr(0.8), Efforts: []string{"high", "low", "max"}},
-	{Key: "gmodel", Display: "GLM-5.3", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
+	// ⚠️ `gmodel` / `gfmodel` have effort tiers with NO `disabled` branch, so
+	// `ThinkingDisableAllowed` must stay false: offering "off" would send a
+	// request the model cannot honour (`qoder-product.ts:539`).
+	{Key: "gmodel", Display: "GLM-5.3", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		PriceFactor: float64Ptr(0.8), Efforts: []string{"high", "low", "max"}},
 	{Key: "gfmodel", Display: "GLM-5.3-Flash", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		PriceFactor: float64Ptr(0.1), Efforts: []string{"high", "max"}},
-	{Key: "gm51model", Display: "GLM-5.2", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
-		PriceFactor: float64Ptr(0.8)},
-	{Key: "dmodel", Display: "DeepSeek-V4-Pro", ContextWindow: 96_000, SupportsImage: true, SupportsThinking: true,
-		PriceFactor: float64Ptr(2), Efforts: []string{"high", "max"}},
-	{Key: "dfmodel", Display: "DeepSeek-Flash", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
-		PriceFactor: float64Ptr(0.5), Efforts: []string{"high", "max", "low"}},
-	{Key: "mmodel", Display: "MiniMax-M2.7", ContextWindow: 180_000, SupportsImage: false, SupportsThinking: false,
+	{Key: "gm51model", Display: "GLM-5.2", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
+		PriceFactor: float64Ptr(0.8), Efforts: []string{"high", "max"}, ThinkingDisableAllowed: true},
+	{Key: "dmodel", Display: "DeepSeek-V4-Pro", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
+		PriceFactor: float64Ptr(2), Efforts: []string{"high", "max"}, ThinkingDisableAllowed: true},
+	{Key: "dfmodel", Display: "DeepSeek-Flash", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
+		PriceFactor: float64Ptr(0.5), Efforts: []string{"high", "max", "low"}, ThinkingDisableAllowed: true},
+	// ⚠️ MiniMax-M2.7 here (M3 internationally) and `is_vl` is false. The only
+	// CN entry whose tier table stops at 200K — do not raise it to 1M.
+	{Key: "mmodel", Display: "MiniMax-M2.7", ContextWindow: 200_000, SupportsImage: false, SupportsThinking: false,
 		PriceFactor: float64Ptr(0.2)},
 }
 
@@ -228,59 +272,70 @@ func productByID(id string) *product {
 	return &qoderGlobal
 }
 
-// qoderModelCatalog is `QODER_FALLBACK_MODELS` (`qoder-product.ts:269-316`),
+// qoderModelCatalog is `QODER_FALLBACK_MODELS` (`qoder-product.ts:362-445`),
 // measured against a local `catalog-v6` on 2026-09-21. Field order below is
 // (key, display, context window, image, thinking, free, price factor, original
 // price factor, promotion, efforts).
 //
-// The comment at `qoder-product.ts:270-273` is the reason these numbers are
+// The comment at `qoder-product.ts:363-366` is the reason these numbers are
 // copied literally instead of rounded: an earlier table used estimates and was
 // wrong for 14 of 17 models.
+//
+// ⚠️ `ContextWindow` follows the tier-table rule documented on the field: 1M
+// for every entry whose tier table contains a 1M tier (`performance` is
+// {272K, 400K, 1M}, `efficient` defaults to 400K), 200K only for `auto`, which
+// has no tier table at all (`qoder-product.ts:370-390`).
 var qoderModelCatalog = []catalogModel{
 	{Key: "auto", Display: "Auto", ContextWindow: 200_000, SupportsImage: true, PriceFactor: float64Ptr(0.5)},
 	{Key: "ultimate", Display: "Ultimate", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
-		PriceFactor: float64Ptr(2), Efforts: []string{"xhigh", "high", "low", "max", "medium"}},
+		PriceFactor: float64Ptr(2), Efforts: []string{"xhigh", "high", "low", "max", "medium"}, ThinkingDisableAllowed: true},
 	// `is_reasoning:false` while `thinking_config.enabled` is set: the upstream
 	// does offer effort levels, so efforts stay while isReasoning follows
-	// `is_reasoning` (`qoder-product.ts:278-280`).
+	// `is_reasoning` (`qoder-product.ts:391-397`).
 	{Key: "performance", Display: "Performance", ContextWindow: 1_000_000, SupportsImage: true,
-		PriceFactor: float64Ptr(1.1), Efforts: []string{"xhigh", "high", "low", "max", "medium"}},
-	{Key: "efficient", Display: "Efficient", ContextWindow: 200_000, SupportsImage: true, PriceFactor: float64Ptr(0.3)},
-	{Key: "smodel", Display: "Sonus", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
+		PriceFactor: float64Ptr(1.1), Efforts: []string{"xhigh", "high", "low", "max", "medium"}, ThinkingDisableAllowed: true},
+	{Key: "efficient", Display: "Efficient", ContextWindow: 1_000_000, SupportsImage: true, PriceFactor: float64Ptr(0.3)},
+	// `smodel` / `cmodel` carry five tiers but no `disabled` branch, so they
+	// cannot be switched off (`qoder-product.ts:405`).
+	{Key: "smodel", Display: "Sonus", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		PriceFactor: float64Ptr(8), Efforts: []string{"xhigh", "high", "low", "max", "medium"}},
-	{Key: "cmodel", Display: "Cantus", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
+	{Key: "cmodel", Display: "Cantus", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		PriceFactor: float64Ptr(4), Efforts: []string{"xhigh", "high", "low", "max", "medium"}},
-	{Key: "qmodel_38max", Display: "Qwen3.8-Max", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
-		IsFree: true, PriceFactor: float64Ptr(0.2), Efforts: []string{"xhigh", "low", "medium"},
+	{Key: "qmodel_38max", Display: "Qwen3.8-Max", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
+		IsFree: true, PriceFactor: float64Ptr(0.2), Efforts: []string{"xhigh", "low", "medium"}, ThinkingDisableAllowed: true,
 		Promotion: &promotion{Active: true, DiscountFactor: float64Ptr(0.4), BeforePriceFactor: float64Ptr(0.5),
 			WindowStart: "22:00", WindowEnd: "08:00", BadgeZh: "错峰 4 折"}},
-	// `priceFactor: 0` is FREE, not a missing value (`qoder-product.ts:292-296`).
-	{Key: "qfmodel", Display: "Qwen3.8-Flash", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
+	// `priceFactor: 0` is FREE, not a missing value (`qoder-product.ts:413-417`).
+	{Key: "qfmodel", Display: "Qwen3.8-Flash", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		IsFree: true, PriceFactor: float64Ptr(0), OriginalPriceFactor: float64Ptr(0.1),
-		Efforts: []string{"xhigh", "low", "medium"}},
+		Efforts: []string{"xhigh", "low", "medium"}, ThinkingDisableAllowed: true},
+	// No `efforts` but `supportsDisable: true`: "turn thinking off" is the only
+	// option (`qoder-product.ts:418-430`).
 	{Key: "qmodel_latest", Display: "Qwen3.7-Max", ContextWindow: 1_000_000, SupportsImage: true,
-		PriceFactor: float64Ptr(0.1), OriginalPriceFactor: float64Ptr(0.5),
+		PriceFactor: float64Ptr(0.1), OriginalPriceFactor: float64Ptr(0.5), ThinkingDisableAllowed: true,
 		Promotion: &promotion{Active: true, DiscountFactor: float64Ptr(0.2), BeforePriceFactor: float64Ptr(0.5),
 			WindowStart: "22:00", WindowEnd: "08:00", BadgeZh: "错峰 2 折"}},
 	{Key: "qmodel", Display: "Qwen3.7-Plus", ContextWindow: 1_000_000, SupportsImage: true,
-		PriceFactor: float64Ptr(0.04),
+		PriceFactor: float64Ptr(0.04), ThinkingDisableAllowed: true,
 		Promotion: &promotion{Active: true, DiscountFactor: float64Ptr(0.4), BeforePriceFactor: float64Ptr(0.1),
 			WindowStart: "22:00", WindowEnd: "08:00", BadgeZh: "错峰 4 折"}},
-	{Key: "kmodel_latest", Display: "Kimi-K3", ContextWindow: 180_000, SupportsImage: true,
+	{Key: "kmodel_latest", Display: "Kimi-K3", ContextWindow: 1_000_000, SupportsImage: true,
 		PriceFactor: float64Ptr(1.4), Efforts: []string{"high", "low", "max"}},
-	// No `max_input_tokens` upstream; the default tier (200K) is used
-	// (`qoder-product.ts:308-310`).
-	{Key: "kmodel", Display: "Kimi-K2.8-Preview", ContextWindow: 200_000, SupportsImage: true,
+	// The catalog does NOT send `max_input_tokens` for this entry — itself
+	// evidence that the field is not authoritative. The old table fell back to
+	// the tier table's DEFAULT tier (200K) while the official client offers the
+	// MAXIMUM tier, 1M (`qoder-product.ts:426-431`).
+	{Key: "kmodel", Display: "Kimi-K2.8-Preview", ContextWindow: 1_000_000, SupportsImage: true,
 		PriceFactor: float64Ptr(0.8), Efforts: []string{"high", "low", "max"}},
-	{Key: "gmodel", Display: "GLM-5.3", ContextWindow: 180_000, SupportsImage: true, SupportsThinking: true,
+	{Key: "gmodel", Display: "GLM-5.3", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		PriceFactor: float64Ptr(0.8), Efforts: []string{"high", "low", "max"}},
 	{Key: "gfmodel", Display: "GLM-5.3-Flash", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
 		PriceFactor: float64Ptr(0.1), Efforts: []string{"high", "max"}},
 	{Key: "dmodel", Display: "DeepSeek-V4-Pro", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
-		PriceFactor: float64Ptr(0.5), Efforts: []string{"high", "max"}},
+		PriceFactor: float64Ptr(0.5), Efforts: []string{"high", "max"}, ThinkingDisableAllowed: true},
 	{Key: "dfmodel", Display: "DeepSeek-Flash", ContextWindow: 1_000_000, SupportsImage: true, SupportsThinking: true,
-		PriceFactor: float64Ptr(0.1), Efforts: []string{"high", "max", "low"}},
-	{Key: "mmodel", Display: "MiniMax-M3", ContextWindow: 180_000, SupportsImage: true, PriceFactor: float64Ptr(0.2)},
+		PriceFactor: float64Ptr(0.1), Efforts: []string{"high", "max", "low"}, ThinkingDisableAllowed: true},
+	{Key: "mmodel", Display: "MiniMax-M3", ContextWindow: 1_000_000, SupportsImage: true, PriceFactor: float64Ptr(0.2)},
 }
 
 // catalogModelFor looks a key up in the product catalog. The second result

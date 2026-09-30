@@ -9,7 +9,7 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Chat completions: request body construction, SSE consumption and the
@@ -66,8 +66,18 @@ func normaliseChatPayload(body []byte) []byte {
 	return encoded
 }
 
-// normaliseMessages drops orphan tool calls and orphan tool results, and applies
-// the assistant wire shape (`serializeMessages`, `openai-compat.ts:158-262`).
+// normaliseMessages drops orphan tool calls, orphan tool results and tool calls
+// whose function name is unusable, and applies the assistant wire shape
+// (`resolveToolPairing`, `sse.ts:100-155`).
+//
+// ⚠️ Two INDEPENDENT defect classes are filtered here, and both matter:
+//
+//   - a pairing gap (a call with no result, or a result with no call);
+//   - a call whose `function.name` is empty or missing. Measured on the wire:
+//     `"read"` and even `"unknown_tool"` answer 200 (the server checks only that
+//     the name is NON-EMPTY, not that the tool exists), while `""`, `null` and an
+//     absent name are rejected with HTTP 400 code 11133. Such a call is
+//     persisted into the session, so it poisons every later request.
 func normaliseMessages(messages []any) []any {
 	callIDs := map[string]struct{}{}
 	resultIDs := map[string]struct{}{}
@@ -79,6 +89,9 @@ func normaliseMessages(messages []any) []any {
 		switch stringValue(message["role"]) {
 		case "assistant":
 			for _, call := range toolCallsOf(message) {
+				if !hasUsableToolName(call) {
+					continue
+				}
 				if id := stringValue(call["id"]); id != "" {
 					callIDs[id] = struct{}{}
 				}
@@ -108,6 +121,11 @@ func normaliseMessages(messages []any) []any {
 					// an id-less call cannot be answered and is dropped.
 					continue
 				}
+				if !hasUsableToolName(call) {
+					// A nameless call is rejected outright (HTTP 400 code
+					// 11133 even when its result is present), so it goes.
+					continue
+				}
 				if _, answered := resultIDs[id]; !answered {
 					continue
 				}
@@ -135,7 +153,8 @@ func normaliseMessages(messages []any) []any {
 				continue
 			}
 			if _, answered := callIDs[id]; !answered {
-				// Orphan tool RESULT: its call is gone, so the pair is invalid.
+				// Orphan tool RESULT — including one whose call was dropped for
+				// having no usable name: its pair is gone, so it must go too.
 				continue
 			}
 			out = append(out, message)
@@ -165,6 +184,31 @@ func toolCallsOf(message map[string]any) []map[string]any {
 		}
 	}
 	return out
+}
+
+// hasUsableToolName reports whether a tool call carries a name the upstream will
+// accept (`hasUsableToolName`, `sse.ts:73-82`, upstream `a391dcc`).
+//
+// ⚠️ The predicate must land on the RAW value and is deliberately NOT
+// `String(name).length > 0`: `undefined` and `null` stringify to the non-empty
+// literals `"undefined"` / `"null"`, so a missing name would be read as a
+// present one and the request would still be rejected. The measured wire table
+// is `"read"` → 200, `"unknown_tool"` → 200 (the server validates non-emptiness,
+// not existence), `""` / `null` / absent → HTTP 400 code 11133.
+//
+// A JSON string that happens to spell `"undefined"` or `"null"` is therefore
+// still a usable name here — matching the reference's judgement, which the
+// non-string branch below is what actually rejects.
+func hasUsableToolName(call map[string]any) bool {
+	function, okFunction := call["function"].(map[string]any)
+	if !okFunction {
+		return false
+	}
+	name, okName := function["name"].(string)
+	if !okName {
+		return false
+	}
+	return strings.TrimSpace(name) != ""
 }
 
 // isBlankContent reports whether a `content` value carries no text.

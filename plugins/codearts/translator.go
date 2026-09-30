@@ -24,6 +24,47 @@ var ErrCredentialRejected = errors.New("codearts: credential rejected")
 // stream rather than as an HTTP status.
 const ErrQueueErrorCode = "81111"
 
+// ThinkingOffLevel is the declared level that disables thinking.
+const ThinkingOffLevel = "off"
+
+// codeartsThinking is the gateway's thinking switch (`llm-adapter.ts:938`).
+type codeartsThinking struct {
+	Type string `json:"type"`
+}
+
+// codeartsBody is the outgoing wire body: the shared OpenAI-shaped request plus
+// the one field only this gateway understands.
+//
+// The shared `openai.Request` is deliberately not extended with `thinking`,
+// because that is not an OpenAI Chat Completions field and every sibling plugin
+// decoding the same struct would inherit it. Embedding keeps the request fields
+// at their usual JSON positions.
+type codeartsBody struct {
+	*openai.Request
+	// Thinking is the TOP-LEVEL switch, not the `extra_body.thinking` dialect
+	// other gateways use: mixing the two is silently ineffective
+	// (`llm-adapter.ts:931-938`).
+	Thinking *codeartsThinking `json:"thinking,omitempty"`
+}
+
+// thinkingOffLevels are the inbound effort spellings that mean "do not think".
+//
+// `off` is the level this plugin declares (`models.go` thinkingLevels); `none`
+// and `disabled` are accepted too, because a client that speaks plain OpenAI
+// spells the same intent that way and `reasoning_effort` itself is inert on
+// this gateway — only the top-level switch has any effect. No other spelling is
+// mapped: a low/high/max ladder would be three fake levels.
+var thinkingOffLevels = map[string]bool{
+	ThinkingOffLevel: true,
+	"none":           true,
+	"disabled":       true,
+}
+
+// thinkingDisabled reports whether an inbound effort asks for no thinking.
+func thinkingDisabled(effort string) bool {
+	return thinkingOffLevels[strings.ToLower(strings.TrimSpace(effort))]
+}
+
 // isDeepseekV4 reports whether the model uses the DSML tool-call dialect.
 func isDeepseekV4(model string) bool {
 	return model == "deepseek-v4-flash" || model == "deepseek-v4-pro"
@@ -107,7 +148,26 @@ func prepareRequestBody(payload []byte, model string, cfg Config, sessionID stri
 			request.Tools = nil
 		}
 	}
-	encoded, errMarshal := json.Marshal(request)
+
+	// 思考开关（`llm-adapter.ts:936-938`）：本网关**唯一**真正生效的思考控制是
+	// 顶层 `thinking.type`，`reasoning_effort`（含 low/high/none/minimal）与嵌套
+	// `reasoning.effort` 都被服务端接受但完全无效果（判据是服务端上报的
+	// reasoning_tokens，落在基线噪声内）。故只有「关闭」需要下发：
+	// `{type:'disabled'}` 实测让 reasoning_tokens 3/3 归零且正文仍正确；
+	// 「开启」**不发**该字段 —— `{type:'enabled'}` 与服务端默认（默认就开着）
+	// 完全等价，发了只是噪声。
+	//
+	// 档位来源是**客户端请求体**：宿主把客户端原始 body 原样放进
+	// `ExecutorRequest.Payload`（`pluginhost/adapters_executors.go` 的
+	// `buildExecutorRequest`），且 DSH 走 OpenAI 兼容路径时发的正是顶层
+	// `reasoning_effort`（`pi-ai/dist/api/openai-completions.js`），因此
+	// `openai.Request.ReasoningEffort` 就是客户端选择的档位，无需插件配置兜底。
+	body := codeartsBody{Request: request}
+	if thinkingDisabled(request.ReasoningEffort) {
+		body.Thinking = &codeartsThinking{Type: "disabled"}
+	}
+
+	encoded, errMarshal := json.Marshal(body)
 	if errMarshal != nil {
 		return nil, nil, abiboot.Errorf("encode_request", "encode CodeArts chat request: %v", errMarshal)
 	}
@@ -305,6 +365,16 @@ func aggregateCompletion(chunks []openai.Chunk, model string) openai.Completion 
 				existing, ok := toolCalls[index]
 				if !ok {
 					copied := call
+					// The last line of defence, ported from upstream's
+					// block-end (`llm-adapter.ts:1678-1681`, `block.callId ||
+					// \`call_${index}\``): an empty id must never reach the
+					// client, because it permanently bricks the session. On the
+					// normal path the id was already resolved by
+					// applyToolCallIDFallback (streaming) or by the DSML parser,
+					// so this only fires for a call that arrived with no id.
+					if copied.ID == "" {
+						copied.ID = fallbackToolCallID(index)
+					}
 					toolCalls[index] = &copied
 					continue
 				}

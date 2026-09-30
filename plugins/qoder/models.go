@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // defaultMaxOutputTokens is the per-response cap advertised to the host. The
@@ -109,6 +110,33 @@ func roundTo(value float64, decimals int) float64 {
 	return math.Round(value*scale) / scale
 }
 
+// thinkingLevelsFor is `qoderEffortsFor` (`qoder-adapter.ts:156-159`).
+//
+// The three rules, all read off the catalog rather than guessed:
+//
+//  1. `Levels` is the `thinking_config.enabled.efforts` key list, in catalog
+//     order (the official client renders object key order too);
+//  2. a `thinking_config.disabled` branch (`ThinkingDisableAllowed`) ADDS
+//     `none` — the client's `gU()` does exactly
+//     `… || e.includes('none') ? e : [...e, 'none']`;
+//  3. an entry with neither yields no levels at all, and the caller then does
+//     not declare `reasoning` (the UI shows "no reasoning levels for this
+//     model", matching the IDE's "unsupported").
+//
+// ⚠️ The two dimensions are INDEPENDENT, and this function deliberately does
+// not consult `SupportsThinking`: CN `qmodel` / `qmodel_latest` publish NO
+// effort list but DO publish `disabled`, so "turn thinking off" is the only
+// option they offer (upstream `c94c3fa`; the user confirmed "上面两个没有思考
+// 档位就是关闭的意思"). Conversely `gmodel` / `gfmodel` / `kmodel*` publish
+// effort tiers with no `disabled` branch and must NOT gain `none`.
+func thinkingLevelsFor(model catalogModel) []string {
+	levels := append([]string(nil), model.Efforts...)
+	if model.ThinkingDisableAllowed && !slices.Contains(levels, "none") {
+		levels = append(levels, "none")
+	}
+	return levels
+}
+
 // modelInfoFor builds the host-facing descriptor for one catalog entry.
 func modelInfoFor(model catalogModel, now time.Time) pluginapi.ModelInfo {
 	modalities := []string{"text"}
@@ -132,11 +160,20 @@ func modelInfoFor(model catalogModel, now time.Time) pluginapi.ModelInfo {
 		SupportedInputModalities:   modalities,
 		SupportedOutputModalities:  []string{"text"},
 	}
-	// Effort levels come straight from `thinking_config.enabled.efforts`
-	// (`qoder-product.ts:89-90`, `:280`). Min/Max are not published, so they are
-	// left unset instead of guessed.
-	if model.SupportsThinking && len(model.Efforts) > 0 {
-		info.Thinking = &pluginapi.ThinkingSupport{Levels: append([]string(nil), model.Efforts...)}
+	// Thinking comes straight from the catalog (see thinkingLevelsFor). A model
+	// with neither effort tiers nor a `disabled` branch gets NO block at all,
+	// which is what the host renders as "no reasoning levels".
+	//
+	// ⚠️ The host's ThinkingSupport has no default-effort field, so an upstream
+	// `defaultEffort` cannot be forwarded; only the level list and the
+	// "off is allowed" flag are declared. `plugins/trae/models.go:557-564`
+	// records the same host limitation. Min/Max are not published by the
+	// catalog either, so they stay unset instead of being guessed.
+	if levels := thinkingLevelsFor(model); len(levels) > 0 || model.ThinkingDisableAllowed {
+		info.Thinking = &pluginapi.ThinkingSupport{
+			Levels:      levels,
+			ZeroAllowed: model.ThinkingDisableAllowed,
+		}
 	}
 	return info
 }

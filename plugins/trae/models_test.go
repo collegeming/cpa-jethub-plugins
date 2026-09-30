@@ -5,12 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // batchBody builds a `batch_get_detail_param` response with two channels. The
-// same config_name appears in both so the "later channel wins" rule is testable,
-// and the non-chat / disabled / hidden entries exercise the hard filters.
+// same config_name appears in both so the merge rules of
+// [TestParseBatchModelListReasoningMerge] are exercised on a realistic body, and
+// the non-chat / disabled / hidden entries exercise the hard filters.
 func batchBody() []byte {
 	return []byte(`{
 	  "function_configs": [
@@ -32,7 +33,6 @@ func batchBody() []byte {
 	            "multimodal": false,
 	            "is_custom_model": false
 	          },
-	          "reasoning_effort_config": {"default_level": "high", "options": ["light", "high", "extra_high"], "support_thinking": true},
 	          "display_contact_config": "{\"consumption_rate\":{\"enable\":true,\"data\":{\"rate\":0.08}}}"
 	        },
 	        {
@@ -107,8 +107,10 @@ func TestParseBatchModelList(t *testing.T) {
 	}
 
 	glm := byID["glm-5.1"]
-	// The later channel overwrites the earlier entry, which is how the fuller
-	// configuration survives (trae.ts:1079-1082).
+	// Only the later channel declares levels, so rule 3 ("later wins") decides and
+	// its fuller configuration (rate 0, live discount, multimodal) survives
+	// (trae.ts:1239-1258). The priority branch is covered separately by
+	// TestParseBatchModelListReasoningMerge.
 	if glm.Channel != "solo_agent_remote" {
 		t.Fatalf("channel = %q, want the later channel", glm.Channel)
 	}
@@ -152,6 +154,219 @@ func TestParseBatchModelListTolerantOfGarbage(t *testing.T) {
 	for _, body := range []string{"", "not json", "{}", `{"function_configs": 5}`, `{"function_configs":[{"function":"x"}]}`} {
 		if models := ParseBatchModelList([]byte(body), 0); len(models) != 0 {
 			t.Fatalf("body %q produced %#v", body, models)
+		}
+	}
+}
+
+// effortEntryJSON renders one channel entry that declares thinking levels.
+func effortEntryJSON(id string, options []string) string {
+	quoted := make([]string, 0, len(options))
+	for _, option := range options {
+		quoted = append(quoted, `"`+option+`"`)
+	}
+	return `{"config_name":"` + id + `","usage":"chat_completion","display_config":{"display_name":"` + id + `"},` +
+		`"reasoning_effort_config":{"default_level":"high","options":[` + strings.Join(quoted, ",") + `],"support_thinking":true}}`
+}
+
+// plainEntryJSON renders one channel entry with no reasoning config at all.
+func plainEntryJSON(id string) string {
+	return `{"config_name":"` + id + `","usage":"chat_completion","display_config":{"display_name":"` + id + `"}}`
+}
+
+// emptyEffortEntryJSON renders one channel entry that lists the model but
+// declares an EMPTY effort list with `support_thinking:false` — the shape the
+// reference publishes last for `solo_work_lite` / `solo_design_remote`.
+func emptyEffortEntryJSON(id string) string {
+	return `{"config_name":"` + id + `","usage":"chat_completion","display_config":{"display_name":"` + id + `"},` +
+		`"reasoning_effort_config":{"options":[],"support_thinking":false}}`
+}
+
+// batchJSON builds a batch_get_detail_param body from channel/entry pairs, in
+// the order given (which is the order upstream publishes).
+func batchJSON(channels ...any) []byte {
+	groups := make([]string, 0, len(channels)/2)
+	for index := 0; index+1 < len(channels); index += 2 {
+		entries := channels[index+1].([]string)
+		groups = append(groups, `{"function":"`+channels[index].(string)+`","config_info_list":[`+strings.Join(entries, ",")+`]}`)
+	}
+	return []byte(`{"function_configs":[` + strings.Join(groups, ",") + `]}`)
+}
+
+// TestParseBatchModelListReasoningMerge ports the three merging rules of
+// trae.ts:1191-1258 (upstream 47a7447, issue IKI7WT/IKILR7): an empty-effort
+// channel must never erase declared levels, two declaring channels are decided by
+// `DefaultChannels` priority, and everything else keeps "later wins".
+//
+// The first case is the regression: before the fix the last channel overwrote
+// the entry unconditionally, so `Reasoning.Options` became empty and the
+// host-facing `Thinking` block vanished for models that really do support
+// thinking (13 models were measured to lose their levels).
+func TestParseBatchModelListReasoningMerge(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        []byte
+		wantChannel string
+		wantOptions []string
+		// wantThinking asserts the host-facing declaration, which is what the
+		// user actually sees disappear.
+		wantThinking bool
+	}{
+		{
+			name: "a trailing empty-effort channel does not erase the levels",
+			body: batchJSON(
+				"chat_v3", []string{effortEntryJSON("deepseek-v4.1-flash", []string{"light", "high", "extra_high"})},
+				"solo_agent", []string{effortEntryJSON("deepseek-v4.1-flash", []string{"light", "high", "extra_high"})},
+				"solo_work_lite", []string{emptyEffortEntryJSON("deepseek-v4.1-flash")},
+			),
+			wantChannel:  "solo_agent",
+			wantOptions:  []string{"light", "high", "extra_high"},
+			wantThinking: true,
+		},
+		{
+			name: "a trailing entry with no reasoning config does not erase the levels",
+			body: batchJSON(
+				"solo_agent", []string{effortEntryJSON("glm-5.2", []string{"high", "extra_high"})},
+				"solo_design_remote", []string{plainEntryJSON("glm-5.2")},
+			),
+			wantChannel:  "solo_agent",
+			wantOptions:  []string{"high", "extra_high"},
+			wantThinking: true,
+		},
+		{
+			name: "both declare levels: the higher-priority channel wins over the later one",
+			body: batchJSON(
+				"solo_agent", []string{effortEntryJSON("glm-5.2", []string{"light", "high", "extra_high"})},
+				"solo_agent_remote", []string{effortEntryJSON("glm-5.2", []string{"high", "extra_high"})},
+			),
+			// `solo_agent` is first in `DefaultChannels`, so it wins even though it
+			// came first: plain "later wins" would have picked solo_agent_remote.
+			wantChannel:  "solo_agent",
+			wantOptions:  []string{"light", "high", "extra_high"},
+			wantThinking: true,
+		},
+		{
+			name: "priority beats order in the other direction too",
+			body: batchJSON(
+				"solo_agent_remote", []string{effortEntryJSON("glm-5.2", []string{"high", "extra_high"})},
+				"solo_agent", []string{effortEntryJSON("glm-5.2", []string{"light", "high", "extra_high"})},
+			),
+			wantChannel:  "solo_agent",
+			wantOptions:  []string{"light", "high", "extra_high"},
+			wantThinking: true,
+		},
+		{
+			name: "support_thinking:false is not a declaration, so it cannot overwrite one",
+			body: batchJSON(
+				"solo_agent", []string{effortEntryJSON("x", []string{"high", "extra_high"})},
+				"solo_work_lite", []string{`{"config_name":"x","usage":"chat_completion",` +
+					`"reasoning_effort_config":{"options":["high"],"support_thinking":false}}`},
+			),
+			wantChannel:  "solo_agent",
+			wantOptions:  []string{"high", "extra_high"},
+			wantThinking: true,
+		},
+		{
+			name: "neither declares levels: the later entry still wins",
+			body: batchJSON(
+				"solo_agent", []string{plainEntryJSON("glm-5.1")},
+				"solo_agent_remote", []string{plainEntryJSON("glm-5.1")},
+			),
+			wantChannel:  "solo_agent_remote",
+			wantThinking: false,
+		},
+		{
+			name: "an incumbent outside the priority table does not block a declaring candidate",
+			body: batchJSON(
+				"chat", []string{effortEntryJSON("x", []string{"high"})},
+				"solo_agent", []string{effortEntryJSON("x", []string{"light", "high", "extra_high"})},
+			),
+			wantChannel:  "solo_agent",
+			wantOptions:  []string{"light", "high", "extra_high"},
+			wantThinking: true,
+		},
+		{
+			name: "a realistic published ordering keeps the levels of every declaring model",
+			body: batchJSON(
+				"chat_v3", []string{effortEntryJSON("deepseek-v4.1-flash", []string{"light", "high", "extra_high"}), plainEntryJSON("glm-5.1")},
+				"solo_agent", []string{effortEntryJSON("deepseek-v4.1-flash", []string{"light", "high", "extra_high"})},
+				"solo_agent_remote", []string{effortEntryJSON("deepseek-v4.1-flash", []string{"light", "high", "extra_high"})},
+				"solo_agent_lite", []string{effortEntryJSON("deepseek-v4.1-flash", []string{"light", "high", "extra_high"})},
+				"solo_work_remote", []string{emptyEffortEntryJSON("deepseek-v4.1-flash")},
+				"solo_work_lite", []string{emptyEffortEntryJSON("deepseek-v4.1-flash")},
+			),
+			wantChannel:  "solo_agent",
+			wantOptions:  []string{"light", "high", "extra_high"},
+			wantThinking: true,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			models := ParseBatchModelList(testCase.body, 1000)
+			if len(models) == 0 {
+				t.Fatal("no model was kept")
+			}
+			model := models[0]
+			if model.Channel != testCase.wantChannel {
+				t.Fatalf("channel = %q, want %q", model.Channel, testCase.wantChannel)
+			}
+			got := []string(nil)
+			if model.Reasoning != nil {
+				got = model.Reasoning.Options
+			}
+			if strings.Join(got, ",") != strings.Join(testCase.wantOptions, ",") {
+				t.Fatalf("options = %#v, want %#v", got, testCase.wantOptions)
+			}
+			info := modelInfoForRemote(model, DefaultConfig())
+			if testCase.wantThinking {
+				if info.Thinking == nil || len(info.Thinking.Levels) == 0 {
+					t.Fatalf("Thinking = %#v, want the declared levels %#v", info.Thinking, testCase.wantOptions)
+				}
+				if strings.Join(info.Thinking.Levels, ",") != strings.Join(testCase.wantOptions, ",") {
+					t.Fatalf("Thinking.Levels = %#v, want %#v", info.Thinking.Levels, testCase.wantOptions)
+				}
+			} else if info.Thinking != nil {
+				t.Fatalf("Thinking = %#v, want none for a model without levels", info.Thinking)
+			}
+		})
+	}
+}
+
+// TestParseBatchModelListReasoningMergeRealisticFixture replays the published
+// ordering as a whole catalog: the declaring entries must survive for every model
+// the empty-effort channels also list, and a model the empty channels filter out
+// must stay filtered.
+func TestParseBatchModelListReasoningMergeRealisticFixture(t *testing.T) {
+	body := batchJSON(
+		"chat_v3", []string{effortEntryJSON("deepseek-v4.1-flash", []string{"light", "high", "extra_high"}), plainEntryJSON("glm-5.1")},
+		"solo_agent", []string{effortEntryJSON("deepseek-v4.1-flash", []string{"light", "high", "extra_high"})},
+		// The last channel both empties the levels AND hard-filters one entry.
+		"solo_work_lite", []string{
+			emptyEffortEntryJSON("deepseek-v4.1-flash"),
+			`{"config_name":"hidden-in-last-channel","usage":"chat_completion","is_invisible_to_user":true}`,
+		},
+	)
+	models := ParseBatchModelList(body, 1000)
+	byID := map[string]remoteModel{}
+	order := []string{}
+	for _, model := range models {
+		byID[model.ID] = model
+		order = append(order, model.ID)
+	}
+	if strings.Join(order, ",") != "deepseek-v4.1-flash,glm-5.1" {
+		t.Fatalf("order = %#v, want the declaring models in first-seen order", order)
+	}
+	if _, present := byID["hidden-in-last-channel"]; present {
+		t.Fatal("the three hard filters must still apply on every channel")
+	}
+	for id, model := range byID {
+		if id == "glm-5.1" {
+			continue
+		}
+		if model.Reasoning == nil || len(model.Reasoning.Options) != 3 {
+			t.Fatalf("%s lost its levels: %#v", id, model.Reasoning)
+		}
+		if model.Channel != "solo_agent" {
+			t.Fatalf("%s channel = %q, want solo_agent", id, model.Channel)
 		}
 	}
 }

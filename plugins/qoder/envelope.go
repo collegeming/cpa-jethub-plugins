@@ -59,23 +59,18 @@ func unwrapEnvelopePayload(payload string) (string, bool) {
 // `qoder-envelope.ts:106-121`: the inner body of a failed frame has no `choices`,
 // so it is turned into a standard error frame. This is the Go equivalent of the
 // `code`/`message` extraction plus the ` (code)` suffix.
+//
+// ⚠️ The extraction is RECURSIVE. The measured bodies nest the business code one
+// JSON-STRING layer down —
+// `{"code":403,"message":"{\"code\":\"10605\",…}"}` — and keeping only the
+// top-level `code` reports the transport status as if it were the cause, while
+// dropping the queue or quota code entirely (upstream `daf9fb1`, `2c1af59`).
 func envelopeErrorMessage(inner string) string {
-	var parsed struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+	// A plain text frame (`[FAIL]node:… msg:…`) has no layers to unwrap.
+	if parsed, ok := parseBusinessError(inner); ok {
+		return parsed.text()
 	}
-	message := inner
-	code := ""
-	if err := json.Unmarshal([]byte(inner), &parsed); err == nil {
-		if parsed.Message != "" {
-			message = parsed.Message
-		}
-		code = parsed.Code
-	}
-	if code != "" {
-		return message + " (" + code + ")"
-	}
-	return message
+	return strings.TrimSpace(inner)
 }
 
 // looksLikeChatFrame reports whether an inner payload is a normal chat frame.

@@ -114,8 +114,10 @@ type inferAsk struct {
 	ReasoningEffort string
 	// IsVL mirrors the catalog's `is_vl`.
 	IsVL *bool
-	// DisplayName / MaxInputTokens mirror the catalog's `display_name` and
-	// `max_input_tokens` (`qoder-wasm.ts:544-557`).
+	// DisplayName / MaxInputTokens mirror the catalog's `display_name` and the
+	// fallback entry's `contextWindow` — the TIER TABLE window, which is what
+	// upstream writes into the wire field `model_config.max_input_tokens`
+	// (`qoder-wasm.ts:311`, `:544-557`; upstream `db5af3c`).
 	DisplayName    string
 	MaxInputTokens int64
 	// Source / Format come from the catalog (`qoder-wasm.ts:141-142`).

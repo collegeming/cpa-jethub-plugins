@@ -30,7 +30,7 @@ import (
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authfile"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // toolResultImageText is the carrier text for images lifted out of tool
@@ -80,10 +80,37 @@ func normalizeToolArguments(raw string) string {
 	return trimmed
 }
 
-// resolveToolPairing implements sse.ts:91-123 over OpenAI-shaped messages: a
-// batch of tool_calls is kept only when every id has a matching tool result,
-// and tool results are kept only for kept calls. This is the last line of
-// defence against a session that replays an unpaired tool call forever.
+// hasUsableToolName reports whether a tool call carries a name the provider will
+// accept. sse.ts:81-83.
+//
+// ⚠️ 判据必须落在**原始值**上，不能用 `String(name).length > 0` 之类的等价写法：
+// `undefined` / `null` 经 String() 会变成 `"undefined"` / `"null"` 这类**非空**
+// 字符串，于是「缺名字」被误判成「有名字」，原样发给上游照样 400 code 11133。
+// 上游对 function.name 只校验非空、不校验存在性（实测 "unknown_tool" 返回 200）。
+func hasUsableToolName(name any) bool {
+	text, okText := name.(string)
+	return okText && strings.TrimSpace(text) != ""
+}
+
+// callNameFor reads `function.name` out of a tool call, tolerating a missing
+// function object or a JSON null (sse.ts:244-289 reads the block's `name`).
+func callNameFor(entry map[string]any) any {
+	function, _ := entry["function"].(map[string]any)
+	if function == nil {
+		return nil
+	}
+	return function["name"]
+}
+
+// resolveToolPairing implements sse.ts:244-289 over OpenAI-shaped messages: a
+// batch of tool_calls is kept only when every id has a matching tool result, and
+// tool results are kept only for kept calls. This is the last line of defence
+// against a session that replays an unpaired tool call forever.
+//
+// ⚠️ 名称不可用的调用**无论是否配对完整都必须剔除**（sse.ts:262-272）：它会让
+// 上游以 400 code 11133 拒绝整个请求，于是坏块一旦落进会话，整条会话每次都被
+// 拒 —— 剔除后已坏掉的会话无需重开即可自愈。同批其余合法调用按 id 各自匹配，
+// 不受牵连（线上真实形态就是「一个无名 + 一个合法 pwsh」）。
 func resolveToolPairing(messages []any) (map[string]bool, map[string]bool) {
 	allResultIDs := map[string]bool{}
 	for _, message := range messages {
@@ -112,12 +139,21 @@ func resolveToolPairing(messages []any) (map[string]bool, map[string]bool) {
 		if !okCalls || len(calls) == 0 {
 			continue
 		}
-		complete := true
+		usable := make([]map[string]any, 0, len(calls))
 		for _, call := range calls {
 			entry, okEntry := call.(map[string]any)
-			if !okEntry {
+			if !okEntry || !hasUsableToolName(callNameFor(entry)) {
 				continue
 			}
+			usable = append(usable, entry)
+		}
+		if len(usable) == 0 {
+			continue
+		}
+		// 一批里可用的那些只有**全部**拿到结果才能保留：部分保留会留下无结果的
+		// tool_call，后端照样拒绝（sse.ts:270-271）。
+		complete := true
+		for _, entry := range usable {
 			id, _ := entry["id"].(string)
 			if !allResultIDs[id] {
 				complete = false
@@ -127,11 +163,9 @@ func resolveToolPairing(messages []any) (map[string]bool, map[string]bool) {
 		if !complete {
 			continue
 		}
-		for _, call := range calls {
-			if entry, okEntry := call.(map[string]any); okEntry {
-				if id, okID := entry["id"].(string); okID {
-					keepCallIDs[id] = true
-				}
+		for _, entry := range usable {
+			if id, okID := entry["id"].(string); okID {
+				keepCallIDs[id] = true
 			}
 		}
 	}
@@ -209,6 +243,10 @@ func normalizeMessages(raw []any) []any {
 // normalizeAssistantMessage keeps the paired tool_calls, always emits
 // reasoning_content (buddy-adapter.ts:224-226, 286-292) and uses null content
 // when the text is empty but tool calls exist.
+//
+// 名称不可用的调用在此**再次**被丢弃（sse.ts:262-272）：resolveToolPairing 是
+// 第一道防线，这里是写出线上报文前的最后一道 —— 只要它漏过去，上游就以 400
+// code 11133 拒绝整个请求，用户侧表现为每次请求都失败。
 func normalizeAssistantMessage(record map[string]any, keepCallIDs map[string]bool) map[string]any {
 	output := map[string]any{"role": "assistant"}
 	content := record["content"]
@@ -227,6 +265,9 @@ func normalizeAssistantMessage(record map[string]any, keepCallIDs map[string]boo
 			}
 			function, _ := entry["function"].(map[string]any)
 			name, _ := function["name"].(string)
+			if !hasUsableToolName(callNameFor(entry)) {
+				continue
+			}
 			arguments := normalizeToolArguments(stringValue(function["arguments"]))
 			toolCalls = append(toolCalls, map[string]any{
 				"id":   id,
@@ -702,12 +743,8 @@ func collectChunks(body []byte) ([]chatChunk, error) {
 		if !ok {
 			continue
 		}
-		if detail, exceeded := chunkErrorPayload(&chunk); detail != "" {
-			if exceeded {
-				return nil, abiboot.HTTPError("CONTEXT_WINDOW_EXCEEDED", http.StatusBadRequest,
-					"CodeBuddy 上下文超限：%s", detail)
-			}
-			return nil, abiboot.HTTPError("SERVER", http.StatusBadGateway, "CodeBuddy: %s", detail)
+		if detail, kind := chunkErrorPayload(&chunk); detail != "" {
+			return nil, streamErrorEnvelope(kind, detail)
 		}
 		chunks = append(chunks, chunk)
 	}
@@ -754,12 +791,8 @@ func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, err
 		if parsed, ok := parseChunk(payload); ok {
 			// 上游把 400 塞进 HTTP 200 的 SSE 帧里（buddy-adapter.ts:1242-1255）；
 			// 必须中止并分类，否则压缩子系统收不到溢出信号。
-			if detail, exceeded := chunkErrorPayload(&parsed); detail != "" {
-				if exceeded {
-					return nil, abiboot.HTTPError("CONTEXT_WINDOW_EXCEEDED", http.StatusBadRequest,
-						"CodeBuddy 上下文超限：%s", detail)
-				}
-				return nil, abiboot.HTTPError("SERVER", http.StatusBadGateway, "CodeBuddy: %s", detail)
+			if detail, kind := chunkErrorPayload(&parsed); detail != "" {
+				return nil, streamErrorEnvelope(kind, detail)
 			}
 		}
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: sse.Payload(payload)})

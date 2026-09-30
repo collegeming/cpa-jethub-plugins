@@ -9,7 +9,7 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Cline account balance, ported from `src/cline-credits.ts`.
@@ -102,7 +102,7 @@ func fetchBalance(d doer, credential *Credential, cfg Config) (*balanceSnapshot,
 		if errParse != nil {
 			detail = errParse.Error()
 		}
-		return nil, upstreamStatusError("balance_status", response.StatusCode,
+		return nil, upstreamStatusError(response.Body, "balance_status", response.StatusCode,
 			"余额查询失败（HTTP %d）：%s%s", response.StatusCode, detail, credentialAdvice(response.StatusCode))
 	}
 	if errParse != nil {

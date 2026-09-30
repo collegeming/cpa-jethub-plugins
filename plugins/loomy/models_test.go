@@ -3,9 +3,10 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // The multiplier lives in the model NAME, in two bracket spellings plus the
@@ -184,6 +185,147 @@ func TestParseLoomyRemoteModels(t *testing.T) {
 	}
 }
 
+// TestParseLoomyReasoningEfforts: `reasoning_efforts` and
+// `default_reasoning_effort` are parsed defensively — blank / non-string entries
+// are dropped, duplicates collapse, and the remote ORDER is preserved because it
+// is the display order (`loomy-adapter.ts:129-142`).
+func TestParseLoomyReasoningEfforts(t *testing.T) {
+	body := []byte(`[
+	  {"id":"with-levels","type":"chat","name":"With Levels",
+	   "reasoning_efforts":["none","low","medium","high","xhigh"],
+	   "default_reasoning_effort":"low",
+	   "capabilities":{"input_modalities":["text"],"reasoning":true}},
+	  {"id":"messy","type":"chat","name":"Messy",
+	   "reasoning_efforts":["high","","  ","high","low",null,7],
+	   "default_reasoning_effort":""},
+	  {"id":"no-levels","type":"chat","name":"No Levels",
+	   "capabilities":{"input_modalities":["text"],"reasoning":true}},
+	  {"id":"empty-levels","type":"chat","name":"Empty Levels","reasoning_efforts":[]}
+	]`)
+	entries := parseLoomyRemoteModels(body)
+	if len(entries) != 4 {
+		t.Fatalf("kept %d entries, want 4", len(entries))
+	}
+	byID := map[string]modelDescriptor{}
+	for _, entry := range entries {
+		byID[entry.ID] = entry
+	}
+	if got := strings.Join(byID["with-levels"].Efforts, ","); got != "none,low,medium,high,xhigh" {
+		t.Fatalf("efforts = %q, want the remote order preserved", got)
+	}
+	if byID["with-levels"].DefaultEffort != "low" {
+		t.Fatalf("default effort = %q, want the remote low (parsed, not honoured)", byID["with-levels"].DefaultEffort)
+	}
+	// Blank entries are dropped and duplicates collapse, order otherwise intact.
+	if got := strings.Join(byID["messy"].Efforts, ","); got != "high,low" {
+		t.Fatalf("messy efforts = %q, want high,low", got)
+	}
+	if byID["messy"].DefaultEffort != "" {
+		t.Fatalf("blank default = %q, want empty", byID["messy"].DefaultEffort)
+	}
+	if len(byID["no-levels"].Efforts) != 0 || len(byID["empty-levels"].Efforts) != 0 {
+		t.Fatalf("a model publishing no levels must carry none: %#v %#v",
+			byID["no-levels"].Efforts, byID["empty-levels"].Efforts)
+	}
+}
+
+// TestFallbackCatalogueDeclaresEfforts: the bundled table carries the same
+// measured levels as the remote, so an offline catalogue still offers the
+// selector (`loomy-adapter.ts:181-186`).
+func TestFallbackCatalogueDeclaresEfforts(t *testing.T) {
+	want := "none,low,medium,high,xhigh"
+	for _, entry := range fallbackCatalogue {
+		if got := strings.Join(entry.Efforts, ","); got != want {
+			t.Errorf("%s efforts = %q, want %q", entry.ID, got, want)
+		}
+	}
+}
+
+// TestModelInfoDeclaresThinkingLevels is the host-facing regression: the DSH
+// thinking selector renders ONLY from the model metadata, so the levels must
+// appear on `Thinking.Levels` — publishing them in the remote catalogue alone is
+// not enough (`loomy-adapter.ts:316-351`).
+func TestModelInfoDeclaresThinkingLevels(t *testing.T) {
+	levels := []string{"none", "low", "medium", "high", "xhigh"}
+	cases := []struct {
+		name         string
+		descriptor   modelDescriptor
+		wantLevels   []string
+		wantThinking bool
+	}{
+		{
+			name:         "a model with levels declares them in order",
+			descriptor:   modelDescriptor{ID: "m", Name: "M", Efforts: levels, DefaultEffort: "low"},
+			wantLevels:   levels,
+			wantThinking: true,
+		},
+		{
+			name:         "the bundled fallback declares the same levels",
+			descriptor:   fallbackCatalogue[0],
+			wantLevels:   levels,
+			wantThinking: true,
+		},
+		{
+			name:         "a model with no levels declares nothing",
+			descriptor:   modelDescriptor{ID: "m", Name: "M"},
+			wantThinking: false,
+		},
+		{
+			name:         "an empty level list declares nothing",
+			descriptor:   modelDescriptor{ID: "m", Name: "M", Efforts: []string{}},
+			wantThinking: false,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			info := testCase.descriptor.info(time.Unix(1700000000, 0))
+			if !testCase.wantThinking {
+				if info.Thinking != nil {
+					t.Fatalf("Thinking = %#v, want none", info.Thinking)
+				}
+				return
+			}
+			if info.Thinking == nil {
+				t.Fatal("Thinking must be declared, or the selector never appears")
+			}
+			if got := strings.Join(info.Thinking.Levels, ","); got != strings.Join(testCase.wantLevels, ",") {
+				t.Fatalf("Thinking.Levels = %q, want %q", got, strings.Join(testCase.wantLevels, ","))
+			}
+		})
+	}
+}
+
+// TestModelForAuthDeclaresRemoteThinkingLevels runs the whole route: a `/models`
+// fixture carrying `reasoning_efforts` must reach the host as declared levels.
+func TestModelForAuthDeclaresRemoteThinkingLevels(t *testing.T) {
+	fake := newFakeHost()
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		return httpResponse(200, `[{"id":"MiniMax-M3","type":"chat","name":"MiniMax M3 （x4.0）","context_length":1048576,
+		  "reasoning_efforts":["none","low","medium","high","xhigh"],"default_reasoning_effort":"low",
+		  "capabilities":{"input_modalities":["text"],"reasoning":true}}]`), nil
+	}
+	fake.install(t)
+	cfg := DefaultConfig()
+	cfg.DiscoverModels = true
+	withSettings(t, cfg)
+
+	value, err := handleModelForAuth(testHost(), authModelPayload(t, sampleCredential(t)))
+	if err != nil {
+		t.Fatalf("model.for_auth: %v", err)
+	}
+	response := decodeResult[pluginapi.ModelResponse](t, value)
+	if len(response.Models) != 1 {
+		t.Fatalf("models = %#v, want one", response.Models)
+	}
+	thinking := response.Models[0].Thinking
+	if thinking == nil {
+		t.Fatal("the remote levels must be declared, or the selector never appears")
+	}
+	if got := strings.Join(thinking.Levels, ","); got != "none,low,medium,high,xhigh" {
+		t.Fatalf("levels = %q, want the remote order", got)
+	}
+}
+
 // modelForAuth falls back to the bundled table instead of failing, and the
 // static listings never touch the network.
 func TestStaticModelListingsNeverTouchTheNetwork(t *testing.T) {
@@ -231,7 +373,7 @@ func TestDiscoverModelsUsesTokenHeader(t *testing.T) {
 		t.Fatalf("display name = %q, want the normalised multiplier", got)
 	}
 	if response.Models[0].Thinking != nil {
-		t.Fatal("§7.6: this provider declares no thinking levels")
+		t.Fatal("a model whose remote entry publishes no reasoning_efforts must not be given fabricated levels")
 	}
 
 	calls := fake.callsFor(ModelsPath)

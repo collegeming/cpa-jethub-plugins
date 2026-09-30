@@ -3,6 +3,8 @@ package main
 import (
 	"net/url"
 	"time"
+
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/imagebudget"
 )
 
 // Cline product constants, ported from `src/cline-product.ts`.
@@ -137,6 +139,34 @@ const refreshLead = time.Hour
 // as indistinguishable from `high` and is deliberately absent
 // (`cline-product.ts:215-225`).
 var reasoningLevels = []string{"none", "low", "medium", "high", "max"}
+
+// Image request budgets (upstream `7ed3466`, issue !IKITT9).
+const (
+	// ImageMaxBytes is this product's per-image encoded byte target: **1 MiB**.
+	//
+	// Source: `DEFAULT_BODY_LIMITED_IMAGE_MAX_BYTES` in `src/image-budget.ts`,
+	// which `CLINE.imageMaxBytes` falls back to (the `ClineProduct` field is
+	// documented at `cline-product.ts:117-127` and the constant at
+	// `image-budget.ts` "其余按请求体体积设限的网关用的字节目标").
+	//
+	// Cline has NO image visual-token budget — 24 full-size 2560×1600 images
+	// (≈159K image tokens, well past the 100,000 the Tencent gateways allow) all
+	// succeeded. What it hits is REQUEST VOLUME: 32 images, ≈122 MiB, failed with
+	// `TRANSPORT`. So this target backs off the volume, and 1 MiB keeps even 24
+	// images at ≈32 MiB, far below the measured boundary.
+	//
+	// ⚠️ Deliberately NOT the same number as raccoon's 512 KiB. Upstream kept
+	// the two apart because their constraints differ (raccoon's gateway hard-caps
+	// the body at 10 MB); unifying them would re-break one of the two.
+	ImageMaxBytes = 1024 * 1024
+	// ImagePixelBudget is this product's per-image pixel budget.
+	//
+	// Volume is the binding constraint, as above, so this only keeps an image
+	// from being too large for the encoder to reach ImageMaxBytes. It is the
+	// shared `DEFAULT_IMAGE_PIXEL_BUDGET`; upstream notes Cline's budget is the
+	// more generous one precisely because it is not a token quota.
+	ImagePixelBudget = imagebudget.PixelBudget
+)
 
 // fallbackModel is one entry of the static catalogue table
 // (`cline-product.ts:134-192`). Context window, output limit and image support

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // executorPayload builds an executor.execute request bound to a credential.
@@ -117,7 +117,7 @@ func TestChatRequestBodyForcesStreamAndModel(t *testing.T) {
 	body, errBody := chatRequestBody(pluginapi.ExecutorRequest{
 		Model:   "MiniMax-M3",
 		Payload: []byte(`{"messages":[{"role":"user","content":"hi"}],"temperature":0.3}`),
-	})
+	}, nil)
 	if errBody != nil {
 		t.Fatalf("chatRequestBody: %v", errBody)
 	}
@@ -137,8 +137,122 @@ func TestChatRequestBodyForcesStreamAndModel(t *testing.T) {
 	if _, present := decoded["max_tokens"]; present {
 		t.Fatal("max_tokens must not be invented when the caller did not send one")
 	}
-	if _, errEmpty := chatRequestBody(pluginapi.ExecutorRequest{}); errEmpty == nil {
+	if _, errEmpty := chatRequestBody(pluginapi.ExecutorRequest{}, nil); errEmpty == nil {
 		t.Fatal("an empty payload must be rejected")
+	}
+}
+
+// TestChatRequestBodyReasoningEffort: `reasoning_effort` is written ONLY when the
+// model declares that level. An out-of-list or absent level must leave the key
+// out, because the upstream silently ignores a value it does not know — the
+// "the UI offered it but the request drops it" defect
+// (`loomy-adapter.ts:437-455`).
+func TestChatRequestBodyReasoningEffort(t *testing.T) {
+	levels := []string{"none", "low", "medium", "high", "xhigh"}
+	cases := []struct {
+		name    string
+		payload string
+		efforts []string
+		want    string
+		present bool
+	}{
+		{
+			name:    "an in-list level is carried verbatim",
+			payload: `{"messages":[{"role":"user"}],"reasoning_effort":"high"}`,
+			efforts: levels,
+			want:    "high",
+			present: true,
+		},
+		{
+			name:    "a per-model list is what counts, not the global one",
+			payload: `{"messages":[{"role":"user"}],"reasoning_effort":"xhigh"}`,
+			efforts: []string{"low", "high"},
+			present: false,
+		},
+		{
+			name:    "an out-of-list level is dropped",
+			payload: `{"messages":[{"role":"user"}],"reasoning_effort":"max"}`,
+			efforts: levels,
+			present: false,
+		},
+		{
+			name:    "a model that declares no levels never gets the key",
+			payload: `{"messages":[{"role":"user"}],"reasoning_effort":"high"}`,
+			efforts: nil,
+			present: false,
+		},
+		{
+			name:    "no requested level means no key is invented",
+			payload: `{"messages":[{"role":"user"}]}`,
+			efforts: levels,
+			present: false,
+		},
+		{
+			name:    "a blank requested level is dropped",
+			payload: `{"messages":[{"role":"user"}],"reasoning_effort":"  "}`,
+			efforts: levels,
+			present: false,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			body, errBody := chatRequestBody(pluginapi.ExecutorRequest{Payload: []byte(testCase.payload)}, testCase.efforts)
+			if errBody != nil {
+				t.Fatalf("chatRequestBody: %v", errBody)
+			}
+			var decoded map[string]any
+			if errUnmarshal := json.Unmarshal(body, &decoded); errUnmarshal != nil {
+				t.Fatalf("decode body: %v", errUnmarshal)
+			}
+			got, present := decoded["reasoning_effort"]
+			if present != testCase.present {
+				t.Fatalf("reasoning_effort present = %v (%v), want %v", present, got, testCase.present)
+			}
+			if testCase.present && got != testCase.want {
+				t.Fatalf("reasoning_effort = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestPerformInferSendsReasoningEffortForDeclaredLevels wires the whole path: the
+// levels the model declares are resolved from the catalogue, so the wire carries
+// the field only for a declared level.
+func TestPerformInferSendsReasoningEffortForDeclaredLevels(t *testing.T) {
+	cases := []struct {
+		name    string
+		model   string
+		effort  string
+		want    string
+		present bool
+	}{
+		{name: "declared level", model: "MiniMax-M3", effort: "high", want: "high", present: true},
+		{name: "undeclared level", model: "MiniMax-M3", effort: "max", present: false},
+		{name: "model with no levels", model: "unknown-model", effort: "high", present: false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			fake := newFakeHost()
+			var sent map[string]any
+			fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+				if errUnmarshal := json.Unmarshal(request.Body, &sent); errUnmarshal != nil {
+					t.Errorf("decode outbound body: %v", errUnmarshal)
+				}
+				return httpResponse(200, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"), nil
+			}
+			fake.install(t)
+			payload := `{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"` + testCase.effort + `"}`
+			if _, errExecute := handleExecutorExecute(testHost(), executorPayload(t, sampleCredential(t), testCase.model, payload)); errExecute != nil {
+				t.Fatalf("executor.execute: %v", errExecute)
+			}
+			got, present := sent["reasoning_effort"]
+			if present != testCase.present {
+				t.Fatalf("outbound reasoning_effort present = %v (%v), want %v (body %#v)", present, got, testCase.present, sent)
+			}
+			if testCase.present && got != testCase.want {
+				t.Fatalf("outbound reasoning_effort = %v, want %v", got, testCase.want)
+			}
+		})
 	}
 }
 
@@ -272,6 +386,115 @@ func TestAggregateDropsNamelessToolCallFragments(t *testing.T) {
 	if len(completion.Choices[0].Message.ToolCalls) != 0 {
 		t.Fatalf("tool calls = %#v, want the nameless fragment dropped", completion.Choices[0].Message.ToolCalls)
 	}
+	// The source's condition does not consult the finish reason, so even an
+	// explicit `stop` cannot hide the dropped call.
+	if got := completion.Choices[0].FinishReason; got != "length" {
+		t.Fatalf("finish_reason = %q, want length for a dropped nameless call", got)
+	}
+}
+
+// sseDoneFrame is the terminal SSE payload as `aggregateFrames` receives it (the
+// `data:` prefix is stripped by the scanner).
+const sseDoneFrame = "[DONE]"
+
+// TestAggregateDroppedUnnamedFinishesAsLength: when the ONLY tool call had no
+// usable name, the turn must finish as `length` — an incomplete, retryable turn —
+// rather than `stop`, which would tell the client the model deliberately answered
+// without a tool (`openai-compat.ts:889-965`).
+func TestAggregateDroppedUnnamedFinishesAsLength(t *testing.T) {
+	cases := []struct {
+		name       string
+		payloads   []string
+		wantFinish string
+		wantCalls  int
+	}{
+		{
+			name: "a single nameless fragment ends as length",
+			payloads: []string{
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","function":{"arguments":"{}"}}]}}]}`,
+				sseDoneFrame,
+			},
+			wantFinish: "length",
+		},
+		{
+			name: "a JSON null name is not the literal string null",
+			payloads: []string{
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":null,"arguments":"{}"}}]}}]}`,
+				sseDoneFrame,
+			},
+			wantFinish: "length",
+		},
+		{
+			name: "a blank name is not usable either",
+			payloads: []string{
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"   ","arguments":"{}"}}]}}]}`,
+				sseDoneFrame,
+			},
+			wantFinish: "length",
+		},
+		{
+			name: "a named call still reports tool_calls",
+			payloads: []string{
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			},
+			wantFinish: "tool_calls",
+			wantCalls:  1,
+		},
+		{
+			name: "one named call survives alongside a nameless one",
+			payloads: []string{
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{}"}},{"index":1,"id":"call_x","function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			},
+			wantFinish: "tool_calls",
+			wantCalls:  1,
+		},
+		{
+			name: "the literal string undefined is a real name upstream accepts",
+			payloads: []string{
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"undefined","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			},
+			wantFinish: "tool_calls",
+			wantCalls:  1,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			completion, _ := aggregateFrames(testCase.payloads, "m")
+			if got := completion.Choices[0].FinishReason; got != testCase.wantFinish {
+				t.Fatalf("finish_reason = %q, want %q", got, testCase.wantFinish)
+			}
+			if got := len(completion.Choices[0].Message.ToolCalls); got != testCase.wantCalls {
+				t.Fatalf("tool calls = %d, want %d", got, testCase.wantCalls)
+			}
+		})
+	}
+}
+
+// TestExecuteStreamDroppedUnnamedIsNotReportedAsStop drives the handler: a stream
+// whose only tool call is nameless must not answer `stop`.
+func TestExecuteStreamDroppedUnnamedIsNotReportedAsStop(t *testing.T) {
+	fake := newFakeHost()
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		return httpResponse(200, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\",\"function\":{\"arguments\":\"{}\"}}]}}]}\n\ndata: [DONE]\n\n"), nil
+	}
+	fake.install(t)
+	value, errExecute := handleExecutorExecute(testHost(), executorPayload(t, sampleCredential(t), "MiniMax-M3", `{}`))
+	if errExecute != nil {
+		t.Fatalf("executor.execute: %v", errExecute)
+	}
+	response := decodeResult[pluginapi.ExecutorResponse](t, value)
+	if !strings.Contains(string(response.Payload), `"finish_reason":"length"`) {
+		t.Fatalf("payload = %s, want finish_reason length", response.Payload)
+	}
+	if !strings.Contains(string(response.Payload), `"tool_calls"`) {
+		// The key must be absent from the message, not an empty array.
+		if strings.Contains(string(response.Payload), `"message":{"role":"assistant","content":"","reasoning_content":"","tool_calls"`) {
+			t.Fatalf("payload = %s, want no tool_calls in the message", response.Payload)
+		}
+	}
+	if truncated, _ := response.Metadata["truncated"].(bool); !truncated {
+		t.Fatalf("metadata = %#v, want truncated=true for a dropped unnamed call", response.Metadata)
+	}
 }
 
 // Streaming passes every `data:` payload through and terminates the stream.
@@ -306,6 +529,122 @@ func TestExecuteStreamFramesAndTerminator(t *testing.T) {
 	}
 	if !strings.Contains(payload, `"content":"hi"`) {
 		t.Fatalf("chunk = %s, want the upstream frame", payload)
+	}
+}
+
+// TestStreamFramesGatewayErrorFrame: a gateway error frame carries `message` plus
+// `statusCodeValue` (and often `stackTrace`) with NO `error`, NO `code` and NO
+// `choices`. It must surface as a real upstream failure carrying that message —
+// before the fix it fell through to the truncation rule and was reported as an
+// ordinary `length` stop with the reason swallowed (`a3501f0`,
+// `openai-compat.ts:552-583`).
+func TestStreamFramesGatewayErrorFrame(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantMessage string
+	}{
+		{
+			name:        "statusCodeValue 500 with a message",
+			body:        "data: {\"message\":\"模型服务暂时不可用\",\"statusCodeValue\":500}\n\n",
+			wantMessage: "模型服务暂时不可用",
+		},
+		{
+			name:        "a stack trace alone marks the frame as an error",
+			body:        "data: {\"message\":\"内部错误\",\"stackTrace\":[\"at x\"]}\n\n",
+			wantMessage: "内部错误",
+		},
+		{
+			name:        "the real gateway shape with both fields",
+			body:        "data: {\"stackTrace\":[\"at com.x\"],\"message\":\"网关拒绝\",\"statusCodeValue\":502}\n\n",
+			wantMessage: "网关拒绝",
+		},
+		{
+			name:        "an error object is reported too",
+			body:        "data: {\"error\":{\"message\":\"积分不足\"}}\n\n",
+			wantMessage: "积分不足",
+		},
+		{
+			name:        "a business envelope with a non-success code",
+			body:        "data: {\"code\":\"100002\",\"desc\":\"缺少 token\"}\n\n",
+			wantMessage: "缺少 token",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			chunks, truncated, errFrames := streamFrames([]byte(testCase.body))
+			if errFrames == nil {
+				t.Fatalf("chunks = %#v, truncated = %v; want an upstream error", chunks, truncated)
+			}
+			if !strings.Contains(errFrames.Error(), testCase.wantMessage) {
+				t.Fatalf("error = %v, want it to carry %q", errFrames, testCase.wantMessage)
+			}
+			if status := statusOf(errFrames, 0); status != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502", status)
+			}
+			if truncated {
+				t.Fatal("a reported upstream failure is not a truncation")
+			}
+		})
+	}
+}
+
+// TestStreamFramesNormalContentIsNotAnErrorFrame is the negative case: a content
+// delta that merely MENTIONS "message" (or carries a code-shaped word) must pass
+// through untouched, because a frame with `choices` is always a normal chunk.
+func TestStreamFramesNormalContentIsNotAnErrorFrame(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "content merely mentioning message",
+			body: "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"please read the message field\"}}]}\n\n",
+		},
+		{
+			name: "content discussing a status code",
+			body: "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"statusCodeValue 500 means server error\"}}]}\n\n",
+		},
+		{
+			name: "a normal chunk carrying usage",
+			body: "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":3}}\n\n",
+		},
+		{
+			name: "a message field alongside choices is still a chunk",
+			body: "data: {\"message\":\"not an error\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			chunks, _, errFrames := streamFrames([]byte(testCase.body))
+			if errFrames != nil {
+				t.Fatalf("error = %v, want a normal frame", errFrames)
+			}
+			if len(chunks) != 1 || !strings.Contains(string(chunks[0].Payload), `"choices"`) {
+				t.Fatalf("chunks = %#v, want the frame forwarded untouched", chunks)
+			}
+		})
+	}
+}
+
+// TestInferGatewayErrorFrameDoesNotDegradeToLength drives the whole handler: a
+// response whose only frame is a gateway error must fail the request rather than
+// answer with a `length` truncation.
+func TestInferGatewayErrorFrameDoesNotDegradeToLength(t *testing.T) {
+	fake := newFakeHost()
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		return httpResponse(200, "data: {\"message\":\"upstream exploded\",\"statusCodeValue\":500}\n\n"), nil
+	}
+	fake.install(t)
+	_, errExecute := handleExecutorExecuteStream(testHost(), executorPayload(t, sampleCredential(t), "MiniMax-M3", `{}`))
+	if errExecute == nil {
+		t.Fatal("a gateway error frame must fail the request")
+	}
+	if !strings.Contains(errExecute.Error(), "upstream exploded") {
+		t.Fatalf("error = %v, want the frame's message", errExecute)
+	}
+	if strings.Contains(errExecute.Error(), "LENGTH") || strings.Contains(strings.ToLower(errExecute.Error()), "截断") {
+		t.Fatalf("error = %v, want no truncation wording", errExecute)
 	}
 }
 

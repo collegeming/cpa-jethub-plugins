@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/credjson"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // carryFileMembers folds the members of the auth file the host is holding into

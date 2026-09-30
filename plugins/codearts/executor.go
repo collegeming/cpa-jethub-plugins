@@ -13,7 +13,7 @@ import (
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/openai"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // PluginVersion is the adapter version reported in the user agent.
@@ -189,6 +189,7 @@ func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, err
 		return nil, abiboot.HTTPError("empty_upstream", http.StatusBadGateway, "CodeArts 未返回任何流式分片")
 	}
 	chunks = rewriteDsmlStream(chunks)
+	chunks = applyToolCallIDFallback(chunks)
 	return executorStreamResponse{
 		Headers: http.Header{"Content-Type": []string{"text/event-stream"}},
 		Chunks:  chunks,
@@ -315,6 +316,114 @@ func rewriteDsmlStream(chunks []pluginapi.ExecutorStreamChunk) []pluginapi.Execu
 				last.FinishReason = &reason
 			}
 		}
+	}
+
+	out := make([]pluginapi.ExecutorStreamChunk, len(chunks))
+	copy(out, chunks)
+	for _, item := range decoded {
+		encoded, errMarshal := sse.PayloadJSON(item.chunk)
+		if errMarshal != nil {
+			return chunks
+		}
+		out[item.position] = pluginapi.ExecutorStreamChunk{Payload: encoded}
+	}
+	return out
+}
+
+// fallbackToolCallID is the stable synthetic id for one wire index.
+//
+// ⚠️ It must be derived from the index rather than drawn at random: every
+// fragment of the same call has to end up with the same id, otherwise the tool
+// result can never be paired with its call (`llm-adapter.ts:1168`).
+func fallbackToolCallID(wireIndex int) string {
+	return "call_" + itoa(wireIndex)
+}
+
+// applyToolCallIDFallback gives every streamed tool-call fragment a non-empty,
+// stable id (`llm-adapter.ts:1171`, `:1484-1485`).
+//
+// This is a port of the standard `delta.tool_calls` branch of the CodeArts
+// adapter. The Huawei backend intermittently omits `tool_calls[].id`
+// altogether, or sends it as an empty string; forwarding that verbatim leaves
+// the assistant message holding a tool call whose id is the empty string
+// (`llm-adapter.ts:1150-1166`). The damage is not one failed turn but a bricked
+// session: DSH's format-v4 check (`assertV4ToolResultMessage`) requires the
+// tool result's `toolCallId` to equal the call's `callId` and BOTH to be
+// non-empty (`length === 0`), so the `tool/result` write is rejected and
+// crash recovery synthesises the same rejected patch from the empty id — the
+// log stops at `tool/call` and only a human can repair it. Measured: 3/3
+// CodeArts tool-call blocks across 31 sessions carried an empty id, while
+// ~14,000 blocks from every other provider had none.
+//
+// The judgment criterion must therefore be "non-empty string", not "present":
+// an empty string fails that check exactly like a missing one.
+//
+// The DSML branch needs no help here — its parser mints a real id
+// (`dsml.go` `newDsmlCallID`) — and because that id is non-empty it is
+// preserved untouched by the map below.
+//
+// Like rewriteDsmlStream, an unrecognised frame means the stream is not shaped
+// the way this rewrite assumes, so the input is returned exactly as upstream
+// sent it. A stream carrying no tool calls is likewise returned untouched.
+func applyToolCallIDFallback(chunks []pluginapi.ExecutorStreamChunk) []pluginapi.ExecutorStreamChunk {
+	// toolIds maps a wire index to the real id the backend issued for it.
+	// ⚠️ Only a NON-EMPTY id is ever recorded: an unconditional overwrite would
+	// let a later fragment's empty/missing id erase the real id the first
+	// fragment delivered (same cause as the `function.name` empty-string
+	// overwrite guarded elsewhere in this adapter).
+	toolIds := map[int]string{}
+
+	type decodedChunk struct {
+		position int
+		chunk    openai.Chunk
+	}
+	decoded := make([]decodedChunk, 0, len(chunks))
+	for position, item := range chunks {
+		line := strings.TrimSpace(string(item.Payload))
+		if strings.HasPrefix(line, "data:") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		}
+		if line == "" || line == sse.Done {
+			continue
+		}
+		var parsed openai.Chunk
+		if errUnmarshal := json.Unmarshal([]byte(line), &parsed); errUnmarshal != nil {
+			// An unrecognised frame means the stream is not shaped the way this
+			// rewrite assumes; leave it exactly as upstream sent it.
+			return chunks
+		}
+		rewritten := false
+		for choiceIndex := range parsed.Choices {
+			delta := &parsed.Choices[choiceIndex].Delta
+			for callIndex := range delta.ToolCalls {
+				call := &delta.ToolCalls[callIndex]
+				// `call.index ?? 0` (`llm-adapter.ts:1483`): a fragment that
+				// omits the index belongs to the call at index 0.
+				wireIndex := 0
+				if call.Index != nil {
+					wireIndex = *call.Index
+				}
+				if call.ID != "" {
+					toolIds[wireIndex] = call.ID
+				}
+				callID, known := toolIds[wireIndex]
+				if !known {
+					callID = fallbackToolCallID(wireIndex)
+				}
+				if call.ID != callID {
+					call.ID = callID
+					rewritten = true
+				}
+			}
+		}
+		if rewritten {
+			// Every emitted fragment of the call carries the resolved id, not
+			// only the first one.
+			decoded = append(decoded, decodedChunk{position: position, chunk: parsed})
+		}
+	}
+	if len(decoded) == 0 {
+		return chunks
 	}
 
 	out := make([]pluginapi.ExecutorStreamChunk, len(chunks))

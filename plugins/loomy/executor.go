@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -8,7 +9,7 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/sse"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Chat completions, ported from `src/loomy.ts:213-231` and
@@ -199,7 +200,11 @@ func decodeExecutorCall(raw json.RawMessage) (pluginapi.ExecutorRequest, *Creden
 // `RefreshTokenExpiredError` (`loomy-adapter.ts:354-361`), i.e. the retry never
 // succeeds.
 func performInfer(h *abiboot.Host, request pluginapi.ExecutorRequest, credential *Credential, cfg Config) (*pluginapi.HTTPResponse, error) {
-	body, errBody := chatRequestBody(request)
+	// The levels the model declares are resolved here, from the same catalogue the
+	// host rendered its selector from, so an out-of-list value can be dropped
+	// (`loomy-adapter.ts:430-455`).
+	efforts, _ := declaredEffortsFor(h, credential, cfg, request.Model)
+	body, errBody := chatRequestBody(request, efforts)
 	if errBody != nil {
 		return nil, errBody
 	}
@@ -215,11 +220,18 @@ func performInfer(h *abiboot.Host, request pluginapi.ExecutorRequest, credential
 
 // chatRequestBody rewrites the outbound body.
 //
-// Only two things are forced or defaulted: the model (when the translated payload
-// does not carry one) and `stream: true`. `max_tokens`, `temperature`, `stop` and
-// `tools` are whatever the host sent — the source only includes them when the
-// caller provided them (`loomy-adapter.ts:307-326`).
-func chatRequestBody(request pluginapi.ExecutorRequest) ([]byte, error) {
+// Three things are forced or defaulted: the model (when the translated payload
+// does not carry one), `stream: true`, and — only when it is legal —
+// `reasoning_effort`. `max_tokens`, `temperature`, `stop` and `tools` are whatever
+// the host sent; the source only includes them when the caller provided them
+// (`loomy-adapter.ts:307-326`).
+//
+// `efforts` is the level list the model declares. The requested level is written
+// ONLY when it appears there: the reference checks `effortsForModel.includes(...)`
+// and omits the field otherwise, because an out-of-list value is silently ignored
+// upstream — the "the UI offered it but the request drops it" defect
+// (`loomy-adapter.ts:437-455`).
+func chatRequestBody(request pluginapi.ExecutorRequest, efforts []string) ([]byte, error) {
 	if len(request.Payload) == 0 {
 		return nil, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "Loomy 收到空请求体")
 	}
@@ -229,6 +241,15 @@ func chatRequestBody(request pluginapi.ExecutorRequest) ([]byte, error) {
 	}
 	if _, present := body["model"]; !present && strings.TrimSpace(request.Model) != "" {
 		body["model"] = request.Model
+	}
+	if requested, ok := body["reasoning_effort"].(string); ok {
+		if !containsEffort(efforts, requested) {
+			// Not declared by this model (or no levels at all): omit the field
+			// rather than send a value upstream would ignore or reject.
+			delete(body, "reasoning_effort")
+		} else {
+			body["reasoning_effort"] = strings.TrimSpace(requested)
+		}
 	}
 	// 上游不认 OpenAI 的 `developer` 角色（developer 与 system 在 OpenAI 规范里
 	// 语义相同），按 `system` 下发，避免被网关按非法角色拒绝。
@@ -320,6 +341,78 @@ func trailingDataPayload(body []byte) string {
 	return strings.TrimPrefix(strings.TrimPrefix(text, "data:"), " ")
 }
 
+// errorFrameIn detects the error shapes that arrive inside an HTTP 200 SSE
+// response, returning nil for a normal chunk
+// (`openai-compat.ts:552-583`; the same shape as `plugins/raccoon/chat.go`
+// `errorFrameIn`, which this mirrors).
+//
+// ⚠️ The gateway form carries `message` plus `statusCodeValue` / `stackTrace` and
+// NO `error`, NO `code` and NO `choices`. Missing it makes a real failure fall
+// through to the truncation rule and surface as an ordinary `length` stop with the
+// message swallowed (`a3501f0`).
+//
+// The guard order matters: a frame that has `choices` is always a normal chunk, so
+// a content delta that merely MENTIONS "message" in its text is never misdetected.
+func errorFrameIn(payload string) error {
+	var probe struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Choices         json.RawMessage `json:"choices"`
+		Code            flexText        `json:"code"`
+		Desc            string          `json:"desc"`
+		Message         string          `json:"message"`
+		Msg             string          `json:"msg"`
+		StatusCodeValue *int            `json:"statusCodeValue"`
+		StackTrace      json.RawMessage `json:"stackTrace"`
+	}
+	if errUnmarshal := json.Unmarshal([]byte(payload), &probe); errUnmarshal != nil {
+		return nil
+	}
+	if probe.Error != nil && strings.TrimSpace(probe.Error.Message) != "" {
+		return statusError(false, "upstream_error", http.StatusBadGateway,
+			"Loomy 上游返回错误：%s", strings.TrimSpace(probe.Error.Message))
+	}
+	if hasChoices := len(bytes.TrimSpace(probe.Choices)) > 0 && string(bytes.TrimSpace(probe.Choices)) != "null"; hasChoices {
+		return nil
+	}
+	// Shape 2: a business envelope with no choices. Loomy's own envelope spells
+	// the text `desc`, so that is read as well (`envelope.text`).
+	if code := strings.TrimSpace(probe.Code.String()); code != "" && code != okCode {
+		if message := firstNonEmpty(probe.Message, probe.Msg, probe.Desc); message != "" {
+			return statusError(false, "upstream_error", http.StatusBadGateway, "Loomy 上游错误 %s：%s", code, message)
+		}
+	}
+	// Shape 3: the gateway form — a message plus a status or a stack trace.
+	message := firstNonEmpty(probe.Message, probe.Msg, probe.Desc)
+	if message == "" {
+		return nil
+	}
+	status := 0
+	if probe.StatusCodeValue != nil {
+		status = *probe.StatusCodeValue
+	}
+	hasStackTrace := len(bytes.TrimSpace(probe.StackTrace)) > 0 && string(bytes.TrimSpace(probe.StackTrace)) != "null"
+	if status >= 400 || hasStackTrace {
+		detail := ""
+		if status >= 400 {
+			detail = " (status=" + itoaInt(status) + ")"
+		}
+		return statusError(false, "upstream_error", http.StatusBadGateway, "Loomy 上游错误：%s%s", message, detail)
+	}
+	return nil
+}
+
+// firstNonEmpty returns the first non-empty trimmed value.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 // streamFrames turns the buffered upstream body into SSE frames for the client.
 //
 // The second result reports a TRUNCATED stream: no `finish_reason` and no
@@ -343,6 +436,12 @@ func streamFrames(body []byte) ([]pluginapi.ExecutorStreamChunk, bool, error) {
 			// duplicate it.
 			sawDone = true
 			break
+		}
+		// A gateway error frame is a REAL upstream failure carrying its own
+		// message. It must be reported as such, never degraded into a plain
+		// `length` truncation that hides the reason (`a3501f0`).
+		if errFrame := errorFrameIn(trimmed); errFrame != nil {
+			return nil, false, errFrame
 		}
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: sse.Payload(trimmed)})
 	}
@@ -453,6 +552,9 @@ func aggregateFrames(payloads []string, model string) (chatCompletion, bool) {
 	toolIndex := map[int]int{}
 	var finishReason *string
 	sawDone := false
+	// droppedUnnamed records that a tool-call fragment was discarded because its
+	// name was never usable (see the finish-reason rule below).
+	droppedUnnamed := false
 
 	for _, payload := range payloads {
 		trimmed := strings.TrimSpace(payload)
@@ -487,7 +589,9 @@ func aggregateFrames(payloads []string, model string) (chatCompletion, bool) {
 				reasoning.WriteString(text)
 			}
 			for _, fragment := range choice.Delta.ToolCalls {
-				mergeToolCall(&toolCalls, toolIndex, fragment)
+				if mergeToolCall(&toolCalls, toolIndex, fragment) {
+					droppedUnnamed = true
+				}
 			}
 			if choice.FinishReason != nil {
 				value := *choice.FinishReason
@@ -505,9 +609,22 @@ func aggregateFrames(payloads []string, model string) (chatCompletion, bool) {
 		ReasoningContent: reasoning.String(),
 		ToolCalls:        toolCalls,
 	}
+	// Finish reason. The dropped-unnamed rule comes first because the source's
+	// condition (`droppedUnnamedCalls && toolOrder.length === 0`,
+	// `openai-compat.ts:889-965`) does not consult the finish reason at all: a
+	// stream that reported `stop` while its only tool call had no usable name
+	// still means "the model meant to call a tool".
+	//
+	// ⚠️ Discarding the call is right (an empty-named call is rejected upstream
+	// with HTTP 400 `code 11133` and poisons the conversation), but ending as
+	// `stop` would tell the client the model simply chose not to call a tool —
+	// the silent-stop defect. `length` is the incomplete, retryable answer.
 	resolved := "stop"
 	truncated := false
 	switch {
+	case droppedUnnamed && len(toolCalls) == 0:
+		resolved = "length"
+		truncated = true
 	case finishReason != nil && strings.TrimSpace(*finishReason) != "":
 		resolved = *finishReason
 	case sawDone:
@@ -535,17 +652,22 @@ func reasoningOf(reasoningContent, reasoning *string) string {
 	return ""
 }
 
-// mergeToolCall accumulates one streamed tool call.
-//
-// A fragment that opens a NEW index without a usable function name is dropped:
-// persisting an empty-named tool call poisons the conversation
+// mergeToolCall accumulates one streamed tool call. It reports whether the
+// fragment had to be DROPPED because it opened a new index without a usable
+// function name: persisting an empty-named tool call poisons the conversation
 // (`openai-compat.ts:691-721`). The id is remembered per index and the name may
 // only be overwritten by a NON-EMPTY string (`openai-compat.ts:674-689`).
-func mergeToolCall(target *[]toolCall, index map[int]int, fragment toolCallFragment) {
+//
+// ⚠️ The name test must be `typeof name === 'string' && name.trim().length > 0`
+// (`sse.ts:81-83`), never a length check on a stringified value: absent / `null`
+// would become the non-empty literals `"undefined"` / `"null"` and be accepted,
+// while upstream rejects them with HTTP 400 `code 11133`. Only non-emptiness is
+// checked upstream, so a literal `"undefined"` on the wire is a usable name.
+func mergeToolCall(target *[]toolCall, index map[int]int, fragment toolCallFragment) (dropped bool) {
 	position, ok := index[valueOr(fragment.Index, -1)]
 	if !ok {
 		if strings.TrimSpace(fragment.Function.Name) == "" {
-			return
+			return true
 		}
 		position = len(*target)
 		index[valueOr(fragment.Index, len(*target))] = position
@@ -562,6 +684,7 @@ func mergeToolCall(target *[]toolCall, index map[int]int, fragment toolCallFragm
 		call.Function.Name = fragment.Function.Name
 	}
 	call.Function.Arguments += fragment.Function.Arguments
+	return false
 }
 
 // valueOr dereferences an optional int, falling back to fallback.

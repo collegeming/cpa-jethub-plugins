@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // No sidebar entry: CPA-Manager-Plus renders a flat nav and does not group
