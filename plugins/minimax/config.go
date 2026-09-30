@@ -24,6 +24,38 @@ const (
 	Repository = "https://github.com/collegeming/cpa-jethub-plugins"
 )
 
+// Live-verification status of the two remote paths, as a single source of truth.
+//
+// These are developer assertions, not runtime probes: they record what has
+// actually been exercised against the real service, so an operator can tell
+// "never tried" from "known to work" without reading the git log.
+//
+// The reference implementation could not verify its own login flow — every one
+// of its probes read the desktop client's token instead — so this was carried
+// here as unverified until it was exercised for real:
+//
+//   - LoginVerified: a device-code authorization completed against
+//     account.minimax.cn and the resulting `mmoat_`/`mmort_` credential was
+//     stored and then accepted by the inference endpoint. Verified 2026-10-01.
+//   - InferenceVerified: independently re-confirmed here — MiniMax-M2.7 and
+//     MiniMax-M3.1-Flash-Preview both answered HTTP 200 through CPA with
+//     content, reasoning and usage.
+//   - RefreshVerified: NOT yet observed. The refresh grant is implemented from
+//     the desktop client's own flow (`minimax-oauth.ts`), but no renewal has
+//     happened yet because the access token outlives the session that issued it.
+//     Do not claim this works until a renewal is seen.
+const (
+	// LoginVerified reports that the device-code login is proven against the
+	// live service.
+	LoginVerified = true
+	// InferenceVerified reports that streaming inference is proven against the
+	// live service.
+	InferenceVerified = true
+	// RefreshVerified reports that token renewal is proven against the live
+	// service. It is false: renewal has not been observed yet.
+	RefreshVerified = false
+)
+
 // Timeouts and polling budgets, mirroring the reference constants
 // (`minimax-product.ts:MINIMAX_REQUEST_TIMEOUT_MS` = 30 s and
 // `MINIMAX_OAUTH_TIMEOUT_MS` = 20 s).

@@ -70,7 +70,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		return pluguiPage("ZCode（智谱）", body...)
 	}
 
-	_, found := selectAccount(h, request)
+	selected, found := selectAccount(h, request)
 	if !found {
 		body = append(body, plugui.Card("账号不存在",
 			plugui.Notice("danger", "指定的 auth_index 不在本插件的账号列表里。")))
@@ -81,15 +81,41 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	// balance, never the selected account's repeated.
 	statuses := collectAccountStatuses(h, accounts, cfg)
 	for _, status := range statuses {
-		body = append(body, renderAccountCard(status))
+		body = append(body, renderAccountCard(status, status.Entry.AuthIndex == selected.AuthIndex))
 	}
+	body = append(body, renderAccountList(accounts, selected.AuthIndex))
 	body = append(body, renderCatalogueCard())
 	return pluguiPage("ZCode（智谱）", body...)
 }
 
+// renderAccountList renders the switcher across accounts.
+//
+// It is rendered for a single account as well, because it carries 新建账号 —
+// the only way to add a SECOND account from this page. Every other provider in
+// this repository does the same; its absence here left the add-account flow that
+// the login page already implements (`plugui.IsAddAccountRequest`) reachable
+// only by hand-editing the URL.
+func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) template.HTML {
+	fields := make([]plugui.Field, 0, len(accounts))
+	for _, entry := range accounts {
+		marker := ""
+		if entry.AuthIndex == current {
+			marker = "（当前）"
+		}
+		fields = append(fields, plugui.Field{Label: entry.Name + marker, Value: entryStatusText(entry)})
+	}
+	title := "全部账号"
+	if len(accounts) > 1 {
+		title += "（在地址后追加 ?auth_index=<索引> 可切换）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...),
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
+	)
+}
+
 // renderAccountCard renders one account: its identity, its OWN token balance and
 // its own actions.
-func renderAccountCard(status accountStatus) template.HTML {
+func renderAccountCard(status accountStatus, current bool) template.HTML {
 	entry := status.Entry
 	fields := []plugui.Field{{Label: "状态", Value: entryStatusText(entry)}}
 	if entry.AuthIndex != "" {
@@ -170,8 +196,19 @@ func renderAccountCard(status accountStatus) template.HTML {
 
 	actions := []plugui.Action{
 		{Label: "签到页", Path: "checkin", Query: "auth_index=" + url.QueryEscape(entry.AuthIndex)},
+		// ZCode credentials are static — the JWT carries no expiry and the server
+		// exposes no refresh endpoint — so a dead credential can ONLY be replaced
+		// by logging in again. Without this link the page offers no route back to
+		// the login flow, which is what makes a stale credential a dead end.
+		{Label: "重新登录", Path: "login", Query: "auth_index=" + url.QueryEscape(entry.AuthIndex)},
 	}
-	return plugui.Card("账号 · "+entry.Name, plugui.Fields(fields...), actions...)
+	title := "账号 · " + entry.Name
+	if current {
+		// The same marker the account list uses, so a reader can tell which
+		// account the page's own links (签到页 / 重新登录) will act on.
+		title += "（当前）"
+	}
+	return plugui.Card(title, plugui.Fields(fields...), actions...)
 }
 
 // renderCatalogueCard lists the published catalogue.

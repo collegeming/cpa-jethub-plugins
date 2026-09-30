@@ -250,8 +250,9 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		"account_count":      len(accounts),
 		"accounts":           []map[string]any{},
 		"timezone_id":        cfg.timezoneID(),
-		"login_verified":     false,
-		"inference_verified": true,
+		"login_verified":     LoginVerified,
+		"inference_verified": InferenceVerified,
+		"refresh_verified":   RefreshVerified,
 	}
 	if errNote := catalogueLastError(); errNote != "" {
 		body["catalogue_error"] = errNote
@@ -353,7 +354,7 @@ func loginJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.M
 		"flow":   "device-code",
 		"hint": "GET ?action=start 获取授权链接（含 user_code）；GET ?action=poll&state=<state> 轮询结果。" +
 			"设备码流程不需要本地回调端口",
-		"login_verified": false,
+		"login_verified": LoginVerified,
 	}
 	if session, ok := currentLoginSession(); ok {
 		body["state"] = session.stateValue()

@@ -117,8 +117,11 @@ func renderAccountCard(state accountState, current bool) template.HTML {
 	}
 	if state.CredentialErr != nil {
 		fields = append(fields, plugui.Field{Label: "凭据", Value: "无法读取：" + state.CredentialErr.Error()})
+		// The notice says to log in again, so it has to carry the way to do it —
+		// an instruction with no link is the dead end this page exists to avoid.
 		return plugui.Card(title, plugui.Group(plugui.Fields(fields...),
-			plugui.Notice("danger", "该账号的凭据无法读取，请重新登录。")))
+			plugui.Notice("danger", "该账号的凭据无法读取，请重新登录。")),
+			plugui.Action{Label: "重新登录", Path: "login", Query: "auth_index=" + entry.AuthIndex, Kind: "primary"})
 	}
 
 	credential := state.Credential
@@ -150,6 +153,9 @@ func renderAccountCard(state accountState, current bool) template.HTML {
 	if current {
 		actions := []plugui.Action{
 			{Label: "签到", Path: "checkin", Query: "auth_index=" + entry.AuthIndex, Kind: "primary"},
+			// The refresh token can be revoked or rotated away, and an account
+			// whose credential cannot be read has no other route back.
+			{Label: "重新登录", Path: "login", Query: "auth_index=" + entry.AuthIndex},
 			{Label: "刷新本页", Kind: ""},
 		}
 		return plugui.Card(title, plugui.Group(append([]template.HTML{plugui.Fields(fields...)}, notices...)...), actions...)
@@ -260,7 +266,13 @@ func renderAccountList(accounts []pluginapi.HostAuthFileEntry, currentIndex stri
 	return plugui.Card("全部账号", plugui.Group(
 		plugui.Fields(rows...),
 		plugui.Notice("", "换账号：在地址后加 ?auth_index=<索引>；本插件的 pages 由 hub 的渠道总览与彼此之间的链接进入。"),
-	))
+	),
+		// Rendered even for a single account, because this is the only way to add
+		// a SECOND one. The login page already understands the parameter
+		// (`plugui.IsAddAccountRequest`); without this action that branch was
+		// unreachable from the UI, exactly as in the sibling providers.
+		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
+	)
 }
 
 // renderLoginPage renders the device-code login page.
@@ -300,7 +312,13 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 					plugui.Field{Label: "有效期至", Value: jsonTime(session.ExpiresAt)},
 				),
 				plugui.Notice("", "设备码流程不需要本地回调端口：在浏览器打开上面的链接并确认，然后点下面的按钮取回凭据。"),
-				plugui.Notice("warning", "⚠️ 登录路径未在真实服务端验证过，见状态页的说明。"),
+				// A "login is unverified" warning used to sit here. It is gone
+				// because the flow has since completed against the real service
+				// (see LoginVerified). What remains is the one real caveat, stated
+				// where the user is about to act on it.
+				plugui.Notice("warning", "⚠️ 服务端不下发账号标识（访问令牌不是 JWT，也没有 nickname），"+
+					"所以每次「新建账号」都会得到一个**新的**凭据文件名 —— 同一账号重复添加会出现多条记录。"+
+					"给已有账号换凭据请在状态页用「重新登录」，它带 auth_index，会覆盖同一条。"),
 			),
 			plugui.Action{Label: "我已授权，取回凭据", Path: "login",
 				Query: "action=poll&state=" + session.stateValue() + extra, Kind: "primary"},

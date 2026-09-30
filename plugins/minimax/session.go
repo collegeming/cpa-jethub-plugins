@@ -275,7 +275,7 @@ func handleAuthLoginStart(h *abiboot.Host, _ json.RawMessage) (any, error) {
 			"user_code":                session.Auth.UserCode,
 			"poll_interval_seconds":    session.currentIntervalSeconds(),
 			"device_code_expires_secs": session.Auth.ExpiresInSeconds,
-			"login_verified":           false,
+			"login_verified":           LoginVerified,
 		},
 	}, nil
 }

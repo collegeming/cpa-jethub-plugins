@@ -157,10 +157,30 @@ plugins:
 | qoder | 设备码（PKCE） | `/v0/resource/plugins/qoder/login` |
 | raccoon | 浏览器登录 | `/v0/resource/plugins/raccoon/login` |
 | zcode | CLI 授权 URL + 轮询（可导入官方客户端登录态） | `/v0/resource/plugins/zcode/login` |
-| minimax | OAuth 设备码 + PKCE（登录/续期协议已按官方客户端实现，尚待真实账号验证） | `/v0/resource/plugins/minimax/login` |
+| minimax | OAuth 设备码 + PKCE（登录与推理已在真实服务端验证；**续期尚未观察到**，见下） | `/v0/resource/plugins/minimax/login` |
 | trae | 回调端口登录 | `/v0/resource/plugins/trae/login` |
 
 在浏览器中打开管理面板（CPAMP），进入「插件管理」→ 对应渠道 → 「登录」，按页面提示完成授权。
+
+每个渠道的状态页都带三个入口，缺一个都会让用户走进死路：
+
+| 入口 | 作用 | 位置 |
+|---|---|---|
+| 「新建账号」 | 添加**第二个**账号（链接到登录页并带 `add=1`） | 状态页「全部账号」卡片 |
+| 「重新登录」 | **替换**已有账号的凭据（带 `auth_index`，覆盖同一条） | 状态页账号卡片 |
+| 「去登录」 | 一个账号都没有时的首次登录 | 状态页空账号卡片 |
+
+> **MiniMax 的一处固有限制**：服务端不下发账号标识（访问令牌不是 JWT，也没有 `nickname`），所以**同一账号重复点「新建账号」会得到多条记录**（凭据文件名取自令牌前缀，每次登录都会变）。给已有账号换凭据请用「重新登录」。这是上游参考实现同样存在的缺口——它把凭据存在单个固定 ref 下，因此不暴露这个问题。
+
+#### MiniMax 的验证状态
+
+状态页的 JSON（`?format=json`）会如实公布三条断言，代码里是单一常量来源（`plugins/minimax/config.go`）：
+
+| 字段 | 值 | 含义 |
+|---|---|---|
+| `login_verified` | `true` | 设备码授权已在真实服务端走通，取回的 `mmoat_`/`mmort_` 凭据被推理端点接受 |
+| `inference_verified` | `true` | `MiniMax-M2.7` 与 `MiniMax-M3.1-Flash-Preview` 均经 CPA 端到端返回 200（含 reasoning 与 usage） |
+| `refresh_verified` | `false` | **续期尚未观察到**：续期授权按官方桌面端流程实现，但访问令牌寿命长于签发它的会话，因此还没有真实续期发生。在亲眼见到之前不要声称它可用 |
 
 #### Qoder 的两个版本（`region`）
 
