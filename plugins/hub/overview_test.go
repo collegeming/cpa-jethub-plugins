@@ -17,7 +17,7 @@ import (
 // is exactly the regression this test exists to catch.
 var channelOrder = []string{
 	"codearts", "codebuddy", "codebuddy-intl", "workbuddy-cn", "workbuddy",
-	"lobsterai", "qoder", "trae", "cline", "loomy", "raccoon",
+	"lobsterai", "qoder", "trae", "cline", "loomy", "raccoon", "zcode", "minimax",
 }
 
 // TestChannelOverviewOrderAndIcons pins the row order and the marks: every
@@ -39,6 +39,8 @@ func TestChannelOverviewOrderAndIcons(t *testing.T) {
 		"cline":          brandicons.Cline,
 		"loomy":          brandicons.Loomy,
 		"raccoon":        brandicons.Raccoon,
+		"zcode":          brandicons.ZCode,
+		"minimax":        brandicons.MiniMax,
 	}
 	for index, id := range channelOrder {
 		entry := catalogue[index]

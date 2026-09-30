@@ -26,6 +26,8 @@ func allAccounts() []pluginapi.HostAuthFileEntry {
 		// provider plugin accepts either field and the hub must too.
 		{Type: "loomy", AuthIndex: "lo-1", Name: "loomy-1.json"},
 		account("cline", "cl-1", "cline-1.json"),
+		account("zcode", "zc-1", "zcode-1.json"),
+		account("minimax", "mm-1", "minimax-1.json"),
 	}
 }
 
@@ -71,6 +73,10 @@ func providerStatusRoutes() []route {
 		jsonRoute("/lobsterai/status?", `{"accounts":[{"auth_index":"lb-1","name":"lobster-1.json","label":"有道账号"}]}`),
 		jsonRoute("/loomy/status?", `{"provider":"loomy","accounts":1,"account":{"auth_index":"lo-1","name":"loomy-1.json"}}`),
 		codeartsStatusRoute("/codearts/status?", "NOT_CLAIMED", "true", 10),
+		// Both new providers report one account plus their model count, which is
+		// the shape the channel overview reads.
+		jsonRoute("/zcode/status?", `{"provider":"zcode","account_count":1,"model_count":2,"accounts":[{"auth_index":"zc-1","name":"zcode-1.json"}]}`),
+		jsonRoute("/minimax/status?", `{"provider":"minimax","account_count":1,"model_count":4,"accounts":[{"auth_index":"mm-1","name":"minimax-1.json"}]}`),
 	}
 }
 
@@ -86,6 +92,12 @@ func checkinRoutes() []route {
 		jsonRoute("/lobsterai/checkin?", `{"status":"already-claimed","message":"今天已签到","credit_granted":false}`),
 		jsonRoute("/loomy/checkin?", `{"status":"claimed","message":"初始化每日额度成功","credit":100,"balance":100}`),
 		jsonRoute("/codebuddy/checkin?", `{"supported":true,"product":"codebuddy","outcome":"claimed","message":"签到成功","credit":2}`),
+		// zcode answers with the `status` word this repository's plugins speak;
+		// the claim itself only runs for `action=claim`.
+		jsonRoute("/zcode/checkin?", `{"provider":"zcode","status":"claimed","already_claimed":false,"today_checked_in":true,"claimable_plans":0}`),
+		// minimax needs no action parameter: its /checkin claims unconditionally
+		// and reports the idempotent repeat through claim_result.
+		jsonRoute("/minimax/checkin?", `{"status":"already-claimed","message":"今天已领取","amount":0}`),
 		htmlRoute("/codearts/status?action=checkin", `<div class="notice success">签到成功，获得 5.00 额度</div>`),
 	}
 }
@@ -241,6 +253,10 @@ func TestExactCheckinRequestsPerProvider(t *testing.T) {
 		{provider: "lobsterai", want: []string{"/v0/resource/plugins/lobsterai/checkin?", "action=checkin", "auth_index=lb-1", "format=json"}},
 		{provider: "loomy", want: []string{"/v0/resource/plugins/loomy/checkin?", "action=claim", "auth_index=lo-1", "format=json"}},
 		{provider: "codebuddy", want: []string{"/v0/resource/plugins/codebuddy/checkin?", "action=checkin", "auth_index=cb-1", "format=json"}},
+		// zcode's route answers JSON either way, but only the explicit
+		// `action=claim` link performs the claim — without it the run would look
+		// successful and take nothing.
+		{provider: "zcode", want: []string{"/v0/resource/plugins/zcode/checkin?", "action=claim", "auth_index=zc-1", "format=json"}},
 		// codearts is the exception: the claim is a query string on the STATUS
 		// page and must NOT ask for JSON, which would skip the write.
 		{provider: "codearts", want: []string{"/v0/resource/plugins/codearts/status?", "action=checkin", "auth_index=ca-1"}, avoid: []string{"format=json"}},
@@ -266,6 +282,29 @@ func TestExactCheckinRequestsPerProvider(t *testing.T) {
 				t.Fatalf("%s: request %s must not contain %q", check.provider, found, avoid)
 			}
 		}
+	}
+
+	// minimax is asserted separately because it is the one provider whose claim
+	// carries NO action parameter: its `/checkin` route claims unconditionally
+	// and reports the idempotent repeat itself. The loop above only inspects
+	// routes that carry an action, so it cannot express this case.
+	minimaxURL := ""
+	for _, rawURL := range fake.requestURLs() {
+		if strings.Contains(rawURL, "/v0/resource/plugins/minimax/checkin?") {
+			minimaxURL = rawURL
+			break
+		}
+	}
+	if minimaxURL == "" {
+		t.Fatalf("minimax check-in request missing: %v", fake.requestURLs())
+	}
+	for _, want := range []string{"auth_index=mm-1", "format=json"} {
+		if !strings.Contains(minimaxURL, want) {
+			t.Fatalf("minimax request %s is missing %q", minimaxURL, want)
+		}
+	}
+	if strings.Contains(minimaxURL, "action=") {
+		t.Fatalf("minimax request %s must not carry an action parameter", minimaxURL)
 	}
 
 	for _, rawURL := range fake.requestURLs() {
@@ -319,6 +358,8 @@ func TestAggregatedVerdicts(t *testing.T) {
 		"loomy":          kindClaimed,
 		"trae":           kindClaimed,
 		"cline":          kindUnsupported,
+		"zcode":          kindClaimed,
+		"minimax":        kindAlreadyClaimed,
 	}
 	for provider, kind := range want {
 		rows := rowsFor(t, result, provider)
@@ -356,15 +397,15 @@ func TestAggregatedVerdicts(t *testing.T) {
 	}
 
 	summary := result.summary()
-	if summary["total"] != 12 {
-		t.Fatalf("summary total = %d, want 12: %v", summary["total"], summary)
+	if summary["total"] != 14 {
+		t.Fatalf("summary total = %d, want 14: %v", summary["total"], summary)
 	}
 	for _, pair := range []struct {
 		kind rowKind
 		want int
 	}{
-		{kindClaimed, 5},
-		{kindAlreadyClaimed, 2},
+		{kindClaimed, 6},
+		{kindAlreadyClaimed, 3},
 		{kindUnavailable, 3},
 		// cline and raccoon both have no check-in endpoint upstream.
 		{kindUnsupported, 2},

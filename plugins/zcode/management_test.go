@@ -712,3 +712,102 @@ func TestBrandIconIsADataURL(t *testing.T) {
 		t.Error("the registration does not carry the logo")
 	}
 }
+
+// TestCheckinStatusWordIsHonest pins the verdict vocabulary the Jet Hub panel
+// reads out of this page's `status` field. The panel maps
+// claimed/already-claimed/inactive/failed onto 签到成功／已领取／无活动／失败 and
+// prints anything it does not recognise verbatim, so an optimistic word here
+// would surface as a false 签到成功 on the panel.
+func TestCheckinStatusWordIsHonest(t *testing.T) {
+	cases := []struct {
+		name       string
+		attempted  bool
+		outcomes   []claimOutcome
+		checkedIn  bool
+		claimable  int
+		wantStatus string
+	}{
+		{
+			name: "a fresh grant is claimed", attempted: true,
+			outcomes:   []claimOutcome{{Code: codeClaimSuccess, OK: true}},
+			wantStatus: "claimed",
+		},
+		{
+			// 1003 is an idempotent success and OK is true for it too, so the
+			// already-claimed test has to win; otherwise a repeat run would be
+			// reported as a brand-new 签到成功.
+			name: "the idempotent repeat is already-claimed", attempted: true,
+			outcomes:   []claimOutcome{{Code: codeAlreadyClaimed, OK: true, AlreadyClaimed: true}},
+			wantStatus: "already-claimed",
+		},
+		{
+			name: "a mixed batch prefers the fresh grant", attempted: true,
+			outcomes: []claimOutcome{
+				{Code: codeAlreadyClaimed, OK: true, AlreadyClaimed: true},
+				{Code: codeClaimSuccess, OK: true},
+			},
+			wantStatus: "claimed",
+		},
+		{
+			name: "nothing succeeded is failed", attempted: true,
+			outcomes:   []claimOutcome{{Code: 1005, OK: false}},
+			wantStatus: "failed",
+		},
+		{
+			name: "an errored claim with no outcome is failed", attempted: true,
+			wantStatus: "failed",
+		},
+		{
+			name: "a read-only load that already claimed today", attempted: false,
+			checkedIn: true, wantStatus: "already-claimed",
+		},
+		{
+			name: "a read-only load with something claimable", attempted: false,
+			claimable: 2, wantStatus: "claimable",
+		},
+		{
+			name: "a read-only load with nothing claimable", attempted: false,
+			wantStatus: "inactive",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := checkinStatusWord(testCase.attempted, testCase.outcomes, testCase.checkedIn, testCase.claimable)
+			if got != testCase.wantStatus {
+				t.Fatalf("status = %q, want %q", got, testCase.wantStatus)
+			}
+		})
+	}
+}
+
+// TestCheckinResponseCarriesTheStatusWord proves the field is actually wired
+// into the response rather than only computable: the defect this guards against
+// is a helper that exists but is never called, which the panel would show as an
+// unclassified row.
+func TestCheckinResponseCarriesTheStatusWord(t *testing.T) {
+	fake := newFakeHost()
+	fake.install(t)
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		switch {
+		case strings.Contains(request.URL, ClaimPath):
+			// 1003 = already claimed: an idempotent success, not an error.
+			return httpResponse(http.StatusOK, `{"code":1003,"msg":"already claimed"}`), nil
+		case strings.Contains(request.URL, PreviewPath):
+			return httpResponse(http.StatusOK, `{"code":0,"data":{"plans":[]}}`), nil
+		default:
+			return httpResponse(http.StatusOK, `{"code":0}`), nil
+		}
+	}
+	storedCredential(t, fake, "auth-1", "zcode-1.json", sampleCredential())
+
+	response := callManagement(t, testHost(), jsonManagementRequest(
+		http.MethodGet, "/v0/resource/plugins/zcode/checkin", url.Values{"action": {"claim"}}))
+
+	var document map[string]any
+	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
+		t.Fatalf("check-in document is not JSON: %v", errUnmarshal)
+	}
+	if got := document["status"]; got != "already-claimed" {
+		t.Fatalf("status = %v, want already-claimed (the panel reads this word): %s", got, response.Body)
+	}
+}

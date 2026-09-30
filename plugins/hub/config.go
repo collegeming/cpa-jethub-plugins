@@ -206,7 +206,7 @@ func ConfigFields() []configField {
 		{Name: "timeout_ms", Type: "integer",
 			Description: "单次调用 provider 资源路由的超时，毫秒（默认 30000，插件侧计时）"},
 		{Name: "providers", Type: "string",
-			Description: "参与一键签到的 provider id，逗号分隔（如 qoder,trae,loomy）。留空表示目录内全部（codearts,codebuddy,codebuddy-intl,workbuddy-cn,workbuddy,qoder,trae,lobsterai,loomy,cline），其中 cline 会如实显示为不支持"},
+			Description: "参与一键签到的 provider id，逗号分隔（如 qoder,trae,loomy）。留空表示目录内全部（codearts,codebuddy,codebuddy-intl,workbuddy-cn,workbuddy,qoder,trae,lobsterai,loomy,cline,zcode,minimax,raccoon），其中 cline 与 raccoon 会如实显示为不支持"},
 	}
 }
 

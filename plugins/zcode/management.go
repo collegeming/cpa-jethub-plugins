@@ -406,8 +406,11 @@ func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi
 	}
 
 	payload := map[string]any{"provider": ProviderKey, "account": entry.Name}
-	if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "claim") {
-		outcomes, errClaim := claimDaily(h, credential, cfg)
+	claimAttempted := strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "claim")
+	var outcomes []claimOutcome
+	if claimAttempted {
+		claimed, errClaim := claimDaily(h, credential, cfg)
+		outcomes = claimed
 		if errClaim != nil {
 			payload["claim_error"] = errClaim.Error()
 		} else {
@@ -428,6 +431,9 @@ func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi
 	status, errStatus := fetchCheckinStatus(h, credential, cfg)
 	if errStatus != nil {
 		payload["status_error"] = errStatus.Error()
+		// The claim result is known even when the read-back failed, so the
+		// verdict is still published rather than withheld.
+		payload["status"] = checkinStatusWord(claimAttempted, outcomes, false, 0)
 		return jsonManagementResponse(http.StatusOK, payload)
 	}
 	payload["active"] = status.Active
@@ -435,5 +441,56 @@ func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi
 	payload["activity_name"] = status.ActivityName
 	payload["claimable_plans"] = len(status.Claimable)
 	payload["note"] = status.Note
+	payload["status"] = checkinStatusWord(claimAttempted, outcomes, status.TodayCheckedIn, len(status.Claimable))
 	return jsonManagementResponse(http.StatusOK, payload)
+}
+
+// checkinStatusWord reduces this page's result to the shared check-in
+// vocabulary, which is what the Jet Hub panel reads to label the row
+// (`plugins/hub/orchestrator.go`, interpretCheckinJSON → normalizeProviderStatus):
+//
+//	claimed          a plan was granted by this run
+//	already-claimed  nothing was granted because today's grant is already taken
+//	inactive         no claim was attempted and nothing is claimable
+//	failed           a claim was attempted and nothing succeeded
+//
+// ⚠ It never upgrades an attempt to `claimed`. A run whose claim errored, or
+// that came back with a non-success business code, stays `failed`; the panel
+// prints an unrecognised word verbatim rather than assuming success, so a wrong
+// word here would surface as a false 签到成功.
+//
+// `claimOutcome.OK` is true for BOTH a fresh grant and the idempotent 1003, so
+// the already-claimed test has to come first to tell them apart.
+func checkinStatusWord(attempted bool, outcomes []claimOutcome, todayCheckedIn bool, claimable int) string {
+	if attempted {
+		granted, already := false, false
+		for _, outcome := range outcomes {
+			if outcome.AlreadyClaimed {
+				already = true
+				continue
+			}
+			if outcome.OK {
+				granted = true
+			}
+		}
+		switch {
+		case granted:
+			return "claimed"
+		case already:
+			return "already-claimed"
+		default:
+			return "failed"
+		}
+	}
+	if todayCheckedIn {
+		return "already-claimed"
+	}
+	if claimable > 0 {
+		// Claimable but not attempted. "claimable" is not in the panel's shared
+		// vocabulary on purpose: the panel only classifies runs it drove, and a
+		// word it does not know is printed as-is instead of being mapped onto a
+		// verdict this page has not earned.
+		return "claimable"
+	}
+	return "inactive"
 }

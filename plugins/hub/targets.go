@@ -170,6 +170,26 @@ func targetCatalogue() []target {
 			// drives.
 			Note: "Raccoon 没有每日签到（每日额度由服务端自动发放）；一次性登录奖励需在插件页单独领取，不参与一键动作",
 		},
+		{
+			ID: "zcode", Label: "ZCode（智谱）", Icon: brandicons.ZCode,
+			Support:     supportJSON,
+			CheckinPath: "/checkin",
+			// REQUIRED: zcode's `/checkin` answers JSON either way, but only the
+			// explicit `action=claim` link performs the claim — a plain load just
+			// reports state (`plugins/zcode/management.go`, checkinJSON). Without
+			// this parameter the run would look successful and claim nothing.
+			CheckinQuery: url.Values{"action": {"claim"}},
+			Note:         "只领取每日额度；额度按自然日由服务端结算，插件会先补活跃上报再查可领活动",
+		},
+		{
+			ID: "minimax", Label: "MiniMax Code（中国版）", Icon: brandicons.MiniMax,
+			Support:     supportJSON,
+			CheckinPath: "/checkin",
+			// No extra parameter: this provider's `/checkin` claims
+			// unconditionally and reports through `claim_result`
+			// (`plugins/minimax/management.go`, checkinResponse).
+			Note: "领取每日积分；服务端以 claim_result 判幂等，重复领取如实报告「已领取」",
+		},
 	}
 }
 
