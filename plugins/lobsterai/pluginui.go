@@ -542,6 +542,15 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		},
 		"models": summariseModels(currentCatalog(time.Now())),
 	}
+	// The hub's channel overview renders `model_count` and NOTHING else for the
+	// model figure (`plugins/hub/overview.go`, modelCountFacts). Publishing only
+	// the `models` array left this channel's row without a 模型 N, unlike its
+	// siblings — a visible inconsistency for no reason.
+	if models, okModels := body["models"].([]map[string]any); okModels {
+		body["model_count"] = len(models)
+	} else if models, okModels := body["models"].([]any); okModels {
+		body["model_count"] = len(models)
+	}
 
 	entry, found := selectAccount(h, request)
 	if !found {

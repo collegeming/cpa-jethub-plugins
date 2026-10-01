@@ -137,6 +137,26 @@ func upstreamModelID(id string) string {
 	return trimmed
 }
 
+// publishedModels returns the catalogue this plugin would hand the host for the
+// selected account, WITHOUT triggering a new discovery run.
+//
+// It exists for the status document: the hub's channel overview renders
+// `model_count` (`plugins/hub/overview.go`, modelCountFacts), and reading the
+// same source `model.for_auth` publishes keeps the two from disagreeing. Using
+// the cache rather than calling discoverModels keeps a page load from issuing an
+// extra upstream request every time it is refreshed.
+func publishedModels() []pluginapi.ModelInfo {
+	cfg := settings()
+	ttl := time.Duration(cfg.ModelCacheTTLMS) * time.Millisecond
+	if ttl <= 0 {
+		ttl = 2 * time.Hour
+	}
+	if cached := discoveredModels.get(ttl); len(cached) > 0 {
+		return cached
+	}
+	return staticModelInfos()
+}
+
 // modelInfoFor builds the host-facing model descriptor for one model id.
 func modelInfoFor(id, displayName string) pluginapi.ModelInfo {
 	name := strings.TrimSpace(displayName)

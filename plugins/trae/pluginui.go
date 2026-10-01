@@ -431,6 +431,12 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		"channels":      cfg.Channels,
 		"max_mode":      cfg.MaxMode,
 		"account_count": len(accounts),
+		// `model_count` is what the hub's channel overview renders for the model
+		// figure (`plugins/hub/overview.go`, modelCountFacts); without it the row
+		// carries no 模型 N at all. This is the built-in catalogue size — the
+		// live one needs an account, and this document is also served when there
+		// is none.
+		"model_count": len(staticModelInfos(cfg)),
 	}
 	if len(accounts) == 0 {
 		body["accounts"] = []any{}

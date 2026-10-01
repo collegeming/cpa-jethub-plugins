@@ -319,6 +319,13 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		"auth_index":    entry.AuthIndex,
 		"name":          entry.Name,
 		"status":        statusText(entry),
+		// The hub's channel overview renders `model_count` and nothing else for
+		// the model figure (`plugins/hub/overview.go`, modelCountFacts). Counting
+		// the same source `model.for_auth` publishes keeps the two agreeing: the
+		// cached discovery when it is warm, the built-in catalogue otherwise.
+		// Reading the cache rather than triggering discovery keeps this document
+		// from issuing an extra upstream call on every page load.
+		"model_count": len(publishedModels()),
 	}
 	if label := strings.TrimSpace(entry.Label); label != "" {
 		body["label"] = label

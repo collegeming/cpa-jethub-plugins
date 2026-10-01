@@ -231,3 +231,22 @@ func TestStatusPageRendersOneCreditCardPerAccount(t *testing.T) {
 		t.Error("新建账号 is not reachable from the status page")
 	}
 }
+
+// TestStatusJSONPublishesModelCount guards the field the hub renders for the
+// model figure. This document already carried a `models` array, but the hub
+// reads `model_count` and nothing else, so the number never reached the row.
+func TestStatusJSONPublishesModelCount(t *testing.T) {
+	response := statusJSON(installFakeHost(t, twoLobsterAccounts(t)), pluginapi.ManagementRequest{})
+	var document map[string]any
+	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
+		t.Fatalf("decode: %v", errUnmarshal)
+	}
+	count, okCount := document["model_count"].(float64)
+	if !okCount {
+		t.Fatalf("model_count is missing from the status document")
+	}
+	models, _ := document["models"].([]any)
+	if int(count) != len(models) {
+		t.Fatalf("model_count = %v but models has %d entries", count, len(models))
+	}
+}

@@ -296,3 +296,21 @@ func TestStatusPageRendersOneCreditCardPerAccount(t *testing.T) {
 		t.Error("resource routes are dispatched as GET only, so no form may be rendered")
 	}
 }
+
+// TestStatusJSONPublishesModelCount guards the field the hub renders for the
+// model figure, including the no-account document — which is the one this
+// provider serves most of the time.
+func TestStatusJSONPublishesModelCount(t *testing.T) {
+	response := statusJSON(abiboot.NewHost(nil), pluginapi.ManagementRequest{})
+	var document map[string]any
+	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
+		t.Fatalf("decode status JSON: %v", errUnmarshal)
+	}
+	count, okCount := document["model_count"].(float64)
+	if !okCount {
+		t.Fatalf("model_count is missing from the status document")
+	}
+	if int(count) != len(staticModelInfos(settings())) {
+		t.Fatalf("model_count = %v, want the built-in catalogue size %d", count, len(staticModelInfos(settings())))
+	}
+}

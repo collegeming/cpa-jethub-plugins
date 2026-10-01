@@ -354,3 +354,18 @@ func TestStatusPageKeepsNewAccountWithASingleAccount(t *testing.T) {
 		t.Errorf("status page shows %d quota cards, want 1", got)
 	}
 }
+
+// TestStatusJSONPublishesModelCount guards the one field the hub's channel
+// overview renders for the model figure (`plugins/hub/overview.go`,
+// modelCountFacts reads `model_count`). Without it the row carries no 模型 N,
+// which is how this channel differed from its siblings.
+func TestStatusJSONPublishesModelCount(t *testing.T) {
+	document := decodeDocument(t, statusJSON(twoAccountHost(t), pluginapi.ManagementRequest{}))
+	count, okCount := document["model_count"].(float64)
+	if !okCount {
+		t.Fatalf("model_count is missing from the status document")
+	}
+	if int(count) != len(publishedModels()) {
+		t.Fatalf("model_count = %v, want %d (the same source model.for_auth publishes)", count, len(publishedModels()))
+	}
+}
