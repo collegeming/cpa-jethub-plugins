@@ -300,8 +300,9 @@ func claimFailureText(code int, fallback string) string {
 	case codePlanSoldOut:
 		return "名额已用完（1005）"
 	case codeCaptchaFailed:
-		return "服务端要求人机验证（3007）。本插件按实测结论不产出 captcha —— " +
-			"推理通道不需要它，而领取端点目前是唯一仍可能要求它的地方；请稍后重试，若持续出现请反馈"
+		return "服务端要求人机验证（3007）：ZCode 的领取端点需要阿里云验证码令牌，而本插件不产出验证码，" +
+			"因此一键签到无法完成——重试不会有不同结果。推理通道不受影响（实测无需验证码）。" +
+			"请在 ZCode 官方客户端或网页里领取当日额度。"
 	default:
 		if strings.TrimSpace(fallback) != "" {
 			return fallback

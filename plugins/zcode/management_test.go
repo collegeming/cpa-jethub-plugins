@@ -811,3 +811,74 @@ func TestCheckinResponseCarriesTheStatusWord(t *testing.T) {
 		t.Fatalf("status = %v, want already-claimed (the panel reads this word): %s", got, response.Body)
 	}
 }
+
+// TestCheckinSummaryIsPublishedForTheHub pins the one field the hub renders.
+//
+// `interpretCheckinJSON` reads a TOP-LEVEL `message` and nothing else, so a
+// response without one reaches the user as the bare status word. That is how a
+// 3007 captcha rejection showed up as "failed" with the actionable sentence
+// stranded in `outcomes[].message`.
+func TestCheckinSummaryIsPublishedForTheHub(t *testing.T) {
+	cases := []struct {
+		name     string
+		outcomes []claimOutcome
+		errClaim any
+		want     string
+	}{
+		{"claimed", []claimOutcome{{OK: true}}, nil, "签到成功：1 个额度已领取"},
+		{"already", []claimOutcome{{OK: true, AlreadyClaimed: true}}, nil, "今日已签到：1 个额度无需重复领取"},
+		{
+			// A refusal outranks a success: the run is not "done" while one plan
+			// was rejected, and the rejection is what the user must act on.
+			"failure outranks success",
+			[]claimOutcome{{OK: true}, {OK: false, Code: codeCaptchaFailed, Message: "服务端要求人机验证（3007）"}},
+			nil,
+			"服务端要求人机验证（3007）",
+		},
+		{"transport error", nil, "连接超时", "连接超时"},
+		{"nothing to report", nil, nil, ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := checkinSummary(testCase.outcomes, testCase.errClaim); got != testCase.want {
+				t.Fatalf("checkinSummary = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestCheckinJSONCarriesTheFailureMessage goes through the route the hub calls,
+// so the wiring is covered and not just the formatter.
+func TestCheckinJSONCarriesTheFailureMessage(t *testing.T) {
+	fake := newFakeHost()
+	fake.install(t)
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		switch {
+		case strings.HasSuffix(request.URL, ClaimPath):
+			return httpResponse(http.StatusBadRequest, `{"code":3007,"msg":"captcha verify failed"}`), nil
+		case strings.HasSuffix(request.URL, EventReportPath):
+			return httpResponse(http.StatusOK, `{"code":0}`), nil
+		case strings.Contains(request.URL, PreviewPath):
+			return httpResponse(http.StatusOK, `{"code":0,"data":{"plans":[{"plan_id":"p1","priority":1}]}}`), nil
+		default:
+			return httpResponse(http.StatusOK, `{"code":0}`), nil
+		}
+	}
+	storedCredential(t, fake, "auth-1", "zcode-1.json", sampleCredential())
+
+	response := callManagement(t, testHost(), managementRequest(
+		http.MethodGet, "/v0/resource/plugins/zcode/checkin",
+		url.Values{"auth_index": {"auth-1"}, "action": {"claim"}, "format": {"json"}}, nil))
+
+	var document map[string]any
+	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
+		t.Fatalf("decode: %v", errUnmarshal)
+	}
+	message, _ := document["message"].(string)
+	if !strings.Contains(message, "3007") {
+		t.Fatalf("the hub renders a top-level message; got %q from %s", message, string(response.Body))
+	}
+	if document["status"] != "failed" {
+		t.Fatalf("status = %v, want failed so the row is honest", document["status"])
+	}
+}

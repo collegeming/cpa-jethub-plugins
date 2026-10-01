@@ -78,6 +78,7 @@ func providerStatusRoutes() []route {
 		// the shape the channel overview reads.
 		jsonRoute("/zcode/status?", `{"provider":"zcode","account_count":1,"model_count":2,"accounts":[{"auth_index":"zc-1","name":"zcode-1.json"}]}`),
 		jsonRoute("/minimax/status?", `{"provider":"minimax","account_count":1,"model_count":4,"accounts":[{"auth_index":"mm-1","name":"minimax-1.json"}]}`),
+		jsonRoute("/raccoon/status?", `{"provider":"raccoon","account_count":1,"model_count":6,"accounts":[{"auth_index":"rc-1","name":"raccoon-1.json","label":"Raccoon"}]}`),
 		jsonRoute("/atomcode/status?", `{"provider":"atomcode","account_count":1,"models":[],"accounts":[{"auth_index":"at-1","name":"atomcode-1.json","label":"黎明文铮"}]}`),
 	}
 }
@@ -100,6 +101,9 @@ func checkinRoutes() []route {
 		// minimax needs no action parameter: its /checkin claims unconditionally
 		// and reports the idempotent repeat through claim_result.
 		jsonRoute("/minimax/checkin?", `{"status":"already-claimed","message":"今天已领取","amount":0}`),
+		// raccoon has no DAILY check-in; its `/checkin` handles the one-off
+		// desktop login reward and reports the server's own idempotency.
+		jsonRoute("/raccoon/checkin?", `{"provider":"raccoon","status":"claimed","message":"已领取桌面端登录奖励","reward_points":3000}`),
 		// atomcode's claim runs the Max -> Pro -> Lite cascade and answers with
 		// its own status word; a repeat reports the held tier.
 		jsonRoute("/atomcode/checkin?", `{"status":"already-claimed","message":"已领取","plan_name":"CodingPlan Lite-体验版"}`),
@@ -363,6 +367,7 @@ func TestAggregatedVerdicts(t *testing.T) {
 		"loomy":          kindClaimed,
 		"trae":           kindClaimed,
 		"cline":          kindUnsupported,
+		"raccoon":        kindClaimed,
 		"zcode":          kindClaimed,
 		"minimax":        kindAlreadyClaimed,
 		"atomcode":       kindAlreadyClaimed,
@@ -410,11 +415,12 @@ func TestAggregatedVerdicts(t *testing.T) {
 		kind rowKind
 		want int
 	}{
-		{kindClaimed, 6},
+		{kindClaimed, 7},
 		{kindAlreadyClaimed, 4},
 		{kindUnavailable, 3},
-		// cline and raccoon both have no check-in endpoint upstream.
-		{kindUnsupported, 2},
+		// Only cline is left without a check-in endpoint. raccoon gained one
+		// for its one-off desktop login reward, which is idempotent server-side.
+		{kindUnsupported, 1},
 		{kindFailed, 0},
 	} {
 		if summary[string(pair.kind)] != pair.want {

@@ -28,7 +28,8 @@ import (
 //	quota exhausted (`1005` / `1113`)                              402
 //	concurrency limited (`3009`), other rate limits                429
 //	risk control (`3012`) — NOT an auth failure, see below         403
-//	captcha failure (`3007`) — retryable                           429
+//	captcha failure (`3007`) on the INFERENCE path — unexpected      429
+//	captcha failure (`3007`) on the CLAIM path — permanent           400
 //	upstream 5xx, transport failure                                502
 //	upstream timeout                                               504
 //	plugin-side misconfiguration                                   500
@@ -42,10 +43,20 @@ import (
 //     fifth — so it must NEVER be retried automatically and must never be shown
 //     as "your credential expired". The reference maps it to a permission error
 //     for exactly this reason (`zcode-adapter.ts:httpErrorCodeForZcode`).
-//   - `3007` (captcha verification failed) is retryable in principle, but the
-//     plugin does not mint captchas: the header was measured to be unnecessary
-//     for inference, so a `3007` here means the server changed its mind. It is
-//     surfaced as a retryable rate limit with a message that says so.
+//   - `3007` (captcha verification failed) means two different things depending
+//     on the path, and conflating them is what made a permanent failure look
+//     like a hiccup:
+//
+//     on the CLAIM path it is PERMANENT. The claim endpoint requires an Aliyun
+//     captcha token and this plugin does not produce one, so every attempt
+//     fails identically (measured 2026-10-01: `400 {"code":3007,"msg":"captcha
+//     verify failed"}`, no challenge in the body to solve). The message names
+//     the remedy instead of inviting a retry.
+//
+//     on the INFERENCE path it would be UNEXPECTED — model requests were
+//     measured to need no captcha (`skip_model_request: true`) — so there it
+//     stays retryable: if the server ever changes its mind, a retry is the
+//     right first response.
 
 // Upstream business codes.
 const (
@@ -294,7 +305,7 @@ func describeUpstreamError(status int, envelope *upstreamEnvelope) string {
 			"因此本插件不会自动重试。若反复出现，请检查身份块是否被中间层改写" + suffix
 	case code == codeCaptchaFailed || captchaTextPattern.MatchString(bodyText(envelope)):
 		return "上游要求人机验证（3007 captcha verify failed）。" +
-			"实测推理通道并不需要 captcha 头，出现它说明上游策略已变；请重试一次，若持续出现请反馈" + suffix
+			"实测推理通道并不需要 captcha 头，因此出现它说明上游策略已变；可重试一次，若持续出现请反馈" + suffix
 	case code == codeParameterError:
 		return "上游拒绝请求参数（3001 parameter error）——" +
 			"通常是缺少 X-Device-Mid，或登录流程少了必需参数（该参数的值不校验，但不能缺）" + suffix

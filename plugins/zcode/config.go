@@ -35,10 +35,13 @@ const (
 	BalancePath = "/api/v1/zcode-plan/billing/balance"
 	// PreviewPath needs only `X-Device-Mid`.
 	PreviewPath = "/api/v1/zcode-plan/billing/preview"
-	// ClaimPath needs `Authorization`, `X-Device-Mid` and — per the official
-	// client bundle — an Aliyun captcha header. It is the ONE endpoint where the
-	// captcha header still appears; this plugin sends the request without it and
-	// reports plainly if the server ever demands one.
+	// ClaimPath needs `Authorization`, `X-Device-Mid` and an Aliyun captcha
+	// header. It is the ONE endpoint where that header appears, and the server
+	// ENFORCES it: calling without one returns
+	// `400 {"code":3007,"msg":"captcha verify failed"}` every time (measured
+	// 2026-10-01). This plugin does not mint captchas, so a one-click check-in
+	// for this provider cannot succeed; it reports 3007 plainly rather than
+	// failing silently. Inference is unaffected — it needs no captcha.
 	ClaimPath = "/api/v1/zcode-plan/billing/claim"
 	// EventReportPath needs only `X-Device-Mid`.
 	EventReportPath = "/api/v1/event/report"

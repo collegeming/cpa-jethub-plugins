@@ -1,9 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -36,7 +41,7 @@ func TestMenuCount(t *testing.T) {
 		}
 		pages = append(pages, resource.Path)
 	}
-	want := []string{"/status", "/login", "/reward"}
+	want := []string{"/status", "/login", "/reward", "/checkin"}
 	if len(pages) != len(want) {
 		t.Fatalf("resource routes = %v, want %v", pages, want)
 	}
@@ -45,12 +50,23 @@ func TestMenuCount(t *testing.T) {
 			t.Fatalf("resource routes = %v, want %v", pages, want)
 		}
 	}
-	// There is deliberately NO /checkin route: this provider has no daily
-	// check-in, and shipping the route would imply otherwise.
-	for _, path := range pages {
-		if strings.Contains(path, "checkin") || strings.Contains(path, "signin") {
-			t.Fatalf("resource route %s suggests a daily check-in, which this provider does not have", path)
+	// `/checkin` EXISTS as the hub sweep's entry point, but it is NOT a daily
+	// check-in and must never read like one: the daily 300 is granted by the
+	// server on its own. The route exists so the sweep can claim the ONE-OFF
+	// desktop login reward, and its description has to say so — otherwise the
+	// next reader will assume a daily action that does not exist.
+	described := false
+	for _, resource := range resp.Resources {
+		if resource.Path != "/checkin" {
+			continue
 		}
+		described = true
+		if !strings.Contains(resource.Description, "没有每日签到") {
+			t.Fatalf("/checkin must state that this provider has no daily check-in; got %q", resource.Description)
+		}
+	}
+	if !described {
+		t.Fatal("/checkin route is missing: the hub sweep has no entry point")
 	}
 }
 
@@ -68,4 +84,79 @@ func TestMenuCountIsStableAcrossCalls(t *testing.T) {
 		}()
 	}
 	waitGroup.Wait()
+}
+
+// TestCheckinOnlyWritesForAnExplicitAction is the safety property that makes it
+// acceptable to put a ONE-OFF reward behind a button people press daily.
+//
+// Two gates have to hold: the route must not write on a page load, and it must
+// not write at all when the reward's own state already says it was granted. The
+// server's `granted` flag is a third gate, but relying on it alone would mean
+// every sweep fires a pointless write against a lifetime grant.
+func TestCheckinOnlyWritesForAnExplicitAction(t *testing.T) {
+	grants := 0
+	load := func(claimed bool, action string) map[string]any {
+		grants = 0
+		fake := newFakeHost()
+		fake.install(t)
+		fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+			switch {
+			case strings.HasSuffix(request.URL, LoginPointsGrantPath):
+				grants++
+				return httpResponse(http.StatusOK, `{"code":0,"data":{"granted":true,"popup":{"points":3000}}}`), nil
+			case strings.Contains(request.URL, PointsBillsPath):
+				// The state is DERIVED from bill history: no dedicated endpoint
+				// exists, and matching biz_type alone is wrong because the
+				// registration gift shares it — the event name is the separator.
+				if claimed {
+					return httpResponse(http.StatusOK, `{"code":0,"data":{"items":[{"biz_type":"`+
+						LoginRewardBizType+`","event_name":"`+LoginRewardEventName+`","points":3000}]}}`), nil
+				}
+				return httpResponse(http.StatusOK, `{"code":0,"data":{"items":[]}}`), nil
+			default:
+				return httpResponse(http.StatusOK, `{"code":0,"data":{}}`), nil
+			}
+		}
+		storedCredential(t, fake, "rc-1", "raccoon-1.json", sampleCredential(t))
+		query := url.Values{"auth_index": {"rc-1"}, "format": {"json"}}
+		if action != "" {
+			query.Set("action", action)
+		}
+		response := callManagement(t, testHost(), managementRequest(
+			http.MethodGet, "/v0/resource/plugins/raccoon/checkin", query, nil))
+		var document map[string]any
+		if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
+			t.Fatalf("decode %s: %v", string(response.Body), errUnmarshal)
+		}
+		return document
+	}
+
+	// A plain load never writes.
+	document := load(false, "")
+	if grants != 0 {
+		t.Fatalf("a page load issued %d grant requests", grants)
+	}
+	if document["status"] != "needs-action" {
+		t.Fatalf("plain load status = %v, want needs-action", document["status"])
+	}
+
+	// The explicit action does write, once.
+	document = load(false, "claim")
+	if grants != 1 {
+		t.Fatalf("action=claim issued %d grant requests, want 1", grants)
+	}
+	if document["status"] != "claimed" {
+		t.Fatalf("status = %v, want claimed", document["status"])
+	}
+
+	// An account that already holds the reward is reported WITHOUT a write. The
+	// server would refuse a duplicate anyway, but firing a pointless write at a
+	// lifetime grant on every sweep is not the same as being correct.
+	document = load(true, "claim")
+	if grants != 0 {
+		t.Fatalf("an already-granted reward still issued %d grant requests", grants)
+	}
+	if document["status"] != "already-claimed" {
+		t.Fatalf("status = %v, want already-claimed", document["status"])
+	}
 }

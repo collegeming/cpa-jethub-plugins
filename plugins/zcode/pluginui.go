@@ -448,8 +448,9 @@ func renderCheckinPage(h *abiboot.Host, request pluginapi.ManagementRequest) plu
 			"否则 preview 恒为空 plans:[]（实测：补前为空、补后立刻出现 plan）。本插件在每次查询前都自动补报。"),
 		plugui.Notice("warning", "② 额度单位是 token，不是积分。面板按上游下发的 unit_type 显示，"+
 			"不会把 1 亿 token 伪装成 1 亿积分。"),
-		plugui.Notice("warning", "③ claim 是官方客户端唯一还带 captcha 的端点。本插件按实测结论不产出 captcha："+
-			"推理不需要它，领取端点目前也不需要；若服务端将来要求，页面会明确报 3007 而不是静默失败。"),
+		plugui.Notice("danger", "③ **领取无法完成**：claim 是官方客户端唯一还带阿里云验证码的端点，"+
+			"而本插件不产出验证码，服务端一律返回 3007。重试无效——请在 ZCode 官方客户端或网页里领取。"+
+			"推理不受影响。"),
 	)))
 	body = append(body, plugui.Card("操作", plugui.Group(plugui.Notice("",
 		"领取是不可逆的，因此只由显式点击触发：下面这个链接带 action=claim，刷新页面本身不会领取。")),

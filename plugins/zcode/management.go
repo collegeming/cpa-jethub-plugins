@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
@@ -428,6 +429,17 @@ func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi
 			payload["outcomes"] = rows
 		}
 	}
+	// The hub renders a check-in row from the TOP-LEVEL `message` and nothing
+	// else (`plugins/hub/orchestrator.go`, interpretCheckinJSON). Without one,
+	// a failed claim reaches the user as the bare word "failed" while the
+	// actionable sentence sits unread in `outcomes[].message` — which is exactly
+	// how a 3007 captcha rejection looked like a mystery for a whole run.
+	if claimAttempted {
+		if summary := checkinSummary(outcomes, payload["claim_error"]); summary != "" {
+			payload["message"] = summary
+		}
+	}
+
 	status, errStatus := fetchCheckinStatus(h, credential, cfg)
 	if errStatus != nil {
 		payload["status_error"] = errStatus.Error()
@@ -493,4 +505,44 @@ func checkinStatusWord(attempted bool, outcomes []claimOutcome, todayCheckedIn b
 		return "claimable"
 	}
 	return "inactive"
+}
+
+// checkinSummary turns the per-plan outcomes into the one sentence the hub shows.
+//
+// Priority is deliberate: a failure outranks a success, because a run where one
+// plan was claimed and another was refused is not "done" — the refusal is the
+// part the user has to act on.
+func checkinSummary(outcomes []claimOutcome, errClaim any) string {
+	if errClaim != nil {
+		if text, ok := errClaim.(string); ok && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	if len(outcomes) == 0 {
+		return ""
+	}
+	claimed, already := 0, 0
+	firstFailure := ""
+	for _, outcome := range outcomes {
+		switch {
+		case !outcome.OK:
+			if firstFailure == "" {
+				firstFailure = outcome.Message
+			}
+		case outcome.AlreadyClaimed:
+			already++
+		default:
+			claimed++
+		}
+	}
+	switch {
+	case firstFailure != "":
+		return firstFailure
+	case claimed > 0:
+		return "签到成功：" + strconv.Itoa(claimed) + " 个额度已领取"
+	case already > 0:
+		return "今日已签到：" + strconv.Itoa(already) + " 个额度无需重复领取"
+	default:
+		return ""
+	}
 }

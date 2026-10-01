@@ -8,6 +8,7 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/plugui"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -40,6 +41,7 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 			{Path: "/login", Description: "微信扫码登录 Raccoon 账号（auth.login.start 直接打开二维码页）；" +
 				"手机验证码登录需要人机验证，本插件不提供"},
 			{Path: "/reward", Description: "领取一次性的桌面端登录奖励（由状态页进入；这不是每日签到）"},
+			{Path: "/checkin", Description: "一键签到的入口：本渠道没有每日签到，这里只处理一次性登录奖励（action=claim 才写）"},
 		},
 	}, nil
 }
@@ -71,6 +73,12 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 			return rewardJSON(h, request), nil
 		}
 		return renderRewardPage(h, request), nil
+
+	case "/checkin":
+		if wantsJSON(request) {
+			return checkinJSON(h, request), nil
+		}
+		return renderCheckinPage(h, request), nil
 	}
 	return jsonManagementResponse(http.StatusNotFound, map[string]any{
 		"error": "unknown Raccoon management route",
@@ -335,4 +343,137 @@ func jsonManagementResponse(status int, body any) pluginapi.ManagementResponse {
 		Headers:    http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
 		Body:       encoded,
 	}
+}
+
+// checkinJSON is the hub's one-click entry for this provider.
+//
+// ⚠️ Raccoon has NO daily check-in: the daily 300 points are granted by the
+// server on its own and no endpoint claims them (`raccoon-credits.ts:12-15`,
+// trap #26). The only claimable item is the ONE-OFF desktop login reward — and
+// it is included here on purpose, because a sweep that silently walks past 3000
+// unclaimed points is not doing the job the button promises.
+//
+// Including it is safe because the write is gated twice:
+//
+//   - the reward's own state is read FIRST, so an account that already holds it
+//     reports 已领取 without issuing a write at all;
+//   - the server's `granted` flag is the second gate: a duplicate answers
+//     `granted:false`, which maps to already-claimed rather than to a second
+//     "claimed" (`raccoon-credits.ts:197-205`).
+//
+// The route still writes only for an explicit `action=claim`, matching every
+// sibling provider: a page load or a monitor poll must never grant anything.
+func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	cfg := settings()
+	entry, found := selectAccount(h, request)
+	if !found {
+		// Distinguish "no account at all" from "the selector did not match".
+		// Both used to answer "没有可用账号", which sends a caller who passed a
+		// stale auth_index looking for a credential that is right there.
+		status, message := "no-account", "该 provider 下没有可用账号"
+		if selector := strings.TrimSpace(request.Query.Get("auth_index")); selector != "" {
+			status, message = "unknown-account", "指定的 auth_index 不存在："+selector
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{
+			"provider": ProviderKey,
+			"status":   status,
+			"message":  message,
+		})
+	}
+	credential, _, errCredential := credentialOf(h, entry)
+	if errCredential != nil {
+		return jsonManagementResponse(http.StatusOK, map[string]any{
+			"provider": ProviderKey,
+			"account":  entry.Name,
+			"status":   "failed",
+			"message":  errCredential.Error(),
+		})
+	}
+
+	status := fetchRewardStatus(h, credential, cfg)
+	payload := map[string]any{
+		"provider":      ProviderKey,
+		"account":       entry.Name,
+		"one_off":       true,
+		"reward_points": status.Points,
+	}
+
+	if !isClaimRequest(request) {
+		payload["status"] = "needs-action"
+		payload["message"] = "本渠道没有每日签到（每日额度由服务端自动发放）；" +
+			"该接口只在 action=claim 时领取一次性桌面端登录奖励，本次仅返回状态"
+		payload["reward_claimed"] = status.Claimed
+		if status.Note != "" {
+			payload["reward_note"] = status.Note
+		}
+		return jsonManagementResponse(http.StatusOK, payload)
+	}
+
+	if status.Claimed {
+		payload["status"] = "already-claimed"
+		payload["message"] = "一次性桌面端登录奖励已领取（每号一次）"
+		payload["reward_claimed"] = true
+		if status.Note != "" {
+			payload["reward_note"] = status.Note
+		}
+		return jsonManagementResponse(http.StatusOK, payload)
+	}
+
+	outcome := grantLoginReward(h, credential, cfg)
+	payload["status"] = outcome.Kind
+	payload["message"] = outcome.Message
+	payload["reward_claimed"] = outcome.Kind != "claimed"
+	if outcome.Credit > 0 {
+		payload["reward_points"] = outcome.Credit
+	}
+	if outcome.Code != 0 {
+		payload["code"] = outcome.Code
+	}
+	return jsonManagementResponse(http.StatusOK, payload)
+}
+
+// renderCheckinPage renders the same action as a page, so the route is usable
+// from the browser as well as from the hub.
+func renderCheckinPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	response := checkinJSON(h, request)
+	var document map[string]any
+	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
+		return plugui.HTML("Raccoon 一键领取",
+			plugui.Card("结果", plugui.Notice("danger", "无法解析结果")))
+	}
+	status, _ := document["status"].(string)
+	message, _ := document["message"].(string)
+	tone := "success"
+	switch status {
+	case "failed":
+		tone = "danger"
+	case "needs-action", "no-account":
+		tone = "warning"
+	}
+	return plugui.HTML("Raccoon 一键领取",
+		plugui.Card("结果",
+			plugui.Group(
+				plugui.Notice(tone, message),
+				plugui.Notice("", "本渠道没有每日签到：每日 300 积分由服务端自动发放。"+
+					"这里处理的是一次性的桌面端登录奖励（每号一次，服务端幂等）。"),
+			),
+			plugui.Action{Label: "立即领取", Query: "action=claim&auth_index=" + entryAuthIndex(request), Kind: "primary"},
+			plugui.Action{Label: "返回状态", Path: "status"},
+		))
+}
+
+// isClaimRequest reports whether the caller asked for the grant to run.
+func isClaimRequest(request pluginapi.ManagementRequest) bool {
+	switch strings.ToLower(strings.TrimSpace(request.Query.Get("action"))) {
+	case "claim", "grant", "checkin":
+		return true
+	default:
+		return false
+	}
+}
+
+// entryAuthIndex echoes the selector so the page's own link stays on the same
+// account; an empty selector is fine (the first account is used).
+func entryAuthIndex(request pluginapi.ManagementRequest) string {
+	return strings.TrimSpace(request.Query.Get("auth_index"))
 }

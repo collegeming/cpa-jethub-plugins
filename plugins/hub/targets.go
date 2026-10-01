@@ -162,13 +162,18 @@ func targetCatalogue() []target {
 		},
 		{
 			ID: "raccoon", Label: "Raccoon（商汤）", Icon: brandicons.Raccoon,
-			Support: supportNone,
-			// No daily check-in exists upstream: the daily 300 is granted by the
-			// server on its own. The one-off desktop login reward is a separate,
-			// explicitly-invoked action on the plugin's own page and must never be
-			// swept into a "claim everything" run, which is what this catalogue
-			// drives.
-			Note: "Raccoon 没有每日签到（每日额度由服务端自动发放）；一次性登录奖励需在插件页单独领取，不参与一键动作",
+			Support:     supportJSON,
+			CheckinPath: "/checkin",
+			// REQUIRED: raccoon's `/checkin` reads the reward state first and
+			// only grants for an explicit `action=claim`.
+			CheckinQuery: url.Values{"action": {"claim"}},
+			// There is still no DAILY check-in here — the daily 300 is granted by
+			// the server on its own. What the sweep does claim is the one-off
+			// desktop login reward, because leaving 3000 unclaimed points out of
+			// a button labelled 一键签到 is the wrong trade. The write is gated
+			// twice (state read first, then the server's own `granted` flag), so
+			// repeating the run is harmless.
+			Note: "本渠道没有每日签到（每日 300 由服务端自动发放）；一键动作只处理一次性的桌面端登录奖励，已领过会如实报「已领取」",
 		},
 		{
 			ID: "zcode", Label: "ZCode（智谱）", Icon: brandicons.ZCode,

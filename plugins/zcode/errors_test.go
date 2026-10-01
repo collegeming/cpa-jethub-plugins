@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -359,8 +360,13 @@ func TestFailureTextsNameTheActionableCause(t *testing.T) {
 		{"an ended campaign", codePlanEnded, "", "活动已结束"},
 		{"a failed eligibility check", codeNotEligible, "", "不符合领取条件"},
 		{"an exhausted slot pool", codePlanSoldOut, "", "名额已用完"},
-		{"a captcha demand explains that this plugin does not mint one", codeCaptchaFailed, "",
-			"不产出 captcha"},
+		// The claim path's 3007 is PERMANENT, not a hiccup: the endpoint wants an
+		// Aliyun captcha token this plugin cannot produce. The sentence therefore
+		// has to state that a retry changes nothing and name where to claim
+		// instead — an earlier wording said "请稍后重试" and sent the user in a
+		// loop that could never succeed.
+		{"a captcha demand says the retry is pointless and names the remedy", codeCaptchaFailed, "",
+			"重试不会有不同结果"},
 		{"an unknown code falls back to the server's own text", 9999, "the server said this", "the server said this"},
 		{"an unknown code with no text still produces a sentence", 9999, "", "code 9999"},
 	}
@@ -612,5 +618,28 @@ func TestErrorMessagesAreValidJSONWhenMarshalled(t *testing.T) {
 	}
 	if decoded.Code != envelope.Code || decoded.HTTPStatus != envelope.HTTPStatus {
 		t.Fatalf("the round-tripped envelope differs: %#v vs %#v", decoded, envelope)
+	}
+}
+
+// TestCaptchaRemedyIsNamedInEveryPlaceThatMentionsIt guards against the wording
+// drifting back to "retry later". The claim endpoint cannot be satisfied without
+// a captcha provider, so a message that invites a retry is not merely unhelpful —
+// it is wrong.
+func TestCaptchaRemedyIsNamedInEveryPlaceThatMentionsIt(t *testing.T) {
+	for _, file := range []string{"errors.go", "credits.go", "pluginui.go", "config.go"} {
+		source, errRead := os.ReadFile(file)
+		if errRead != nil {
+			t.Fatalf("read %s: %v", file, errRead)
+		}
+		text := string(source)
+		if !strings.Contains(text, "3007") {
+			continue
+		}
+		if strings.Contains(text, "请稍后重试") && strings.Contains(text, "3007") &&
+			strings.Contains(text, "领取") {
+			// A retry hint is acceptable only where it is about the INFERENCE
+			// path (an unexpected captcha demand there is worth one retry).
+			t.Fatalf("%s invites a retry for the claim path's permanent 3007", file)
+		}
 	}
 }
