@@ -1,0 +1,245 @@
+# 新增一个渠道：完整开发与接线清单
+
+本文是「把一个新渠道接入本仓库」的**唯一清单**。它存在的理由很直接：这个仓库里，
+一个渠道能不能用，取决于**十来个互不相邻的地方**同时正确——插件写好了但没接进 hub、
+模型改名漏了、签到响应少一个字段，都会表现为「页面上一句看不懂的提示」，而不是编译错误。
+
+按顺序做，最后跑 §7 的验收清单。
+
+---
+
+## 0. 先做上游侦察，再写一行代码
+
+**先直接打上游**，不要用 CPA 的 `/v1/models` 判断上游有什么。那个列表已经被宿主的
+`oauth-excluded-models` 和 `oauth-model-alias` 过滤/改名过了，用它反推上游结论必然出错。
+
+需要确认的五件事：
+
+| 问题 | 怎么确认 |
+|---|---|
+| 鉴权方式 | OAuth / 设备码 / 浏览器回调？令牌会轮换吗？到期怎么算（JWT `exp`？`created_at+expires_in`？服务端下发？） |
+| 聊天端点与协议 | 是 OpenAI Chat Completions（可 `chat-completions` 直通）还是私有协议（要 `translate.go`）？ |
+| 模型目录 | 哪个接口下发？是否分档位？`plan_available` 之类的权益字段怎么算？ |
+| 可领取的东西 | 有没有签到/领取端点？幂等吗？**要不要验证码？** |
+| 身份指纹 | 请求头里哪些是强制的？服务端是否按 UA/指纹区别对待？ |
+
+把每一条的**原始请求 + 原始响应**记进 `docs/PORTING.md` 或插件注释。没有原始证据的结论
+不要写进代码注释——这个仓库的注释会被后来人当文档读。
+
+---
+
+## 1. 插件骨架
+
+```
+plugins/<id>/
+  main.go         cgo ABI（从任一现有插件复制，只改包注释）
+  plugin.go       注册、方法表、管理路由表
+  config.go       ProviderKey、端点、超时、ConfigFields()
+  credential.go   凭据形状、Encode/Parse、到期判定
+  auth.go         auth.identifier/parse/login.start/login.poll/refresh
+  models.go       模型目录（实时 + 兜底）
+  executor.go     executor.* 路由
+  upstream.go     出站请求构造、响应/流失处理、错误映射
+  errors.go       上游错误分类
+  management.go   management.handle 的 JSON 分支
+  pluginui.go     HTML 页面
+  freshness.go    用前续期（internal/jethub/authrefresh）
+  *_test.go       见 §6
+```
+
+必需能力（`plugin.go` 的 `abiboot.Capabilities`）：
+
+```go
+ModelRegistrar: true, ModelProvider: true, AuthProvider: true,
+Executor: true, ExecutorModelScope: pluginapi.ExecutorModelScopeOAuth,
+ExecutorInputFormats:  []string{"chat-completions"},   // 按上游协议声明
+ExecutorOutputFormats: []string{"chat-completions"},
+QuotaProvider: true, ManagementAPI: true,
+```
+
+**上游就是 OpenAI Chat Completions 时不要写 `translate.go`。** 直通比翻译少一整类 bug：
+请求体除模型名外原样转发，消息、工具、`reasoning_effort`、图片分片都不会在翻译里丢失。
+
+---
+
+## 2. 登录入口三件套（最常漏）
+
+每个渠道的状态页必须同时提供三个入口，缺一个都会让用户走进死路：
+
+| 入口 | 作用 | 位置 |
+|---|---|---|
+| **新建账号** | 加第二个账号，链接带 `plugui.AddAccountQuery`（`add=1`） | 状态页「全部账号」卡片 |
+| **重新登录** | 替换已有凭据，链接带 `auth_index` | 状态页账号卡片 **和** 账号列表每一行 |
+| **去登录** | 一个账号都没有时的首次登录 | 状态页空账号卡片 |
+
+「凭据无法读取」这类错误卡片上也要给「重新登录」。
+
+测试要断言**数量**而不是存在性：`strings.Count(html, "login?auth_index=idx-1") >= 2`。
+只断言「包含」的话，删掉其中一处不会变红——这个坑已经踩过一次。
+
+---
+
+## 3. 模型命名：对外只暴露统一名称
+
+用户按统一词汇选模型（`DeepSeek-V4.1-Flash`、`GLM-5.3-Flash`…）。上游 id 与它不一致时，
+**在插件里改名，不要写 `oauth-model-alias`**：
+
+```go
+// plugins/atomcode/models.go
+var canonicalModelNames = map[string]string{
+    "glm5.3-flash":   "GLM-5.3-Flash",
+    "qwen3.8-27b":    "Qwen3.8-27B",
+    "deepseek-flash": "DeepSeek-V4.1-Flash",
+}
+```
+
+理由（实测，见 `plugins/atomcode/models.go` 注释）：`oauth-model-alias` **无法可靠地把一个
+已被占用的名字交给第二个 provider**。同一个目标名被多个 provider 映射时，胜出方在重载之间
+会变；曾出现 `atomcode` 的 `qwen3.8-27b` 与 `cline` 的 `Qwen3.8-27B` 同时存在——同一个模型
+两个条目。而**插件自己发布的名字**会像 `plugins/zcode/models.go` 记录的那样，与其它渠道的
+同名模型合并（CPA 把同名模型合成一个入口，多凭据分担流量），正是我们要的效果。
+
+`oauth-model-alias` 仍然适合**引入一个全新名字**的场合。
+
+两条硬性要求：
+
+1. **双向映射**。对外发布 `Qwen3.8-27B`，发给上游的必须还是 `qwen3.8-27b`——
+   忘了反向映射，上游会用「参数错误」之类的方式静默拒绝，而不是报错。
+2. **改了名要验证推理**，不是只看 `/v1/models`。三个模型名各发一次请求。
+
+> 同名合并是**有意**的：`GLM-5.3` / `GLM-5.3-Flash` 由多个渠道共同提供，合并后增加容量而不是
+> 制造新 id。渠道隔离靠下游用不同的 API Key（key-provider-access），不是靠模型名后缀。
+
+---
+
+## 4. 接进 hub 的渠道总览
+
+`plugins/hub/targets.go` 的 `targetCatalogue()` 是**用户看得见的渠道列表**，新渠道不登记就
+不会出现在 Jet Hub 里。
+
+```go
+{
+    ID: "atomcode", Label: "AtomCode（AtomGit）", Icon: brandicons.AtomCode,
+    Support:     supportJSON,                       // supportJSON / supportStatusHTML / supportNone
+    CheckinPath: "/checkin",
+    CheckinQuery: url.Values{"action": {"claim"}},  // ⚠ 必填项，见下
+    Note: "...",
+},
+```
+
+- `CheckinQuery` **必须与插件自己的路由约定一致**：插件的 `/checkin` 只在
+  `action=claim` 时真的写数据，这里就必须带 `action=claim`。带错的话一键动作会「看起来成功、
+  什么都没领」。
+- 该渠道没有签到端点时用 `supportNone` 并写清原因，不要为了好看硬接。
+- 加完渠道后，`plugins/hub/orchestrator_test.go` 的 `checkinRoutes()` / `providerStatusRoutes()`
+  / `want` 表 / summary 计数，和 `overview_test.go` 的 `channelOrder` + `wantIcons` 都要同步，
+  否则测试会红——这是**故意的**，它保证新渠道不会漏接。
+
+---
+
+## 5. 页面 JSON：宿主只认固定字段
+
+hub 的行是从各插件自己的 `status?format=json` 渲染的，读的是**固定字段路径**
+（`plugins/hub/overview.go` 的 fact builders）。一个都不提供时，渠道行会显示
+「provider 只返回了本页不展示的配置字段」——装上了，但看起来是死的。
+
+| 字段 | 渲染成 | 说明 |
+|---|---|---|
+| `model_count` | 模型 N | 不给就没有模型信息 |
+| `expires_at` / `expires_at_ms` / `expired` | 有效期至 … | 同时给人和机器两种写法 |
+| `accounts[]` + `account_count` | 每账号一行 | 每行自带 `expires_at_ms` / `expired` |
+| `accounts[].remaining` + `.total` | 剩余 R / T | 额度；注意单位要在文案里说清 |
+| `daily_checkin.*` / `checkin.*` | 签到状态 | 有签到语义时给 |
+| `message`/`server_message`（签到响应顶层） | 结果说明 | **见下，最容易漏** |
+
+### 5.1 签到响应必须有顶层 `message`
+
+hub 的 `interpretCheckinJSON` 只读**顶层** `message`（以及 `claim.message`、`server_message`）。
+把说明塞在 `outcomes[].message` 里等于没写——用户看到的只有一个 `failed`。
+失败时 `message` 必须是**可执行的那句话**（原因 + 补救方式），不是状态词。
+
+### 5.2 只有显式 `action=claim` 才允许写
+
+页面加载、监控轮询、hub 的一次状态读取都会 GET 这个路由。没有这个闸，任何一次轮询都在
+替你领取。测试要断言「无 action 时**一次写请求都没发**」。
+
+一个反例值得记住：把**一次性**奖励放进每天都会按的按钮，必须双重设闸——先读状态（已领就
+一次写都不发），再依赖服务端幂等标志兜底。
+
+---
+
+## 6. 测试与反向验证
+
+每个插件至少覆盖：凭据到期/轮换、登录流程两步、模型目录与命名、执行器请求构造与响应处理、
+管理页三个入口、签到闸门。
+
+**每条新断言都要做反向验证**：故意破坏它保护的行为，确认测试变红，再恢复。
+本次会话里，未经反向验证的断言中有两条其实是假绿的（`strings.Contains` 而不是计数；
+测试只调了辅助函数、没走真实接线）。做法：
+
+```bash
+cp plugins/<id>/x.go /tmp/x.bak
+# 破坏行为
+go test ./plugins/<id>/ -run TestThatThing   # 必须 FAIL
+cp /tmp/x.bak plugins/<id>/x.go
+```
+
+---
+
+## 7. 收尾：配置、文档、发布、验收
+
+**配置**（`config.yaml`）
+
+- `plugins.configs.<id>`：`enabled`、`model_prefix: false`（本部署统一关闭前缀）、渠道特有项。
+- `oauth-excluded-models`：想收敛模型列表就按 provider 列 id。⚠ 排除匹配的是**插件上报的
+  原始 id**（先排除、再别名）。
+- 改完配置**热重载即可**；涉及 `.so` 变更必须重启容器。
+
+**文档**
+
+- `README.md`：插件状态表加一行；渠道数、执行器格式表同步；有取舍写进「需要知情的实现取舍」。
+- `docs/DEPLOYMENT.md`：`plugins.configs` 配置块、登录方式表、渠道特有说明。
+- `plugins/<id>/README.md`（可选，渠道有明显陷阱时建议写）。
+
+**发布**
+
+- `internal/jethub/brandicons/brandicons.go` 加厂商图标（用厂商自己的素材，嵌 data URL）。
+- `registry.json` 加条目。
+- `scripts/build.sh` 与 `scripts/release.sh` 的 `PLUGINS` 加 id（**变体**还要加
+  `variant_source_dir`）。
+- `.gitignore` 加 `/<id>`（防止 `go build` 掉在仓库根的裸二进制）。
+- `VERSION=x.y.z bash scripts/release.sh` → tag → `gh release create`。
+
+**验收清单**
+
+- [ ] `/v1/models` 里能看到该渠道，且**只有统一名称**（没有小写/带斜杠的原始 id 残留）
+- [ ] 每个模型名都能真的推理成功（**改名后尤其要测**）
+- [ ] Jet Hub 渠道总览里有这一行，状态、模型数、有效期都正常
+- [ ] 一键签到结果里该行是正确类别，且有可读的 `message`
+- [ ] 无 `action` 的裸请求**不产生任何写操作**
+- [ ] 状态页三个登录入口齐全，且计数断言通过
+- [ ] `go build ./...`、`go vet ./...`、`gofmt -l`、`go test ./...` 全绿
+- [ ] 部署后重启容器再验一遍（热重载不覆盖 `.so`）
+
+---
+
+## 8. 「模型没出现」排查顺序
+
+按这个顺序查，每一步都能排除一类原因：
+
+1. **宿主排除**：`oauth-excluded-models` 里有没有这个 provider 的条目？
+   （实测过一次教训：模型不是上游撤了，是被本地排除清单过滤了。）
+2. **宿主别名**：`oauth-model-alias` 是否把它改名成了别的名字？看 `/v1/models` 里是否有
+   目标名，且 `owned_by` 是别的渠道。
+3. **插件目录**：`status?format=json` 的 `model_count` 是多少？插件自己上报了几个？
+   （插件数 ≠ 宿主数时，差额通常来自第 1、2 步。）
+4. **上游目录**：直接打上游的目录接口，看服务端到底下发什么。**不要**用 `/v1/models` 反推。
+5. **上游受理**：目录里没有但网关仍可能受理（实测 `deepseek-flash` 从目录消失后仍返回 200）。
+   这类模型用 `extra_models` 之类的显式配置补，不要硬编码进默认目录——「能调用」不等于「可用」。
+
+---
+
+## 9. 一句话版本
+
+> 插件写完只是**一半**。剩下的一半是：登录入口、统一命名、hub 登记、宿主能读的 JSON 字段、
+> 签到的 `message` 与写闸门、配置排除/别名、文档与发布脚本——以及**每条断言的反向验证**。

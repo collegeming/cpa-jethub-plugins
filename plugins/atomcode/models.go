@@ -237,6 +237,58 @@ var fallbackCatalogue = []modelEntry{
 func intRef(value int) *int    { return &value }
 func boolRef(value bool) *bool { return &value }
 
+// canonicalModelNames maps the gateway's own ids onto the names this channel
+// publishes.
+//
+// The gateway names its models `glm5.3-flash` / `qwen3.8-27b` /
+// `deepseek-flash`; every other channel in this deployment publishes
+// `GLM-5.3-Flash` / `Qwen3.8-27B` / `DeepSeek-V4.1-Flash`, and users select
+// models by that vocabulary. Doing the mapping HERE rather than in the host's
+// `oauth-model-alias` table is deliberate:
+//
+//   - the alias table cannot reliably hand an ALREADY-TAKEN name to a second
+//     provider. Measured 2026-10-01: with atomcode, cline and lobsterai all
+//     mapping onto `DeepSeek-V4.1-Flash` / `Qwen3.8-27B`, the winners varied
+//     between reloads, and atomcode's `qwen3.8-27b` was left unrenamed beside
+//     cline's `Qwen3.8-27B` — two entries for one model. (The table is still
+//     the right tool when a mapping introduces a NEW name.)
+//   - a name published by the plugin merges with the same name from other
+//     channels exactly like `plugins/zcode/models.go` documents, adding
+//     capacity to the id users already have selected.
+//
+// The mapping is applied in both directions, so the gateway still receives the
+// id it knows (`upstreamModelName`).
+//
+// `glm5.3-flash` is the same model as z.ai's GLM-5.3-Flash — the upstream
+// client says so itself ("glm-5.3-flash at z.ai", measured 2026-09-25,
+// `crates/atomcode-coding/src/next_prompt_suggestion.rs:47`). The other two
+// follow the naming the rest of this deployment already uses for the same
+// families.
+var canonicalModelNames = map[string]string{
+	"glm5.3-flash":   "GLM-5.3-Flash",
+	"qwen3.8-27b":    "Qwen3.8-27B",
+	"deepseek-flash": "DeepSeek-V4.1-Flash",
+}
+
+// canonicalModelName returns the name this channel publishes for an upstream id.
+func canonicalModelName(upstream string) string {
+	if name, ok := canonicalModelNames[upstream]; ok {
+		return name
+	}
+	return upstream
+}
+
+// upstreamModelName reverses it, so a request that used the published name
+// reaches the gateway under the id it actually serves.
+func upstreamModelName(published string) string {
+	for upstream, name := range canonicalModelNames {
+		if name == published {
+			return upstream
+		}
+	}
+	return published
+}
+
 // measuredExtraModels carries SERVER-PUBLISHED metadata for ids this adapter has
 // seen in a real `models-v2` payload but which the server no longer lists.
 //
@@ -343,7 +395,7 @@ func modelInfoFor(entry modelEntry, prefix string) pluginapi.ModelInfo {
 		// parts on every model that declares `supports_vision`.
 		modalities = append(modalities, "image")
 	}
-	display := entry.DisplayModelName
+	display := canonicalModelName(entry.DisplayModelName)
 	info := pluginapi.ModelInfo{
 		ID:                         prefix + display,
 		Object:                     "model",

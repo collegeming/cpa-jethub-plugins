@@ -94,19 +94,47 @@ func staticModelInfos() []pluginapi.ModelInfo {
 // publicModelID separates client-facing brand casing from the provider-native
 // model id. CPA skips aliases whose name and alias are EqualFold, so the plugin
 // must publish the canonical spelling itself.
+// publicModelNames maps CodeArts' native ids onto the names this deployment
+// publishes.
+//
+// Two ids need it. `BenefitModel` is the benefit endpoint's own spelling, and
+// `deepseek-v4.1-flash` is the platform's lowercase form of a model every other
+// channel already publishes as `DeepSeek-V4.1-Flash`; leaving it lowercase put a
+// second, differently-named entry for one model in the list users pick from.
+//
+// The mapping lives here rather than in the host's `oauth-model-alias` table
+// because that table cannot reliably hand an ALREADY-TAKEN name to another
+// provider — measured 2026-10-01, with the winner varying between reloads. A
+// name the plugin publishes itself merges with the same name from other
+// channels, the way `plugins/zcode/models.go` documents for `GLM-5.3-Flash`.
+var publicModelNames = map[string]string{
+	BenefitModel:          "GLM-5.3-Flash",
+	"deepseek-v4.1-flash": "DeepSeek-V4.1-Flash",
+}
+
+// publicModelID returns the name this deployment publishes for a native id.
 func publicModelID(id string) string {
-	if strings.EqualFold(strings.TrimSpace(id), BenefitModel) {
-		return "GLM-5.3-Flash"
+	trimmed := strings.TrimSpace(id)
+	for native, public := range publicModelNames {
+		if strings.EqualFold(trimmed, native) {
+			return public
+		}
 	}
-	return strings.TrimSpace(id)
+	return trimmed
 }
 
 // upstreamModelID maps the canonical public id back to the CodeArts native id.
+//
+// Without this the request would carry `DeepSeek-V4.1-Flash` to a gateway that
+// only knows `deepseek-v4.1-flash`.
 func upstreamModelID(id string) string {
-	if strings.EqualFold(strings.TrimSpace(id), "GLM-5.3-Flash") {
-		return BenefitModel
+	trimmed := strings.TrimSpace(id)
+	for native, public := range publicModelNames {
+		if strings.EqualFold(trimmed, public) {
+			return native
+		}
 	}
-	return strings.TrimSpace(id)
+	return trimmed
 }
 
 // modelInfoFor builds the host-facing model descriptor for one model id.

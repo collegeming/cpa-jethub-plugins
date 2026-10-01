@@ -22,7 +22,11 @@ type gatewayCall struct {
 	URL     string
 	Headers http.Header
 	Body    []byte
-	Model   string
+	// Model is the id sent to the gateway; Published is the name the caller
+	// used. They differ wherever canonicalModelNames renames a model, and error
+	// messages quote Published because that is the name the user can act on.
+	Model     string
+	Published string
 }
 
 // requestBody extracts the payload the executor must forward. CPA passes the
@@ -83,7 +87,11 @@ func prepareGatewayCall(request pluginapi.ExecutorRequest, credential *Credentia
 	if model == "" {
 		return nil, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "请求缺少 model")
 	}
-	upstreamModel := stripModelPrefix(model, credential)
+	// The caller selects the PUBLISHED name; the gateway must receive the id it
+	// serves. Skipping this lookup silently sends `Qwen3.8-27B` upstream, which
+	// the gateway answers with its `参数错误` sentinel rather than an error.
+	published := stripModelPrefix(model, credential)
+	upstreamModel := upstreamModelName(published)
 	root["model"] = upstreamModel
 	root["stream"] = stream
 	if stream {
@@ -108,10 +116,11 @@ func prepareGatewayCall(request pluginapi.ExecutorRequest, credential *Credentia
 		return nil, abiboot.Errorf("encode_request", "序列化 AtomCode 请求失败: %v", errMarshal)
 	}
 	return &gatewayCall{
-		URL:     cfg.gatewayChatURL(),
-		Headers: gatewayHeaders(credential),
-		Body:    body,
-		Model:   upstreamModel,
+		URL:       cfg.gatewayChatURL(),
+		Headers:   gatewayHeaders(credential),
+		Body:      body,
+		Model:     upstreamModel,
+		Published: published,
 	}, nil
 }
 

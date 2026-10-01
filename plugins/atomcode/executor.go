@@ -75,7 +75,7 @@ func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		return nil, errGateway
 	}
 	if looksLikeParameterError(response.Body) {
-		return nil, parameterErrorFor(call.Model)
+		return nil, parameterErrorFor(call.Published)
 	}
 	if looksLikeSSE(response.Body) {
 		// The format was forced to `stream:false` and the gateway streamed

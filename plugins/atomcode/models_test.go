@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -90,5 +91,73 @@ func TestServingCatalogueCarriesTheConfiguredExtras(t *testing.T) {
 	}
 	if !entries[1].FromConfig {
 		t.Fatal("the extra reached the catalogue without its addition marker")
+	}
+}
+
+// TestCanonicalNamesArePublishedAndReversed covers both directions of the model
+// rename, and the second half is the one that bites: publishing a canonical name
+// without translating it back sends `Qwen3.8-27B` to a gateway that only knows
+// `qwen3.8-27b`, which answers with its `参数错误` sentinel rather than an error.
+func TestCanonicalNamesArePublishedAndReversed(t *testing.T) {
+	cases := map[string]string{
+		"glm5.3-flash":   "GLM-5.3-Flash",
+		"qwen3.8-27b":    "Qwen3.8-27B",
+		"deepseek-flash": "DeepSeek-V4.1-Flash",
+	}
+	for upstream, published := range cases {
+		if got := canonicalModelName(upstream); got != published {
+			t.Fatalf("canonicalModelName(%q) = %q, want %q", upstream, got, published)
+		}
+		if got := upstreamModelName(published); got != upstream {
+			t.Fatalf("upstreamModelName(%q) = %q, want %q", published, got, upstream)
+		}
+	}
+	// Something the table does not know passes through untouched in both
+	// directions, so a server-side catalogue change cannot be mangled.
+	if got := canonicalModelName("brand-new-model"); got != "brand-new-model" {
+		t.Fatalf("unknown id was rewritten to %q", got)
+	}
+	if got := upstreamModelName("Brand-New-Model"); got != "Brand-New-Model" {
+		t.Fatalf("unknown published name was rewritten to %q", got)
+	}
+}
+
+// TestPublishedCatalogueUsesCanonicalNames goes through the model-list path, so
+// the wiring is covered rather than just the lookup table.
+func TestPublishedCatalogueUsesCanonicalNames(t *testing.T) {
+	host := newFakeHost()
+	host.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		if strings.Contains(request.URL, codingPlanModelsPath) {
+			return httpResponse(200, `[{"display_model_name":"qwen3.8-27b","context_window":262144,`+
+				`"plan_available":true,"reasoning_effort_levels":["low"]}]`), nil
+		}
+		if strings.Contains(request.URL, codingPlanStatusPath) {
+			return httpResponse(200, `{"codingplan_free":{"plan_name":"CodingPlan Lite-体验版","expires_at":"2026-10-08"}}`), nil
+		}
+		return httpResponse(404, `{"message":"unexpected"}`), nil
+	}
+	host.install(t)
+
+	infos := modelInfos(staticModelEntries(testHost(), settings(), sampleCredential(7*24*3600)), settings(), nil)
+	if len(infos) != 1 || infos[0].ID != "Qwen3.8-27B" {
+		t.Fatalf("published ids = %+v, want the canonical Qwen3.8-27B", infos)
+	}
+
+	// And the request that follows carries the upstream id, not the published one.
+	call, errPrepare := prepareGatewayCall(executorRequest(t,
+		map[string]any{"model": "Qwen3.8-27B", "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+		mustJSON(t, sampleCredential(3600))), sampleCredential(3600), settings(), false)
+	if errPrepare != nil {
+		t.Fatalf("prepare: %v", errPrepare)
+	}
+	var body map[string]any
+	if errUnmarshal := json.Unmarshal(call.Body, &body); errUnmarshal != nil {
+		t.Fatalf("decode: %v", errUnmarshal)
+	}
+	if body["model"] != "qwen3.8-27b" {
+		t.Fatalf("wire model = %v, want the upstream id qwen3.8-27b", body["model"])
+	}
+	if call.Published != "Qwen3.8-27B" {
+		t.Fatalf("Published = %q, want the name the caller used", call.Published)
 	}
 }

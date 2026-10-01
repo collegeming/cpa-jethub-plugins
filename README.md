@@ -358,6 +358,20 @@ curl http://localhost:8317/v1/chat/completions \
 
 插件通过 `host.call` 使用宿主能力。HTTP 请求一律由宿主执行，代理、TLS 与请求日志仍归宿主控制；因此插件本身不建立网络连接。
 
-## 移植说明
+## 新增一个渠道 / 移植说明
 
-各插件与 Jet-Hub TypeScript 源文件的逐文件对应关系、已核实的端点、加密与登录流程、已知阻塞项，见 [docs/PORTING.md](docs/PORTING.md)。
+- **要新增渠道**：请照 [docs/ADDING-A-CHANNEL.md](docs/ADDING-A-CHANNEL.md) 的清单走。它把「插件写完只是一半」这件事写清楚了——登录入口、统一模型命名、hub 登记、宿主可读的 JSON 字段、签到的 `message` 与写闸门、配置排除/别名、文档与发布脚本，以及每条断言的反向验证。
+- **要对照 Jet-Hub TS 源文件**：各插件的逐文件对应关系、已核实的端点、加密与登录流程、已知阻塞项，见 [docs/PORTING.md](docs/PORTING.md)。
+
+### 模型命名：对外只暴露统一名称
+
+用户按统一词汇选模型（`DeepSeek-V4.1-Flash`、`GLM-5.3-Flash`、`Qwen3.8-27B`…）。上游 id 与它不一致时，**由插件自己发布统一名称**，而不是写 `oauth-model-alias`：
+
+| 位置 | 用途 |
+|---|---|
+| 插件内的改名表（`plugins/atomcode/models.go` 的 `canonicalModelNames`、`plugins/codearts/models.go` 的 `publicModelNames`） | 上游 id ≠ 统一名称时用这个 |
+| `oauth-model-alias`（`config.yaml`） | 只适合**引入一个全新名字**；把一个已被占用的名字交给第二个 provider 时它不可靠 |
+
+原因（实测 2026-10-01）：同一个别名目标被多个 provider 映射时，胜出方在多次重载之间会变，曾出现 `atomcode` 的 `qwen3.8-27b` 与 `cline` 的 `Qwen3.8-27B` 同时存在——同一个模型两个条目。而插件自己发布的名字会与其它渠道的同名模型**合并**（CPA 把同名模型合成一个入口，多凭据分担流量），这正是我们要的效果。
+
+改名必须**双向**：对外发布 `Qwen3.8-27B`，发给上游的仍须是 `qwen3.8-27b`，否则上游会静默拒绝。
