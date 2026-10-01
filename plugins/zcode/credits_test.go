@@ -387,7 +387,7 @@ func TestClaimDailyClaimsEveryPlan(t *testing.T) {
 		}
 	}
 
-	outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings())
+	outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings(), nil)
 	if errClaim != nil {
 		t.Fatalf("claimDaily: %v", errClaim)
 	}
@@ -404,9 +404,10 @@ func TestClaimDailyClaimsEveryPlan(t *testing.T) {
 		}
 	}
 
-	// ⚠ The claim was sent WITHOUT a captcha header. The official client's bundle
-	// attaches one here, but this plugin mints none: inference was measured to need
-	// none, and the claim endpoint works without it.
+	// ⚠ With NO solved captcha the claim goes out without the header, and the
+	// server answers 3007. That is the unattended path: the plugin cannot mint a
+	// token, so it reports the demand rather than pretending it can satisfy it.
+	// `TestClaimCarriesASolvedCaptcha` covers the assisted path.
 	claims := fake.callsFor(ClaimPath)
 	if len(claims) != 2 {
 		t.Fatalf("claim calls = %d, want 2", len(claims))
@@ -444,7 +445,7 @@ func TestClaimAlreadyClaimedIsSuccess(t *testing.T) {
 			return httpResponse(http.StatusOK, `{"code":1003,"msg":"already claimed"}`), nil
 		}
 	}
-	outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings())
+	outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings(), nil)
 	if errClaim != nil {
 		t.Fatalf("claimDaily: %v", errClaim)
 	}
@@ -469,7 +470,7 @@ func TestClaimDailyWithNothingToClaim(t *testing.T) {
 		}
 		return httpResponse(http.StatusOK, `{"code":0}`), nil
 	}
-	outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings())
+	outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings(), nil)
 	if errClaim != nil {
 		t.Fatalf("claimDaily: %v", errClaim)
 	}
@@ -518,7 +519,7 @@ func TestClaimFailuresAreReportedWithTheirCause(t *testing.T) {
 					return httpResponse(http.StatusOK, tc.body), nil
 				}
 			}
-			outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings())
+			outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings(), nil)
 			if errClaim != nil {
 				t.Fatalf("claimDaily: %v", errClaim)
 			}
@@ -556,7 +557,7 @@ func TestClaimPastATransportFailureIsReportedPerPlan(t *testing.T) {
 			return httpResponse(http.StatusOK, `{"code":0}`), nil
 		}
 	}
-	outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings())
+	outcomes, errClaim := claimDaily(testHost(), sampleCredential(), settings(), nil)
 	if errClaim != nil {
 		t.Fatalf("claimDaily: %v", errClaim)
 	}
@@ -752,8 +753,61 @@ func TestClaimWithoutACaptchaHeaderIsDeliberate(t *testing.T) {
 		}
 		return httpResponse(http.StatusOK, `{"code":0}`), nil
 	}
-	outcome := claimPlan(testHost(), sampleCredential(), settings(), "p1")
+	outcome := claimPlan(testHost(), sampleCredential(), settings(), "p1", nil)
 	if !outcome.OK {
 		t.Fatalf("claim failed: %+v", outcome)
+	}
+}
+
+// TestClaimCarriesASolvedCaptcha covers the assisted path: when a human has
+// solved the challenge, the claim must carry exactly the two headers the
+// official client attaches.
+//
+// The names come from that client's own bundle
+// (`~/.zcode/server/zcode-server.cjs`): `X-Aliyun-Captcha-Verify-Param` plus an
+// optional `X-Aliyun-Captcha-Verify-Region`. Getting a name wrong here would
+// look exactly like an unsolved captcha — the server answers 3007 either way —
+// so the assertion is on the literal header names, not on "some captcha header".
+func TestClaimCarriesASolvedCaptcha(t *testing.T) {
+	fake := newFakeHost()
+	fake.install(t)
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		if strings.HasSuffix(request.URL, ClaimPath) {
+			return httpResponse(http.StatusOK, `{"code":0}`), nil
+		}
+		return httpResponse(http.StatusOK, `{"code":0}`), nil
+	}
+
+	claimPlan(testHost(), sampleCredential(), settings(), "p1",
+		&captchaToken{VerifyParam: "solved-token", Region: "cn"})
+
+	claims := fake.callsFor(ClaimPath)
+	if len(claims) != 1 {
+		t.Fatalf("claim calls = %d, want 1", len(claims))
+	}
+	if got := claims[0].Headers.Get("X-Aliyun-Captcha-Verify-Param"); got != "solved-token" {
+		t.Fatalf("X-Aliyun-Captcha-Verify-Param = %q, want the solved token", got)
+	}
+	if got := claims[0].Headers.Get("X-Aliyun-Captcha-Verify-Region"); got != "cn" {
+		t.Fatalf("X-Aliyun-Captcha-Verify-Region = %q, want cn", got)
+	}
+
+	// With no region the param still rides alone, exactly as the client's spread
+	// does — an empty region header would be a different request.
+	fake.reset()
+	claimPlan(testHost(), sampleCredential(), settings(), "p1", &captchaToken{VerifyParam: "only-param"})
+	claims = fake.callsFor(ClaimPath)
+	if len(claims) != 1 {
+		t.Fatalf("claim calls = %d, want 1", len(claims))
+	}
+	// ABSENT, not merely empty. `Header.Get` returns "" for both, so the
+	// assertion has to look at the map: the client's spread omits the header
+	// entirely, and an empty-valued header is a different request.
+	if _, present := claims[0].Headers["X-Aliyun-Captcha-Verify-Region"]; present {
+		t.Fatalf("region header was sent as %q, want it omitted entirely",
+			claims[0].Headers.Get("X-Aliyun-Captcha-Verify-Region"))
+	}
+	if got := claims[0].Headers.Get("X-Aliyun-Captcha-Verify-Param"); got != "only-param" {
+		t.Fatalf("param header = %q", got)
 	}
 }

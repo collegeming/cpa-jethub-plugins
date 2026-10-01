@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
@@ -386,7 +387,7 @@ func renderCheckinPage(h *abiboot.Host, request pluginapi.ManagementRequest) plu
 	body := make([]template.HTML, 0, 4)
 	action := strings.ToLower(strings.TrimSpace(request.Query.Get("action")))
 	if action == "claim" {
-		outcomes, errClaim := claimDaily(h, credential, cfg)
+		outcomes, errClaim := claimDaily(h, credential, cfg, captchaTokenFromRequest(request))
 		switch {
 		case errClaim != nil:
 			body = append(body, plugui.Card("领取失败", plugui.Notice("danger", errClaim.Error())))
@@ -413,6 +414,27 @@ func renderCheckinPage(h *abiboot.Host, request pluginapi.ManagementRequest) plu
 			}
 			body = append(body, plugui.Card("领取结果",
 				plugui.Group(plugui.Notice(tone, "已向服务端提交领取请求。"), plugui.Fields(fields...))))
+
+			// A captcha demand is the one failure a human can clear, so it gets
+			// the real widget instead of only a sentence. Nothing is offered
+			// when a token was already supplied: repeating the widget after a
+			// rejected token would just loop.
+			if captchaDemanded(outcomes) && captchaTokenFromRequest(request) == nil {
+				if captcha, errCaptcha := fetchCaptchaConfig(h, credential, cfg); errCaptcha == nil && captcha.usable() {
+					body = append(body, plugui.Card("需要人机验证",
+						plugui.Group(
+							plugui.Notice("warning",
+								"服务端要求验证码。在下面完成验证后本页会带着结果重新提交领取——"+
+									"这一步必须由人完成，因此它永远不会出现在一键签到里。"),
+							captchaWidget(captcha),
+						)))
+				} else {
+					body = append(body, plugui.Card("需要人机验证",
+						plugui.Notice("warning",
+							"服务端要求验证码，但读取验证码配置失败，无法在本页渲染。"+
+								"请改用 ZCode 官方客户端或网页领取。")))
+				}
+			}
 		}
 	}
 
@@ -507,4 +529,122 @@ func jsonCompact(value any) string {
 		return ""
 	}
 	return string(encoded)
+}
+
+// jsStringLiteral renders a Go string as a JavaScript string literal that is
+// safe to embed inside a `<script>` element.
+//
+// `strconv.Quote` alone is NOT enough. The HTML parser looks for the literal
+// `</script` sequence while scanning the script element, so a value containing
+// it closes the tag even though it sits inside a JS string — the classic
+// script-context injection. The parameters here come from the server's own
+// document, so they are untrusted input, and escaping `<`, `>` and `&` as
+// `\uXXXX` removes the sequence without changing the value. U+2028/U+2029 are
+// escaped for the same reason: they are line terminators to a JS parser.
+func jsStringLiteral(value string) string {
+	quoted := strconv.Quote(value)
+	replacer := strings.NewReplacer(
+		"<", `\u003c`,
+		">", `\u003e`,
+		"&", `\u0026`,
+		"\u2028", `\u2028`,
+		"\u2029", `\u2029`,
+	)
+	return replacer.Replace(quoted)
+}
+
+// captchaDemanded reports whether any outcome was the captcha rejection.
+func captchaDemanded(outcomes []claimOutcome) bool {
+	for _, outcome := range outcomes {
+		if !outcome.OK && outcome.Code == codeCaptchaFailed {
+			return true
+		}
+	}
+	return false
+}
+
+// captchaWidget renders Aliyun's own captcha and, on success, reloads this page
+// with the token attached.
+//
+// This is the repository's ONE page that runs JavaScript and loads a third-party
+// script, and both are unavoidable: the token can only be minted by Aliyun's
+// frontend SDK in a browser. Consequences worth stating plainly:
+//
+//   - the browser talks to `o.alicdn.com` directly. If the manager's iframe
+//     policy blocks it, the widget never appears and the sentence above the card
+//     is the whole answer — which is why that sentence names the fallback.
+//   - the page is served from the resource mount, so `location.pathname` is the
+//     route CPAMP embedded; the URL is rebuilt from the CURRENT location rather
+//     than hardcoded, so it works under any mount prefix.
+//   - the scene parameters come from the server document, escaped here for both
+//     HTML and JavaScript contexts. They are not trusted input.
+func captchaWidget(captcha captchaConfig) template.HTML {
+	script := "https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"
+	js := jsStringLiteral
+	html := `<div id="zcode-captcha"></div>
+<p class="muted" id="zcode-captcha-state">正在加载验证码组件…</p>
+<script src="` + template.HTMLEscapeString(script) + `" async></script>
+<script>
+(function () {
+  var SCENE_ID = ` + js(captcha.SceneID) + `;
+  var PREFIX = ` + js(captcha.Prefix) + `;
+  var REGION = ` + js(captcha.Region) + `;
+  var state = document.getElementById('zcode-captcha-state');
+  function submit(param) {
+    var target = new URL(window.location.href);
+    target.searchParams.set('action', 'claim');
+    target.searchParams.set('captcha', param);
+    target.searchParams.set('captcha_region', REGION);
+    state.textContent = '验证通过，正在提交领取…';
+    window.location.href = target.toString();
+  }
+  function boot(attempt) {
+    if (typeof initAliyunCaptcha !== 'function') {
+      if (attempt < 25) { return setTimeout(function () { boot(attempt + 1); }, 200); }
+      state.textContent = '验证码组件未能加载（可能被管理面板的 CSP 拦截）。请改用 ZCode 官方客户端或网页领取。';
+      return;
+    }
+    initAliyunCaptcha({
+      SceneId: SCENE_ID,
+      prefix: PREFIX,
+      region: REGION,
+      mode: 'embed',
+      element: '#zcode-captcha',
+      button: '#zcode-captcha-submit',
+      captchaVerifyCallback: function (captchaVerifyParam) {
+        submit(captchaVerifyParam);
+        return { captchaResult: true, bizResult: true };
+      },
+      getInstance: function (instance) { window.__zcodeCaptcha = instance; },
+      language: 'cn',
+      immediate: true
+    });
+    // ⚠ The SDK can load and initialise while still rendering NOTHING: measured
+    // 2026-10-01 from a panel origin, initAliyunCaptcha ran, getInstance
+    // fired, no error was raised — and the element stayed empty. The likely
+    // cause is the Aliyun scene being restricted to ZCode's own origins, which
+    // is not something this side can change. So the page must not leave a
+    // spinner on screen forever: if no challenge appears, say so and point at
+    // the fallback, rather than inviting a click that can never work.
+    var waited = 0;
+    var render = setInterval(function () {
+      waited += 500;
+      if (document.querySelector('#zcode-captcha canvas, #zcode-captcha img, #zcode-captcha iframe, #zcode-captcha .aliyun-captcha')) {
+        clearInterval(render);
+        return;
+      }
+      if (waited >= 6000) {
+        clearInterval(render);
+        state.textContent = '验证码组件已加载但未能渲染出验证（通常是该验证码场景未授权本页面来源）。' +
+          '请改用 ZCode 官方客户端或网页领取。';
+        var submit = document.getElementById('zcode-captcha-submit');
+        if (submit) { submit.style.display = 'none'; }
+      }
+    }, 500);
+  }
+  boot(0);
+})();
+</script>
+<button class="btn primary" id="zcode-captcha-submit" type="button">提交验证</button>`
+	return template.HTML(html)
 }

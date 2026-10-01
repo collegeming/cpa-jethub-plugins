@@ -194,6 +194,35 @@ plugins:
 
 做法：ZCode 的额度请在**官方客户端或网页**里领取。HUB 会把这一条如实报成「失败」并写清原因，而不是伪装成一次成功。
 
+#### ZCode 的验证码：人工验证通道已实现，但**当前不可用**
+
+领取端点要的是阿里云验证码，而验证码参数**不是秘密**——服务端自己在 `client/configs` 里公布：
+
+```
+GET /api/v1/client/configs?platform=unknown
+→ data.configs.captcha = {"enabled":true,"prefix":"no8xfe","region":"cn","sceneId":"11xygtvd","skip_model_request":true}
+```
+
+请求头契约来自官方客户端自己的 bundle（`~/.zcode/server/zcode-server.cjs`）：
+
+```
+X-Aliyun-Captcha-Verify-Param: <captchaVerifyParam>
+X-Aliyun-Captcha-Verify-Region: <region>        # 可选
+```
+
+据此实现了「人工验证后领取」：状态页遇到 3007 时渲染阿里云官方验证码组件，验证通过后带着令牌重新提交。**但实测这个组件在我们的来源上渲染不出来**：
+
+| 步骤 | 结果 |
+|---|---|
+| 加载 `o.alicdn.com` 的 SDK | ✅ 成功 |
+| 调用 `initAliyunCaptcha` | ✅ 无异常，`getInstance` 回调触发 |
+| 控制台报错 | ✅ 无 |
+| 组件渲染出验证 | ❌ 元素始终为空（embed 与 popup 都试过，传选择器与传元素都试过） |
+
+最可能的原因是**该验证码场景未授权本页面来源**（阿里云侧配置，属 ZCode 所有，我们改不了）。因此页面会在 6 秒后主动放弃并提示改用官方客户端，而不是留一个永远转圈的加载提示。
+
+结论：**ZCode 的领取请在官方客户端或网页完成。** 一键签到会把它如实报成「失败」并写明原因；人工通道的代码留在插件里（`plugins/zcode/captcha.go` + `pluginui.go` 的 `captchaWidget`），一旦场景放开来源即可生效。
+
 #### Raccoon 的一键签到为什么只领一次性奖励
 
 Raccoon **没有每日签到**：每日 300 积分由服务端自动发放，没有可调用的端点。唯一可领的是**一次性的桌面端登录奖励**（3000 积分，每号一次，服务端幂等）。

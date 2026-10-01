@@ -258,7 +258,7 @@ func parseClaimablePlans(data map[string]any) []claimablePlan {
 //	1005  all slots taken
 //	3007  captcha rejected
 //	401   not logged in
-func claimPlan(h *abiboot.Host, credential *Credential, cfg Config, planID string) claimOutcome {
+func claimPlan(h *abiboot.Host, credential *Credential, cfg Config, planID string, token *captchaToken) claimOutcome {
 	outcome := claimOutcome{PlanID: planID}
 	body, errEncode := reencodeBody(map[string]any{"plan_id": planID})
 	if errEncode != nil {
@@ -266,6 +266,14 @@ func claimPlan(h *abiboot.Host, credential *Credential, cfg Config, planID strin
 		return outcome
 	}
 	headers := buildHeaders(credential, cfg, headerOptions{JSON: true, Authorization: true, Accept: "application/json"})
+	// A solved captcha rides along as two headers. Without one the request still
+	// goes out — the server answers 3007 and the caller offers the widget, which
+	// is better than refusing to try.
+	if token != nil {
+		for name, value := range token.headers() {
+			headers.Set(name, value)
+		}
+	}
 	response, errDo := hostRequest(h, http.MethodPost, Origin+ClaimPath, headers, body)
 	if errDo != nil {
 		outcome.Message = "领取请求失败：" + errDo.Error()
@@ -358,7 +366,7 @@ func fetchCheckinStatus(h *abiboot.Host, credential *Credential, cfg Config) (ch
 // The captcha argument the reference threads through here is deliberately absent:
 // this plugin has no captcha provider, and the claim endpoint is called without
 // the header on purpose.
-func claimDaily(h *abiboot.Host, credential *Credential, cfg Config) ([]claimOutcome, error) {
+func claimDaily(h *abiboot.Host, credential *Credential, cfg Config, token *captchaToken) ([]claimOutcome, error) {
 	reportActivation(h, credential, cfg)
 	plans, errPlans := fetchClaimablePlans(h, credential, cfg)
 	if errPlans != nil {
@@ -373,7 +381,7 @@ func claimDaily(h *abiboot.Host, credential *Credential, cfg Config) ([]claimOut
 	}
 	outcomes := make([]claimOutcome, 0, len(plans))
 	for _, plan := range plans {
-		outcome := claimPlan(h, credential, cfg, plan.PlanID)
+		outcome := claimPlan(h, credential, cfg, plan.PlanID, token)
 		if !outcome.OK {
 			outcome.Message = claimFailureText(outcome.Code, outcome.Message)
 		}

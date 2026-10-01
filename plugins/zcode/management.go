@@ -408,9 +408,14 @@ func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi
 
 	payload := map[string]any{"provider": ProviderKey, "account": entry.Name}
 	claimAttempted := strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "claim")
+	// A solved captcha arrives in the query string, because the resource mount
+	// is dispatched as GET only. It is single-use and short-lived, so the brief
+	// exposure in a URL (and in the host's access log) is the accepted cost of
+	// having any human-assisted claim path at all.
+	token := captchaTokenFromRequest(request)
 	var outcomes []claimOutcome
 	if claimAttempted {
-		claimed, errClaim := claimDaily(h, credential, cfg)
+		claimed, errClaim := claimDaily(h, credential, cfg, token)
 		outcomes = claimed
 		if errClaim != nil {
 			payload["claim_error"] = errClaim.Error()
@@ -544,5 +549,20 @@ func checkinSummary(outcomes []claimOutcome, errClaim any) string {
 		return "今日已签到：" + strconv.Itoa(already) + " 个额度无需重复领取"
 	default:
 		return ""
+	}
+}
+
+// captchaTokenFromRequest lifts a solved captcha out of the query string.
+//
+// Returns nil when the caller supplied none, which is the normal path: the
+// unattended sweep has no way to solve one, and the claim then answers 3007.
+func captchaTokenFromRequest(request pluginapi.ManagementRequest) *captchaToken {
+	param := strings.TrimSpace(request.Query.Get("captcha"))
+	if param == "" {
+		return nil
+	}
+	return &captchaToken{
+		VerifyParam: param,
+		Region:      strings.TrimSpace(request.Query.Get("captcha_region")),
 	}
 }

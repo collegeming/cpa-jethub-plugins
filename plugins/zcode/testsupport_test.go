@@ -137,6 +137,14 @@ func resetTestState() {
 }
 
 // callsFor returns every recorded request whose URL contains match.
+// reset forgets the recorded calls, so one test can make a second request and
+// assert on it alone.
+func (f *fakeHost) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requests = nil
+}
+
 func (f *fakeHost) callsFor(match string) []abiboot.HTTPDoRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()

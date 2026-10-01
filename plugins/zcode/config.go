@@ -43,6 +43,20 @@ const (
 	// for this provider cannot succeed; it reports 3007 plainly rather than
 	// failing silently. Inference is unaffected — it needs no captcha.
 	ClaimPath = "/api/v1/zcode-plan/billing/claim"
+	// CaptchaConfigPath publishes the Aliyun captcha parameters this account
+	// must use (`data.configs.captcha`: enabled/prefix/region/sceneId/
+	// skip_model_request). They come from the SERVER, not from the client
+	// bundle — measured 2026-10-01:
+	//
+	//	{"enabled":true,"prefix":"no8xfe","region":"cn",
+	//	 "sceneId":"11xygtvd","skip_model_request":true}
+	//
+	// `skip_model_request` is about MODEL requests only. Inference needs no
+	// captcha; the claim endpoint always does.
+	CaptchaConfigPath = "/api/v1/client/configs"
+	// CaptchaPlatformQuery is required: `client/configs` answers 400 `code 3001`
+	// for `win32`/`linux`/absent (measured), and accepts `unknown`.
+	CaptchaPlatformQuery = "platform=unknown"
 	// EventReportPath needs only `X-Device-Mid`.
 	EventReportPath = "/api/v1/event/report"
 	// ClientConfigsPath publishes the model pool (context window, output cap and
