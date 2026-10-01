@@ -47,6 +47,9 @@ type chatCall struct {
 	Headers   http.Header
 	Model     string
 	SessionID string
+	// ImagesStripped counts the image parts degraded to text placeholders
+	// because every model this plugin serves is text-only (vision.go).
+	ImagesStripped int
 }
 
 // handleExecutorIdentifier advertises the provider key this executor serves.
@@ -68,11 +71,20 @@ func executorRefreshRequest(request pluginapi.ExecutorRequest) authrefresh.Reque
 
 // prepareChatCall signs the upstream chat request and attaches the unsigned
 // attribution headers.
-func prepareChatCall(request pluginapi.ExecutorRequest, credential *Credential, cfg Config) (*chatCall, error) {
+func prepareChatCall(h *abiboot.Host, request pluginapi.ExecutorRequest, credential *Credential, cfg Config) (*chatCall, error) {
 	sessionID := newTraceID()
-	body, parsed, errPrepare := prepareRequestBody(request.Payload, request.Model, cfg, sessionID)
+	body, parsed, imagesStripped, errPrepare := prepareRequestBody(request.Payload, request.Model, cfg, sessionID)
 	if errPrepare != nil {
 		return nil, errPrepare
+	}
+	if imagesStripped > 0 && h != nil {
+		// Warn, not debug: the turn still succeeds, but the model answers
+		// without having seen the image. Silence here is exactly what made the
+		// original 406 look like a phantom failure (vision.go).
+		h.Log("warn", "CodeArts 剥离了请求中的图片（模型为纯文本）", map[string]any{
+			"model":  parsed.Model,
+			"images": imagesStripped,
+		})
 	}
 
 	chatURL := SnapEngineBase + ChatAPIPath
@@ -95,7 +107,7 @@ func prepareChatCall(request pluginapi.ExecutorRequest, credential *Credential, 
 	wire.Header["Session-Id"] = []string{sessionID}
 	wire.Header["lang"] = []string{"en"}
 
-	return &chatCall{URL: chatURL, Body: body, Headers: wire.Header, Model: parsed.Model, SessionID: sessionID}, nil
+	return &chatCall{URL: chatURL, Body: body, Headers: wire.Header, Model: parsed.Model, SessionID: sessionID, ImagesStripped: imagesStripped}, nil
 }
 
 // handleExecutorExecute serves a non-streaming completion. The upstream call is
@@ -116,7 +128,7 @@ func handleExecutorExecute(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errCredential != nil {
 		return nil, errCredential
 	}
-	call, errPrepare := prepareChatCall(request, credential, settings())
+	call, errPrepare := prepareChatCall(h, request, credential, settings())
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
@@ -163,7 +175,7 @@ func handleExecutorExecuteStream(h *abiboot.Host, raw json.RawMessage) (any, err
 	if errCredential != nil {
 		return nil, errCredential
 	}
-	call, errPrepare := prepareChatCall(request, credential, settings())
+	call, errPrepare := prepareChatCall(h, request, credential, settings())
 	if errPrepare != nil {
 		return nil, errPrepare
 	}

@@ -4,7 +4,7 @@
     {
       "id": "codearts",
       "name": "CodeArts Agent",
-      "description": "华为云 CodeArts Agent 接入：SDK-HMAC-SHA256 签名、OAuth 浏览器登录与凭据续期、动态模型目录、DSML 原生工具调用、每日签到。",
+      "description": "华为云 CodeArts Agent 接入：SDK-HMAC-SHA256 签名、OAuth 浏览器登录与凭据续期、动态模型目录、DSML 原生工具调用、每日签到；纯文本模型收到图片时本地降级为文本占位符（不让整单被 406 打挂）。",
       "author": "collegeming",
       "repository": "https://github.com/collegeming/cpa-jethub-plugins",
       "homepage": "https://github.com/collegeming/cpa-jethub-plugins",

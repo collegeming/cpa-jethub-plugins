@@ -30,7 +30,7 @@ func requestWithTools(model string) []byte {
 // the tools array must be withheld, the instruction injected directly after the
 // first system message, and tool_stream kept on.
 func TestPrepareRequestBodyUsesDsmlForDeepseekV4(t *testing.T) {
-	encoded, request, errPrepare := prepareRequestBody(requestWithTools("deepseek-v4-flash"), "", DefaultConfig(), "sess-1")
+	encoded, request, _, errPrepare := prepareRequestBody(requestWithTools("deepseek-v4-flash"), "", DefaultConfig(), "sess-1")
 	if errPrepare != nil {
 		t.Fatalf("prepareRequestBody: %v", errPrepare)
 	}
@@ -72,7 +72,7 @@ func TestPrepareRequestBodyUsesDsmlForDeepseekV4(t *testing.T) {
 func TestPrepareRequestBodyDsmlInjectionWithoutSystemMessage(t *testing.T) {
 	payload := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],` +
 		`"tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}]}`)
-	_, request, errPrepare := prepareRequestBody(payload, "", DefaultConfig(), "sess-2")
+	_, request, _, errPrepare := prepareRequestBody(payload, "", DefaultConfig(), "sess-2")
 	if errPrepare != nil {
 		t.Fatalf("prepareRequestBody: %v", errPrepare)
 	}
@@ -84,7 +84,7 @@ func TestPrepareRequestBodyDsmlInjectionWithoutSystemMessage(t *testing.T) {
 // TestPrepareRequestBodyKeepsNativeToolsForOtherModels guards the other half:
 // non-deepseek models keep the standard tools array and get no instruction.
 func TestPrepareRequestBodyKeepsNativeToolsForOtherModels(t *testing.T) {
-	encoded, request, errPrepare := prepareRequestBody(requestWithTools("GLM-5.2"), "", DefaultConfig(), "sess-3")
+	encoded, request, _, errPrepare := prepareRequestBody(requestWithTools("GLM-5.2"), "", DefaultConfig(), "sess-3")
 	if errPrepare != nil {
 		t.Fatalf("prepareRequestBody: %v", errPrepare)
 	}

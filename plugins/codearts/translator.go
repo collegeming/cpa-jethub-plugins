@@ -83,11 +83,15 @@ func newTraceID() string {
 // prepareRequestBody enriches an inbound Chat Completions body with the fields
 // the CodeArts chat endpoint expects. It always asks upstream for a stream;
 // non-streaming callers aggregate the chunks afterwards.
-func prepareRequestBody(payload []byte, model string, cfg Config, sessionID string) ([]byte, *openai.Request, error) {
+//
+// The returned int is how many image parts were rewritten into text
+// placeholders, so the caller can log the degradation (vision.go).
+func prepareRequestBody(payload []byte, model string, cfg Config, sessionID string) ([]byte, *openai.Request, int, error) {
 	request := &openai.Request{}
+	imagesStripped := 0
 	if len(payload) > 0 {
 		if errUnmarshal := json.Unmarshal(payload, request); errUnmarshal != nil {
-			return nil, nil, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "decode chat request: %v", errUnmarshal)
+			return nil, nil, 0, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "decode chat request: %v", errUnmarshal)
 		}
 	}
 	if strings.TrimSpace(model) != "" {
@@ -95,10 +99,10 @@ func prepareRequestBody(payload []byte, model string, cfg Config, sessionID stri
 	}
 	request.Model = normalizeModelID(request.Model)
 	if request.Model == "" {
-		return nil, nil, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "chat request is missing a model")
+		return nil, nil, 0, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "chat request is missing a model")
 	}
 	if len(request.Messages) == 0 {
-		return nil, nil, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "chat request has no messages")
+		return nil, nil, 0, abiboot.HTTPError("invalid_request", http.StatusBadRequest, "chat request has no messages")
 	}
 
 	// 上游不认 OpenAI 的 `developer` 角色：带该角色的消息被 InferHub 拒绝
@@ -110,6 +114,12 @@ func prepareRequestBody(payload []byte, model string, cfg Config, sessionID stri
 			request.Messages[position].Role = "system"
 		}
 	}
+
+	// 图片：本插件的每个模型都是纯文本，任何一条消息带图都会被整单拒绝
+	// （`InferHub.001001020.406: The request model is not multimodal`），
+	// 包括「图片只在历史里、最新一条是纯文本」的情形。剥成文本占位符，
+	// 理由与取舍见 vision.go。
+	imagesStripped = stripImagesForTextModel(request)
 
 	request.Stream = true
 	if request.MaxTokens == nil || *request.MaxTokens <= 0 {
@@ -169,9 +179,9 @@ func prepareRequestBody(payload []byte, model string, cfg Config, sessionID stri
 
 	encoded, errMarshal := json.Marshal(body)
 	if errMarshal != nil {
-		return nil, nil, abiboot.Errorf("encode_request", "encode CodeArts chat request: %v", errMarshal)
+		return nil, nil, 0, abiboot.Errorf("encode_request", "encode CodeArts chat request: %v", errMarshal)
 	}
-	return encoded, request, nil
+	return encoded, request, imagesStripped, nil
 }
 
 // insertDsmlSystemPrompt places the DSML tool instruction immediately after the

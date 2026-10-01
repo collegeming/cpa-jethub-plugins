@@ -514,6 +514,91 @@ python3 -c "import hashlib,sys; print(hashlib.sha256(b'cli-proxy-api:caller-scop
 
 ---
 
+### 3.7 同名池化模型与模态能力
+
+**先记住一件事：CPA 不按能力路由，只按名字路由。** 同一个模型名可以由多个渠道同时发布，请求落到哪个渠道由 `priority` 档位和轮询决定，**跟模态能力无关**。
+
+这在纯文本场景下没问题，但图片会暴露它：同名模型背后各上游的视觉能力不一致。
+
+`DeepSeek-V4.1-Flash` 就是这种情况——四个上游发布同一个名字，实测（2026-10-01）对同一张纯蓝图片：
+
+| 上游 | 收到图片的行为 |
+| --- | --- |
+| sensenova-max / deepseek | 正确读出颜色（`Blue`） |
+| codearts | 整单拒绝：`InferHub.001001020.406: The request model is not multimodal` |
+
+**拒绝的粒度是整条请求，不是最后一条消息。** 实测每形态 12 次：
+
+| 请求形态 | 200 | codearts 406 |
+| --- | --- | --- |
+| 纯文本 | 12 | 0 |
+| 图片在最新一条 | 12 | 6 |
+| **图片只在历史里** | 12 | 5 |
+
+第三行是这类报错最难排查的地方：最新一条是纯文本，表面上没有任何东西提示"有图片"，但历史里的图照样让整单失败。
+
+**为什么别的客户端不报这个错。** 因为它们在发请求前就按模型把图片投影成文本占位符了（DSH 的 `projectImagesForTextModel`、AtomCode 的 `supports_vision`、Jet-Hub 各 adapter 的 `inputModalitiesFor`），判据是**逐模型**声明的 `inputModalities`。那些场景里模型与提供方 1:1，声明天然准确；而池化名字只能声明一次，于是下游以为"支持图片"、原样发出，命中 codearts 就报错——这正是「有时好有时坏」的来源。
+
+**本仓库的处理**：`codearts` 插件的每个模型都是纯文本，所以在**发往上游之前**把图片 part 换成文本占位符并记一条 `warn` 日志，而不是把失败抛给用户。取舍是刻意的——**读不到图但答得诚实，优于整个名字被一张图打挂**。同一次请求命中其它渠道时仍然能真正看到图。
+
+判定与验证：
+
+```bash
+# 触发一次带图请求，应看到 warn（而不是 406）
+podman logs --tail 50 cli-proxy-api | grep "剥离了请求中的图片"
+
+# 应无任何 406
+grep -c "not multimodal" /mnt/d/Docker/CLIProxyAPI/logs/main.log
+```
+
+若希望某个名字**始终**由能看图的上游承担，正确做法不是改插件，而是把 codearts 从该名字上摘掉（`oauth-excluded-models` 或调整 `priority`），见 §3.3 / §3.5。
+
+---
+
+### 3.8 上游限流（429）与 CPA 冷却
+
+上游返回 429 时，CPA 会冷却对应凭据。有三件事容易和直觉不符，都是实测＋源码确认的（CPA v8.0.4）：
+
+**① 冷却是按「凭据＋模型」，不是按渠道整体。**
+
+冷却写进 `auth.ModelStates[model]`（`conductor_cooldown.go:758`），只有 executor 显式实现 `IsCredentialScoped()` 时才扩散到整条凭据（`:913`）。所以同一个账号下，模型 A 被限流不影响模型 B。实测：
+
+```
+12:28:31  cline 上的 DeepSeek-V4.1-Flash 返回 429
+12:36:50  同一个 cline 凭据服务 Nemotron-3.5-Lightning → 200 正常
+```
+
+**② 冷却时长是固定阶梯，上游写的恢复时间不会被读取。**
+
+```
+1s → 2s → 4s → 8s → … 封顶 30min        （quotaBackoffBase=1s，quotaBackoffMax=30min）
+```
+
+实测爬梯轨迹与源码一致：`1s, 3s, 4s, 7s, 9s, 10s, 13s, 34s, 66s, 133s, 260s, 518s, 1028s …`（一次成功探测会重置）。
+
+上游回复里的那句 `Try again in 14h 53m` **到不了 CPA**：核心路径没有解析 body 文案的时长解析器，而插件也无法传递这个信息——插件 ABI 的错误对象只有 `code`/`message`/`retryable`/`http_status` 四个字段（`pluginabi/types.go:121-128`），既没有时长字段，`auth.save` 写回的 `next_retry_after` 也会被宿主值覆盖（`pluginhost/auth_callbacks.go:367`）。顺带一提，插件的 `retryable` 标志同样在 ABI 处被丢弃。
+
+**结论：不存在"针对某渠道模型设置冷却时长"的配置项。** 粒度（按渠道模型）已经是默认行为；缺的是时长，而时长不可配。
+
+**③ 限流期间客户端通常看不到错误。**
+
+同名池化让请求自动落到其它渠道。实测当天 3989 次请求中，客户端侧只有 4 次 400、3 次 499，**没有一次 429**。
+
+唯一可配的是**整体关闭冷却**（慎用，会让每次请求都实打实打上游）：
+
+```yaml
+plugins:
+  configs:
+    cline:
+      disable_cooling: true      # 也接受连字符写法 disable-cooling
+```
+
+按需临时解除单个凭据的冷却，用管理 API `POST /v0/management/routing/cooldown/reset`。
+
+> **为什么不该追求"精确遵守 14h"**：阶梯爬到 30 分钟后，CPA 每小时最多重探 2 次已耗尽的日额度，代价是少量上游往返；而把 429 硬映射成别的状态码（例如借 404 的 12 小时分支）语义是错的，会连带惩罚正常请求。
+
+---
+
 ## 4. 验证
 
 ### 4.1 检查插件加载
@@ -616,6 +701,7 @@ curl -s -N -X POST http://localhost:8317/v1/chat/completions \
 | 某个 Key 请求同名模型返回 403 `no allowed upstream profile is available for this API key`，而该渠道确实写在该 Key 的 `allow_profiles` 里 | 候选集在 Key 策略生效前就被裁到最高优先级档（见 §3.6 步骤 4） | 用声明 `scheduler_across_priorities` 的 `key-provider-access`（`0.0.5-cpamp-v3` 起）；或把该渠道的 `priority` 调到与被拒绝渠道同档 |
 | 同名模型被路由到非预期的渠道（例如免费 OAuth 模型走了付费 API Key 渠道） | 同名模型按优先级档选渠道，最高档优先，名字后缀不参与选择 | 调 `priority`；需要按 Key 区分渠道时按 §3.6 配置 |
 | 某渠道的模型整段超时（请求 20s 以上无响应） | 该渠道上游不可用 | 用 `/v1/models` 确认该模型是否还有其它渠道；必要时降低该渠道 `priority` 让它退出共享模型名所在档，或直接停用该渠道 |
+| 同名池化模型「有时能看图、有时答不出」，日志出现 `InferHub.001001020.406: The request model is not multimodal` | 同名模型由多个上游共用，各自模态能力不同；CPA 不按模态路由 | 升级到 codearts 剥图版本（v0.8.0 引入，见 §5.3）；根因说明见 §3.7 |
 
 ---
 

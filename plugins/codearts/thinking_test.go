@@ -90,7 +90,7 @@ func TestModelInfoThinkingLevelsAreNotAliased(t *testing.T) {
 // absent key from a null one.
 func decodeWireBody(t *testing.T, payload string) map[string]any {
 	t.Helper()
-	encoded, _, errPrepare := prepareRequestBody([]byte(payload), "", DefaultConfig(), "sess-thinking")
+	encoded, _, _, errPrepare := prepareRequestBody([]byte(payload), "", DefaultConfig(), "sess-thinking")
 	if errPrepare != nil {
 		t.Fatalf("prepareRequestBody: %v", errPrepare)
 	}
