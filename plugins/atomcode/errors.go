@@ -130,6 +130,35 @@ func upstreamError(status int, body string) error {
 // the executor turns it into a real error while the stream is still empty.
 const parameterErrorMessage = "参数错误"
 
+// thirdPartyFailureMarker is the other shape the gateway puts in a SUCCESSFUL
+// completion when a model is listed but broken behind it.
+//
+// Measured 2026-10-01: `Qwen/Qwen3-4B-Instruct-2507` answered HTTP 200 whose
+// entire content was `三方请求失败: 502 <html>…`. Returning that to a user —
+// or, worse, to an agent loop as an assistant turn — pastes an upstream HTML
+// error page into the conversation as if the model had written it.
+const thirdPartyFailureMarker = "三方请求失败"
+
+// silentUpstreamFailure reports whether a completion body is one of the
+// gateway's failure messages dressed as a successful answer, and returns the
+// error to raise instead.
+//
+// Both known shapes are checked on the CONTENT only, because the status code is
+// 200 in both cases: the parameter sentinel, and a third-party failure relayed
+// verbatim.
+func silentUpstreamFailure(content string) (error, bool) {
+	trimmed := strings.TrimSpace(content)
+	switch {
+	case trimmed == parameterErrorMessage:
+		return parameterErrorFor(""), true
+	case strings.HasPrefix(trimmed, thirdPartyFailureMarker):
+		return abiboot.RetryableError("upstream_failure",
+			"AtomCode 网关把上游故障当成了模型回答（%s）", truncate(trimmed, 160)), true
+	default:
+		return nil, false
+	}
+}
+
 // looksLikeParameterError reports whether a buffered completion body is the
 // gateway's silent parameter rejection rather than a model answer.
 func looksLikeParameterError(body []byte) bool {
@@ -146,7 +175,8 @@ func looksLikeParameterError(body []byte) bool {
 	if len(decoded.Choices) != 1 {
 		return false
 	}
-	return strings.TrimSpace(decoded.Choices[0].Message.Content) == parameterErrorMessage
+	_, failed := silentUpstreamFailure(decoded.Choices[0].Message.Content)
+	return failed
 }
 
 // classifyCodingPlanError renders a CodingPlan REST failure the way the

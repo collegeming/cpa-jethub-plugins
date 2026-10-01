@@ -291,3 +291,29 @@ func payloadStrings(payloads [][]byte) []string {
 	}
 	return out
 }
+
+// TestThirdPartyFailureIsNotPassedOffAsAnAnswer covers the second shape the
+// gateway uses for a listed-but-broken model.
+//
+// Measured 2026-10-01: `Qwen/Qwen3-4B-Instruct-2507` answered HTTP 200 whose
+// entire content was `三方请求失败: 502 <html>…`. Without this guard that HTML
+// error page becomes the assistant's turn — and inside an agent loop it becomes
+// the model's next input.
+func TestThirdPartyFailureIsNotPassedOffAsAnAnswer(t *testing.T) {
+	body := `{"id":"x","choices":[{"index":0,"message":{"role":"assistant",` +
+		`"content":"三方请求失败: 502 <html>\r\n<head><title>502 Bad Gateway</title>"},"finish_reason":"stop"}]}`
+	if !looksLikeParameterError([]byte(body)) {
+		t.Fatal("a relayed third-party failure must be treated as a failure, not as model output")
+	}
+	if _, errStream := consumeUpstreamStream([]byte(
+		`data: {"choices":[{"delta":{"content":"三方请求失败: 502 <html>"}}]}` + "\n\n")); errStream == nil {
+		t.Fatal("the streaming path must reject it too")
+	}
+
+	// A model that merely TALKS about the phrase is not a failure.
+	benign := `{"id":"x","choices":[{"index":0,"message":{"role":"assistant",` +
+		`"content":"The gateway reported 三方请求失败 to the caller."},"finish_reason":"stop"}]}`
+	if looksLikeParameterError([]byte(benign)) {
+		t.Fatal("the marker must only match at the start of the content")
+	}
+}

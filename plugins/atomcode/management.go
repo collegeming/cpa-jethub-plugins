@@ -212,6 +212,13 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 	// credential's validity line. Without them the row falls back to
 	// "provider 只返回了本页不展示的配置字段" and the channel looks inert.
 	body["model_count"] = len(entries)
+	extra := 0
+	for _, entry := range entries {
+		if entry.FromConfig {
+			extra++
+		}
+	}
+	body["extra_model_count"] = extra
 	if expiry := selectedCredential.Expiry(); !expiry.IsZero() {
 		body["expires_at"] = expiry.Format(time.RFC3339)
 		body["expires_at_ms"] = expiry.UnixMilli()

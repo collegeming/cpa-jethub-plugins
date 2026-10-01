@@ -161,8 +161,8 @@ func consumeUpstreamStream(body []byte) (streamOutcome, error) {
 		if trimmed == "" || trimmed == sse.Done {
 			continue
 		}
-		if isParameterErrorFrame(trimmed) {
-			return streamOutcome{}, parameterErrorFor("")
+		if errSilent, failed := silentFrameFailure(trimmed); failed {
+			return streamOutcome{}, errSilent
 		}
 		chunk := sse.Payload(trimmed)
 		outcome.Payloads = append(outcome.Payloads, chunk)
@@ -173,9 +173,9 @@ func consumeUpstreamStream(body []byte) (streamOutcome, error) {
 	return outcome, nil
 }
 
-// isParameterErrorFrame reports whether one stream frame is the gateway's silent
-// rejection rather than a model chunk.
-func isParameterErrorFrame(payload string) bool {
+// silentFrameFailure reports whether one stream frame carries a silent failure
+// rather than a model chunk.
+func silentFrameFailure(payload string) (error, bool) {
 	var decoded struct {
 		Choices []struct {
 			Delta struct {
@@ -187,16 +187,16 @@ func isParameterErrorFrame(payload string) bool {
 		} `json:"choices"`
 	}
 	if errUnmarshal := json.Unmarshal([]byte(payload), &decoded); errUnmarshal != nil {
-		return false
+		return nil, false
 	}
 	if len(decoded.Choices) != 1 {
-		return false
+		return nil, false
 	}
 	content := decoded.Choices[0].Delta.Content
 	if content == "" {
 		content = decoded.Choices[0].Message.Content
 	}
-	return strings.TrimSpace(content) == parameterErrorMessage
+	return silentUpstreamFailure(content)
 }
 
 // frameCarriesOutput reports whether a chunk holds anything the user will see.

@@ -153,6 +153,28 @@ type Config struct {
 	// the reference registers providers from the server payload and keeps no
 	// bundled table at all (`crates/atomcode-codingplan/src/setup.rs:924`).
 	DiscoverModels bool
+	// ExtraModels are model ids served by the gateway but NOT advertised by
+	// `models-v2` for this account.
+	//
+	// The two lists genuinely differ, and the difference is worth exposing
+	// deliberately rather than discovering by accident. Measured 2026-10-01 on
+	// one `CodingPlan Lite-体验版` account with `POST /chat/completions`:
+	//
+	//	deepseek-flash                200, real answer   (absent from models-v2)
+	//	Qwen/Qwen3-32B                200, real answer   (absent from models-v2)
+	//	Qwen/Qwen2-VL-72B             200, real answer   (absent from models-v2)
+	//	Qwen/Qwen3-4B-Instruct-2507   200 whose CONTENT is 三方请求失败: 502 …
+	//	no-such-model-xyz             200 whose CONTENT is 参数错误
+	//
+	// So "reachable" is not "advertised", and it is certainly not "works": one
+	// of those ids fails inside the gateway while still reporting HTTP 200.
+	// That is why this is an operator list and not a bundled one — only the
+	// person holding the account can decide an unadvertised model is worth
+	// offering, and the plugin must not guess.
+	//
+	// Ids here are added ON TOP of the discovered catalogue, never instead of
+	// it, and duplicates are dropped.
+	ExtraModels []string
 	// ModelPrefix exposes the account id as a model prefix (`<account>/<model>`).
 	ModelPrefix bool
 	// ModelCacheTTLMS bounds how long a discovered catalogue is reused.
@@ -179,6 +201,7 @@ func DefaultConfig() Config {
 		CodingPlanAPIBase:    DefaultCodingPlanAPIBase,
 		GatewayBase:          DefaultGatewayBase,
 		DiscoverModels:       true,
+		ExtraModels:          nil,
 		ModelPrefix:          true,
 		ModelCacheTTLMS:      ModelCacheTTLMS,
 		PlanType:             PlanTypeAuto,
@@ -210,6 +233,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.CodingPlanAPIBase = coerceURL(raw["codingplan_api_base"], cfg.CodingPlanAPIBase, DefaultCodingPlanAPIBase)
 	cfg.GatewayBase = coerceURL(raw["gateway_base"], cfg.GatewayBase, DefaultGatewayBase)
 	cfg.DiscoverModels = coerceBool(raw["discover_models"], cfg.DiscoverModels)
+	cfg.ExtraModels = coerceStringList(raw["extra_models"], cfg.ExtraModels)
 	cfg.ModelPrefix = coerceBool(raw["model_prefix"], cfg.ModelPrefix)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
 	cfg.PlanType = coercePlanType(raw["plan_type"], cfg.PlanType)
@@ -259,6 +283,50 @@ func coercePlanType(value any, fallback string) string {
 	default:
 		return fallback
 	}
+}
+
+// coerceStringList reads a list of model ids.
+//
+// A single string is accepted as a one-element list because that is the shape a
+// user reaches for first (`extra_models: deepseek-flash`), and a comma-separated
+// string because that is what a shell-minded user writes. Entries are trimmed
+// and blanks dropped.
+func coerceStringList(value any, fallback []string) []string {
+	switch typed := value.(type) {
+	case nil:
+		return fallback
+	case string:
+		return splitModelList(typed)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				continue
+			}
+			out = append(out, splitModelList(text)...)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case []string:
+		return typed
+	default:
+		return fallback
+	}
+}
+
+// splitModelList splits on commas and drops blanks.
+func splitModelList(text string) []string {
+	parts := strings.Split(text, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // coerceBool accepts every spelling of a boolean a YAML document can produce.
@@ -329,6 +397,10 @@ func ConfigFields() []configField {
 		{Name: "discover_models", Type: "boolean",
 			Description: "是否用账号会话实时拉取 models-v2 模型目录（默认开启）。关闭后只使用内置兜底表；" +
 				"远端目录拉取失败时也会静默回退，不会报错"},
+		{Name: "extra_models", Type: "string",
+			Description: "补充模型：网关能调用、但服务端 models-v2 目录已不下发的模型 id（逗号分隔，也可写成 YAML 列表）。" +
+				"这些模型会加在实时目录之上。注意「能调用」不等于「可用」——实测 deepseek-flash 返回正常内容，" +
+				"而 Qwen/Qwen3-4B-Instruct-2507 会以 200 返回「三方请求失败: 502」，所以请只填自己验证过的模型"},
 		{Name: "model_prefix", Type: "boolean", Description: "是否把账号 ID 作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "实时模型目录的缓存时长，毫秒（默认 2 小时）"},
 		{Name: "plan_type", Type: "string", EnumValues: []string{"auto", "Max", "Pro", "Lite"},

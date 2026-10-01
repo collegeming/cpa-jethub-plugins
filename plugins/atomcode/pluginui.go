@@ -165,17 +165,36 @@ func modelCard(h *abiboot.Host, cfg Config, credential *Credential) template.HTM
 	source := modelSource(h, cfg, credential)
 	entries := staticModelEntries(h, cfg, credential)
 	rows := make([]plugui.Field, 0, len(entries))
+	extra := 0
 	for _, entry := range entries {
-		detail := itoa(entry.effectiveContextWindow()) + " ctx"
+		detail := ""
+		if entry.ContextWindow != nil {
+			detail = itoa(entry.effectiveContextWindow()) + " ctx"
+		}
 		if entry.acceptsImages() {
 			detail += " · 支持图片"
 		}
 		if len(entry.ReasoningEffortLevels) > 0 {
 			detail += " · 思考级别 " + strings.Join(entry.ReasoningEffortLevels, "/")
 		}
+		if entry.FromConfig {
+			extra++
+			if detail == "" {
+				detail = "服务端目录未下发"
+			}
+			detail = "补充模型 · " + detail
+		}
+		if detail == "" {
+			detail = "服务端未声明窗口"
+		}
 		rows = append(rows, plugui.Field{Label: entry.DisplayModelName, Value: detail})
 	}
 	notice := plugui.Notice("", "模型目录来自服务端 models-v2（来源："+modelSourceLabel(source)+"）。")
+	if extra > 0 {
+		notice = plugui.Notice("warning",
+			"其中 "+itoa(extra)+" 个是 extra_models 补充的模型：网关能调用，但服务端目录已不下发，"+
+				"因此不受套餐目录背书——随时可能被上游撤下，请以实际调用结果为准。")
+	}
 	return plugui.Card("可用模型",
 		plugui.Group(notice, plugui.Fields(rows...)))
 }

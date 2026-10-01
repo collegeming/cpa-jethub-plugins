@@ -199,3 +199,21 @@ func TestParseCredentialRejectsEmptyTokens(t *testing.T) {
 		t.Fatal("a credential with no refresh_token must not report as refreshable")
 	}
 }
+
+// TestExtraModelsCoercion covers the three spellings a user reaches for. A
+// single string is the first thing anyone writes, and silently ignoring it
+// would look like the setting does not work at all.
+func TestExtraModelsCoercion(t *testing.T) {
+	if got := ConfigFromYAML([]byte("extra_models: deepseek-flash")).ExtraModels; len(got) != 1 || got[0] != "deepseek-flash" {
+		t.Fatalf("scalar spelling = %#v", got)
+	}
+	if got := ConfigFromYAML([]byte("extra_models: a, b ,,c")).ExtraModels; len(got) != 3 || got[2] != "c" {
+		t.Fatalf("comma spelling = %#v", got)
+	}
+	if got := ConfigFromYAML([]byte("extra_models:\n  - a\n  - b\n")).ExtraModels; len(got) != 2 || got[0] != "a" {
+		t.Fatalf("list spelling = %#v", got)
+	}
+	if got := DefaultConfig().ExtraModels; len(got) != 0 {
+		t.Fatalf("the default must be empty: offering an unadvertised model is the operator's call, got %#v", got)
+	}
+}

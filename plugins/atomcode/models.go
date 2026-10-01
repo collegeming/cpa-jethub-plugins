@@ -70,6 +70,10 @@ type modelEntry struct {
 	// but does not act on (`types.rs:120-130`).
 	IsInfinity          int `json:"is_infinity"`
 	IsAtomcodeExclusive int `json:"is_atomcode_exclusive"`
+	// FromConfig marks an entry this adapter added from the `extra_models`
+	// setting rather than one the server advertised. It is local bookkeeping:
+	// the pages label such a model so nobody mistakes it for an entitlement.
+	FromConfig bool `json:"-"`
 }
 
 // effectiveContextWindow applies the reference's 128k floor.
@@ -233,6 +237,69 @@ var fallbackCatalogue = []modelEntry{
 func intRef(value int) *int    { return &value }
 func boolRef(value bool) *bool { return &value }
 
+// measuredExtraModels carries SERVER-PUBLISHED metadata for ids this adapter has
+// seen in a real `models-v2` payload but which the server no longer lists.
+//
+// Only ids with captured server metadata belong here; anything else configured
+// through `extra_models` is advertised as an id with no claims attached, rather
+// than with a guessed context window or a guessed vision capability.
+//
+// `deepseek-flash` was captured 2026-10-01 from
+// `GET /coding-plan/models-v2?plan_type=Max` before the platform dropped it:
+//
+//	{"display_model_name":"deepseek-flash","context_window":1000000,
+//	 "supports_vision":true,"reasoning_effort_levels":["high","max"], ...}
+//
+// The id keeps answering HTTP 200 with real content, which is why it is worth
+// offering at all.
+var measuredExtraModels = map[string]modelEntry{
+	"deepseek-flash": {
+		DisplayModelName:      "deepseek-flash",
+		ContextWindow:         intRef(1_000_000),
+		SupportsVision:        boolRef(true),
+		PlanAvailable:         true,
+		ReasoningEffortLevels: []string{"high", "max"},
+		BaseURL:               DefaultGatewayBase,
+		Type:                  "openai",
+	},
+}
+
+// extraEntries turns the configured ids into catalogue entries, dropping any the
+// catalogue already carries.
+func extraEntries(configured []string, existing []modelEntry) []modelEntry {
+	if len(configured) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(existing))
+	for _, entry := range existing {
+		seen[entry.DisplayModelName] = true
+	}
+	out := make([]modelEntry, 0, len(configured))
+	for _, id := range configured {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		if known, ok := measuredExtraModels[trimmed]; ok {
+			known.FromConfig = true
+			out = append(out, known)
+			continue
+		}
+		// Unknown id: advertise it with NO claims. A guessed context window or
+		// vision flag is worse than an absent one, because the client acts on
+		// it (`plugins/codearts/models.go` makes the same choice).
+		out = append(out, modelEntry{
+			DisplayModelName: trimmed,
+			PlanAvailable:    true,
+			FromConfig:       true,
+			BaseURL:          DefaultGatewayBase,
+			Type:             "openai",
+		})
+	}
+	return out
+}
+
 // staticModelEntries returns the serving catalogue: the live one when discovery
 // is enabled and succeeds, the bundled one otherwise.
 func staticModelEntries(h *abiboot.Host, cfg Config, credential *Credential) []modelEntry {
@@ -240,16 +307,18 @@ func staticModelEntries(h *abiboot.Host, cfg Config, credential *Credential) []m
 		return fallbackCatalogue
 	}
 	if !cfg.DiscoverModels {
-		return fallbackCatalogue
+		return append(append([]modelEntry(nil), fallbackCatalogue...), extraEntries(cfg.ExtraModels, fallbackCatalogue)...)
 	}
 	entry, errCatalogue := catalogueFor(h, cfg, credential)
 	if errCatalogue != nil || len(entry.models) == 0 {
 		if h != nil && errCatalogue != nil {
 			h.Log("warn", "AtomCode 模型目录获取失败，回退内置列表", map[string]any{"error": errCatalogue.Error()})
 		}
-		return fallbackCatalogue
+		return append(append([]modelEntry(nil), fallbackCatalogue...), extraEntries(cfg.ExtraModels, fallbackCatalogue)...)
 	}
-	return entry.models
+	// Operator-configured extras ride ON TOP of the discovered catalogue: the
+	// server list stays authoritative, and the extras are visibly additions.
+	return append(append([]modelEntry(nil), entry.models...), extraEntries(cfg.ExtraModels, entry.models)...)
 }
 
 // modelInfos projects catalogue entries onto the host's model records.
@@ -283,7 +352,7 @@ func modelInfoFor(entry modelEntry, prefix string) pluginapi.ModelInfo {
 		Type:                       "chat",
 		DisplayName:                display,
 		Name:                       prefix + display,
-		Description:                "AtomCode " + display,
+		Description:                modelDescription(display, entry.FromConfig),
 		ContextLength:              int64(contextWindow),
 		InputTokenLimit:            int64(contextWindow),
 		MaxCompletionTokens:        defaultMaxOutputTokens,
@@ -304,6 +373,17 @@ func modelInfoFor(entry modelEntry, prefix string) pluginapi.ModelInfo {
 		}
 	}
 	return info
+}
+
+// modelDescription labels a model, naming the ones this adapter added by hand.
+//
+// The label is the only place a user can tell an entitlement from an addition,
+// so it says so rather than leaving two identical-looking rows.
+func modelDescription(display string, fromConfig bool) string {
+	if fromConfig {
+		return "AtomCode " + display + "（补充模型：服务端目录未下发，由 extra_models 添加）"
+	}
+	return "AtomCode " + display
 }
 
 // modelPrefixFor is the account token exposed ahead of a model id.
