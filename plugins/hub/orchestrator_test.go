@@ -95,9 +95,6 @@ func checkinRoutes() []route {
 		jsonRoute("/lobsterai/checkin?", `{"status":"already-claimed","message":"今天已签到","credit_granted":false}`),
 		jsonRoute("/loomy/checkin?", `{"status":"claimed","message":"初始化每日额度成功","credit":100,"balance":100}`),
 		jsonRoute("/codebuddy/checkin?", `{"supported":true,"product":"codebuddy","outcome":"claimed","message":"签到成功","credit":2}`),
-		// zcode answers with the `status` word this repository's plugins speak;
-		// the claim itself only runs for `action=claim`.
-		jsonRoute("/zcode/checkin?", `{"provider":"zcode","status":"claimed","already_claimed":false,"today_checked_in":true,"claimable_plans":0}`),
 		// minimax needs no action parameter: its /checkin claims unconditionally
 		// and reports the idempotent repeat through claim_result.
 		jsonRoute("/minimax/checkin?", `{"status":"already-claimed","message":"今天已领取","amount":0}`),
@@ -262,10 +259,12 @@ func TestExactCheckinRequestsPerProvider(t *testing.T) {
 		{provider: "lobsterai", want: []string{"/v0/resource/plugins/lobsterai/checkin?", "action=checkin", "auth_index=lb-1", "format=json"}},
 		{provider: "loomy", want: []string{"/v0/resource/plugins/loomy/checkin?", "action=claim", "auth_index=lo-1", "format=json"}},
 		{provider: "codebuddy", want: []string{"/v0/resource/plugins/codebuddy/checkin?", "action=checkin", "auth_index=cb-1", "format=json"}},
-		// zcode's route answers JSON either way, but only the explicit
+		// zcode is deliberately absent: it declares NO check-in endpoint, because
+		// the claim route's Aliyun captcha cannot be satisfied (`targets.go`). A
+		// request for it would mean the sweep was calling a route the provider
+		// does not offer.
 		// `action=claim` link performs the claim — without it the run would look
 		// successful and take nothing.
-		{provider: "zcode", want: []string{"/v0/resource/plugins/zcode/checkin?", "action=claim", "auth_index=zc-1", "format=json"}},
 		// codearts is the exception: the claim is a query string on the STATUS
 		// page and must NOT ask for JSON, which would skip the write.
 		{provider: "codearts", want: []string{"/v0/resource/plugins/codearts/status?", "action=checkin", "auth_index=ca-1"}, avoid: []string{"format=json"}},
@@ -368,7 +367,7 @@ func TestAggregatedVerdicts(t *testing.T) {
 		"trae":           kindClaimed,
 		"cline":          kindUnsupported,
 		"raccoon":        kindClaimed,
-		"zcode":          kindClaimed,
+		"zcode":          kindUnsupported,
 		"minimax":        kindAlreadyClaimed,
 		"atomcode":       kindAlreadyClaimed,
 	}
@@ -415,12 +414,12 @@ func TestAggregatedVerdicts(t *testing.T) {
 		kind rowKind
 		want int
 	}{
-		{kindClaimed, 7},
+		{kindClaimed, 6},
 		{kindAlreadyClaimed, 4},
 		{kindUnavailable, 3},
-		// Only cline is left without a check-in endpoint. raccoon gained one
-		// for its one-off desktop login reward, which is idempotent server-side.
-		{kindUnsupported, 1},
+		// cline and zcode have no check-in endpoint: cline's upstream has none,
+		// and zcode's requires a captcha that cannot be produced.
+		{kindUnsupported, 2},
 		{kindFailed, 0},
 	} {
 		if summary[string(pair.kind)] != pair.want {

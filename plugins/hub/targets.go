@@ -177,14 +177,19 @@ func targetCatalogue() []target {
 		},
 		{
 			ID: "zcode", Label: "ZCode（智谱）", Icon: brandicons.ZCode,
-			Support:     supportJSON,
-			CheckinPath: "/checkin",
-			// REQUIRED: zcode's `/checkin` answers JSON either way, but only the
-			// explicit `action=claim` link performs the claim — a plain load just
-			// reports state (`plugins/zcode/management.go`, checkinJSON). Without
-			// this parameter the run would look successful and claim nothing.
-			CheckinQuery: url.Values{"action": {"claim"}},
-			Note:         "只领取每日额度；额度按自然日由服务端结算，插件会先补活跃上报再查可领活动",
+			Support: supportNone,
+			// No check-in endpoint, for the same reason cline has none: the
+			// action cannot succeed. The claim route requires an Aliyun captcha
+			// (`400 {"code":3007,"msg":"captcha verify failed"}`, no challenge to
+			// solve), and this plugin does not mint one. A human-assisted path
+			// was built and measured to fail as well — the widget loads and
+			// initialises but never renders a challenge, because the captcha
+			// scene is not authorised for our origin.
+			//
+			// So the provider advertises nothing rather than offering a button
+			// that can only report a failure every single day.
+			Note: "领取端点强制要求阿里云验证码（3007），插件无法满足，因此与 cline 一样不支持一键签到；" +
+				"推理正常，每日额度请在 ZCode 官方客户端或网页领取",
 		},
 		{
 			ID: "minimax", Label: "MiniMax Code（中国版）", Icon: brandicons.MiniMax,

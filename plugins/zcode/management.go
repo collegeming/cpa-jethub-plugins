@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
@@ -31,9 +30,8 @@ import (
 
 // Resource paths, referenced by the pages and by the hub.
 const (
-	statusResourcePath  = "/status"
-	loginResourcePath   = "/login"
-	checkinResourcePath = "/checkin"
+	statusResourcePath = "/status"
+	loginResourcePath  = "/login"
 )
 
 // handleManagementRegister declares the entries management clients show.
@@ -43,7 +41,6 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 		Resources: []pluginapi.ResourceRoute{
 			{Path: statusResourcePath, Description: "账号、额度（token 计量）、模型目录与设置概览（由 hub 的渠道总览链接进入）"},
 			{Path: loginResourcePath, Description: "ZCode 设备授权登录：先取授权 URL，再由轮询收尾；不监听本地端口"},
-			{Path: checkinResourcePath, Description: "补齐活跃上报 → 查询可领额度 → 领取；ZCode 的额度按自然日由服务端结算"},
 		},
 	}, nil
 }
@@ -70,11 +67,6 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		}
 		return renderLoginPage(h, request), nil
 
-	case checkinResourcePath:
-		if wantsJSON(request) {
-			return checkinJSON(h, request), nil
-		}
-		return renderCheckinPage(h, request), nil
 	}
 	return jsonManagementResponse(http.StatusNotFound, map[string]any{
 		"error": "unknown ZCode management route",
@@ -165,8 +157,6 @@ type accountStatus struct {
 	Error      string
 	Balance    *balanceResult
 	BalanceErr string
-	Checkin    *checkinStatus
-	CheckinErr string
 }
 
 // collectAccountStatuses reads every account's balance once.
@@ -186,12 +176,6 @@ func collectAccountStatuses(h *abiboot.Host, accounts []pluginapi.HostAuthFileEn
 			status.BalanceErr = errBalance.Error()
 		} else {
 			status.Balance = balance
-		}
-		checkin, errCheckin := fetchCheckinStatus(h, credential, cfg)
-		if errCheckin != nil {
-			status.CheckinErr = errCheckin.Error()
-		} else {
-			status.Checkin = &checkin
 		}
 		out = append(out, status)
 	}
@@ -227,13 +211,14 @@ func statusJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.
 		"protocol":        "anthropic-messages",
 		"inference_paths": []string{MessagesPath},
 		"login_page":      loginResourcePath,
-		"checkin_page":    checkinResourcePath,
 		"refreshable":     false,
 		"refresh_note": "ZCode 凭据是静态的：JWT 里没有 exp，服务端也没有续期端点，" +
 			"auth.refresh 只做有效性探测（billing/balance）。失效只能重新登录",
-		"daily_checkin": true,
-		"checkin_note": "每日额度按自然日由服务端结算；领取前必须先补 app_launch / app_daily_active 活跃上报，" +
-			"否则 preview 恒为空",
+		// There is deliberately NO check-in surface here: the claim endpoint
+		// requires an Aliyun captcha this plugin cannot produce, so the channel
+		// reports "unsupported" exactly like cline rather than offering an
+		// action that can only fail (`plugins/hub/targets.go`).
+		"daily_checkin": false,
 		"captcha": map[string]any{
 			"used_for_inference": false,
 			"note": "实测：身份块正确时，不带任何 captcha 头也返回 200；带一个故意伪造的 captcha 参数同样 200。" +
@@ -318,14 +303,6 @@ func accountStatusJSON(status accountStatus) map[string]any {
 		}
 		row["buckets"] = buckets
 	}
-	if status.CheckinErr != "" {
-		row["checkin_error"] = status.CheckinErr
-	}
-	if status.Checkin != nil {
-		row["today_checked_in"] = status.Checkin.TodayCheckedIn
-		row["claimable_plans"] = len(status.Checkin.Claimable)
-		row["checkin_note"] = status.Checkin.Note
-	}
 	return row
 }
 
@@ -381,188 +358,4 @@ func loginJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.M
 		}
 	}
 	return jsonManagementResponse(http.StatusOK, payload)
-}
-
-// checkinJSON is the machine-readable view of the check-in page.
-//
-// `?action=claim` performs the claim, because a resource route is GET-only and an
-// explicit action link is the only way a user can trigger it. A plain page load
-// never claims anything.
-func checkinJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
-	cfg := settings()
-	entry, found := selectAccount(h, request)
-	if !found {
-		return jsonManagementResponse(http.StatusOK, map[string]any{
-			"provider": ProviderKey,
-			"error":    "没有可用的 ZCode 账号，请先登录",
-		})
-	}
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		return jsonManagementResponse(http.StatusOK, map[string]any{
-			"provider": ProviderKey,
-			"account":  entry.Name,
-			"error":    errCredential.Error(),
-		})
-	}
-
-	payload := map[string]any{"provider": ProviderKey, "account": entry.Name}
-	claimAttempted := strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "claim")
-	// A solved captcha arrives in the query string, because the resource mount
-	// is dispatched as GET only. It is single-use and short-lived, so the brief
-	// exposure in a URL (and in the host's access log) is the accepted cost of
-	// having any human-assisted claim path at all.
-	token := captchaTokenFromRequest(request)
-	var outcomes []claimOutcome
-	if claimAttempted {
-		claimed, errClaim := claimDaily(h, credential, cfg, token)
-		outcomes = claimed
-		if errClaim != nil {
-			payload["claim_error"] = errClaim.Error()
-		} else {
-			rows := make([]map[string]any, 0, len(outcomes))
-			for _, outcome := range outcomes {
-				rows = append(rows, map[string]any{
-					"plan_id":         outcome.PlanID,
-					"ok":              outcome.OK,
-					"code":            outcome.Code,
-					"already_claimed": outcome.AlreadyClaimed,
-					"http_status":     outcome.HTTPStatus,
-					"message":         outcome.Message,
-				})
-			}
-			payload["outcomes"] = rows
-		}
-	}
-	// The hub renders a check-in row from the TOP-LEVEL `message` and nothing
-	// else (`plugins/hub/orchestrator.go`, interpretCheckinJSON). Without one,
-	// a failed claim reaches the user as the bare word "failed" while the
-	// actionable sentence sits unread in `outcomes[].message` — which is exactly
-	// how a 3007 captcha rejection looked like a mystery for a whole run.
-	if claimAttempted {
-		if summary := checkinSummary(outcomes, payload["claim_error"]); summary != "" {
-			payload["message"] = summary
-		}
-	}
-
-	status, errStatus := fetchCheckinStatus(h, credential, cfg)
-	if errStatus != nil {
-		payload["status_error"] = errStatus.Error()
-		// The claim result is known even when the read-back failed, so the
-		// verdict is still published rather than withheld.
-		payload["status"] = checkinStatusWord(claimAttempted, outcomes, false, 0)
-		return jsonManagementResponse(http.StatusOK, payload)
-	}
-	payload["active"] = status.Active
-	payload["today_checked_in"] = status.TodayCheckedIn
-	payload["activity_name"] = status.ActivityName
-	payload["claimable_plans"] = len(status.Claimable)
-	payload["note"] = status.Note
-	payload["status"] = checkinStatusWord(claimAttempted, outcomes, status.TodayCheckedIn, len(status.Claimable))
-	return jsonManagementResponse(http.StatusOK, payload)
-}
-
-// checkinStatusWord reduces this page's result to the shared check-in
-// vocabulary, which is what the Jet Hub panel reads to label the row
-// (`plugins/hub/orchestrator.go`, interpretCheckinJSON → normalizeProviderStatus):
-//
-//	claimed          a plan was granted by this run
-//	already-claimed  nothing was granted because today's grant is already taken
-//	inactive         no claim was attempted and nothing is claimable
-//	failed           a claim was attempted and nothing succeeded
-//
-// ⚠ It never upgrades an attempt to `claimed`. A run whose claim errored, or
-// that came back with a non-success business code, stays `failed`; the panel
-// prints an unrecognised word verbatim rather than assuming success, so a wrong
-// word here would surface as a false 签到成功.
-//
-// `claimOutcome.OK` is true for BOTH a fresh grant and the idempotent 1003, so
-// the already-claimed test has to come first to tell them apart.
-func checkinStatusWord(attempted bool, outcomes []claimOutcome, todayCheckedIn bool, claimable int) string {
-	if attempted {
-		granted, already := false, false
-		for _, outcome := range outcomes {
-			if outcome.AlreadyClaimed {
-				already = true
-				continue
-			}
-			if outcome.OK {
-				granted = true
-			}
-		}
-		switch {
-		case granted:
-			return "claimed"
-		case already:
-			return "already-claimed"
-		default:
-			return "failed"
-		}
-	}
-	if todayCheckedIn {
-		return "already-claimed"
-	}
-	if claimable > 0 {
-		// Claimable but not attempted. "claimable" is not in the panel's shared
-		// vocabulary on purpose: the panel only classifies runs it drove, and a
-		// word it does not know is printed as-is instead of being mapped onto a
-		// verdict this page has not earned.
-		return "claimable"
-	}
-	return "inactive"
-}
-
-// checkinSummary turns the per-plan outcomes into the one sentence the hub shows.
-//
-// Priority is deliberate: a failure outranks a success, because a run where one
-// plan was claimed and another was refused is not "done" — the refusal is the
-// part the user has to act on.
-func checkinSummary(outcomes []claimOutcome, errClaim any) string {
-	if errClaim != nil {
-		if text, ok := errClaim.(string); ok && strings.TrimSpace(text) != "" {
-			return text
-		}
-	}
-	if len(outcomes) == 0 {
-		return ""
-	}
-	claimed, already := 0, 0
-	firstFailure := ""
-	for _, outcome := range outcomes {
-		switch {
-		case !outcome.OK:
-			if firstFailure == "" {
-				firstFailure = outcome.Message
-			}
-		case outcome.AlreadyClaimed:
-			already++
-		default:
-			claimed++
-		}
-	}
-	switch {
-	case firstFailure != "":
-		return firstFailure
-	case claimed > 0:
-		return "签到成功：" + strconv.Itoa(claimed) + " 个额度已领取"
-	case already > 0:
-		return "今日已签到：" + strconv.Itoa(already) + " 个额度无需重复领取"
-	default:
-		return ""
-	}
-}
-
-// captchaTokenFromRequest lifts a solved captcha out of the query string.
-//
-// Returns nil when the caller supplied none, which is the normal path: the
-// unattended sweep has no way to solve one, and the claim then answers 3007.
-func captchaTokenFromRequest(request pluginapi.ManagementRequest) *captchaToken {
-	param := strings.TrimSpace(request.Query.Get("captcha"))
-	if param == "" {
-		return nil
-	}
-	return &captchaToken{
-		VerifyParam: param,
-		Region:      strings.TrimSpace(request.Query.Get("captcha_region")),
-	}
 }

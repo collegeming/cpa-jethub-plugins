@@ -48,7 +48,6 @@ func TestManagementDispatchesTheDeclaredRoutes(t *testing.T) {
 	}{
 		{"/status", "ZCode", "text/html"},
 		{"/login", "登录", "text/html"},
-		{"/checkin", "额度", "text/html"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -90,7 +89,7 @@ func TestPagesUseLinksNotForms(t *testing.T) {
 	}
 	storedCredential(t, fake, "auth-1", "zcode-1.json", sampleCredential())
 
-	for _, path := range []string{"/status", "/login", "/checkin"} {
+	for _, path := range []string{"/status", "/login"} {
 		t.Run(path, func(t *testing.T) {
 			response := callManagement(t, testHost(), managementRequest(
 				http.MethodGet, "/v0/resource/plugins/zcode"+path, url.Values{}, nil))
@@ -110,47 +109,6 @@ func TestPagesUseLinksNotForms(t *testing.T) {
 	}
 }
 
-// TestCheckinPageOnlyClaimsOnAnExplicitAction is the destructive-action guard.
-//
-// Claiming is irreversible, so a plain page load must never do it: only a link that
-// carries `action=claim` does.
-func TestCheckinPageOnlyClaimsOnAnExplicitAction(t *testing.T) {
-	fake := newFakeHost()
-	fake.install(t)
-	claims := 0
-	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
-		switch {
-		case strings.HasSuffix(request.URL, ClaimPath):
-			claims++
-			return httpResponse(http.StatusOK, `{"code":0}`), nil
-		case strings.HasSuffix(request.URL, EventReportPath):
-			return httpResponse(http.StatusOK, `{"code":0}`), nil
-		case strings.Contains(request.URL, PreviewPath):
-			return httpResponse(http.StatusOK, `{"code":0,"data":{"plans":[{"plan_id":"p1","priority":1}]}}`), nil
-		default:
-			return httpResponse(http.StatusOK, `{"code":0}`), nil
-		}
-	}
-	storedCredential(t, fake, "auth-1", "zcode-1.json", sampleCredential())
-
-	// A plain load performs no claim.
-	callManagement(t, testHost(), managementRequest(
-		http.MethodGet, "/v0/resource/plugins/zcode/checkin", url.Values{"auth_index": {"auth-1"}}, nil))
-	if claims != 0 {
-		t.Fatalf("a plain page load issued %d claim requests", claims)
-	}
-
-	// The explicit action does.
-	callManagement(t, testHost(), managementRequest(
-		http.MethodGet, "/v0/resource/plugins/zcode/checkin",
-		url.Values{"auth_index": {"auth-1"}, "action": {"claim"}}, nil))
-	if claims != 1 {
-		t.Fatalf("the explicit action issued %d claim requests, want 1", claims)
-	}
-}
-
-// TestLoginPageStartsAFlowOnlyOnAnExplicitAction covers the same rule for the login
-// page: a page load must not mint an authorization request per refresh.
 func TestLoginPageStartsAFlowOnlyOnAnExplicitAction(t *testing.T) {
 	fake := newFakeHost()
 	fake.install(t)
@@ -376,64 +334,6 @@ func TestLoginJSONReportsNoLocalCallback(t *testing.T) {
 	}
 }
 
-// TestCheckinJSONPerformsTheClaimOnAnAction covers the machine-readable check-in.
-func TestCheckinJSONPerformsTheClaimOnAnAction(t *testing.T) {
-	fake := newFakeHost()
-	fake.install(t)
-	storedCredential(t, fake, "auth-1", "zcode-1.json", sampleCredential())
-	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
-		switch {
-		case strings.HasSuffix(request.URL, ClaimPath):
-			return httpResponse(http.StatusOK, `{"code":1003,"msg":"already claimed"}`), nil
-		case strings.HasSuffix(request.URL, EventReportPath):
-			return httpResponse(http.StatusOK, `{"code":0}`), nil
-		case strings.Contains(request.URL, PreviewPath):
-			return httpResponse(http.StatusOK, `{"code":0,"data":{"plans":[{"plan_id":"p1","priority":1}]}}`), nil
-		default:
-			return httpResponse(http.StatusOK, `{"code":0}`), nil
-		}
-	}
-
-	response := callManagement(t, testHost(), jsonManagementRequest(
-		http.MethodGet, "/v0/resource/plugins/zcode/checkin",
-		url.Values{"action": {"claim"}, "auth_index": {"auth-1"}}))
-	var payload map[string]any
-	if errUnmarshal := json.Unmarshal(response.Body, &payload); errUnmarshal != nil {
-		t.Fatalf("decode: %v", errUnmarshal)
-	}
-	outcomes, _ := payload["outcomes"].([]any)
-	if len(outcomes) != 1 {
-		t.Fatalf("outcomes = %#v", payload["outcomes"])
-	}
-	outcome, _ := outcomes[0].(map[string]any)
-	if outcome["ok"] != true {
-		t.Errorf("ok = %v, want true for the idempotent 1003", outcome["ok"])
-	}
-	if outcome["already_claimed"] != true {
-		t.Errorf("already_claimed = %v, want true", outcome["already_claimed"])
-	}
-}
-
-// TestCheckinJSONWithoutAnAccountExplainsItself covers the empty-instance case.
-func TestCheckinJSONWithoutAnAccountExplainsItself(t *testing.T) {
-	fake := newFakeHost()
-	fake.install(t)
-	response := callManagement(t, testHost(), jsonManagementRequest(
-		http.MethodGet, "/v0/resource/plugins/zcode/checkin", url.Values{}))
-	var payload map[string]any
-	if errUnmarshal := json.Unmarshal(response.Body, &payload); errUnmarshal != nil {
-		t.Fatalf("decode: %v", errUnmarshal)
-	}
-	message, _ := payload["error"].(string)
-	if !strings.Contains(message, "登录") {
-		t.Fatalf("the empty-instance reply does not say what to do: %q", message)
-	}
-}
-
-// TestStatusPageEscapesUpstreamText is the injection guard.
-//
-// Account labels come from the server (a nickname, a masked phone number) and error
-// text comes from upstream; both end up in the markup.
 func TestStatusPageEscapesUpstreamText(t *testing.T) {
 	fake := newFakeHost()
 	fake.install(t)
@@ -628,7 +528,7 @@ func TestManagementRouteReducesToTheLastSegment(t *testing.T) {
 		{"/v0/resource/plugins/zcode/status/", "/status"},
 		{"/status", "/status"},
 		{"status", "/status"},
-		{"/v0/management/zcode/checkin", "/checkin"},
+		{"/v0/management/zcode/login", "/login"},
 		{"", "/"},
 	}
 	for _, tc := range cases {
@@ -710,175 +610,5 @@ func TestBrandIconIsADataURL(t *testing.T) {
 	registration := Plugin().Registration()
 	if registration.Metadata.Logo != logo {
 		t.Error("the registration does not carry the logo")
-	}
-}
-
-// TestCheckinStatusWordIsHonest pins the verdict vocabulary the Jet Hub panel
-// reads out of this page's `status` field. The panel maps
-// claimed/already-claimed/inactive/failed onto 签到成功／已领取／无活动／失败 and
-// prints anything it does not recognise verbatim, so an optimistic word here
-// would surface as a false 签到成功 on the panel.
-func TestCheckinStatusWordIsHonest(t *testing.T) {
-	cases := []struct {
-		name       string
-		attempted  bool
-		outcomes   []claimOutcome
-		checkedIn  bool
-		claimable  int
-		wantStatus string
-	}{
-		{
-			name: "a fresh grant is claimed", attempted: true,
-			outcomes:   []claimOutcome{{Code: codeClaimSuccess, OK: true}},
-			wantStatus: "claimed",
-		},
-		{
-			// 1003 is an idempotent success and OK is true for it too, so the
-			// already-claimed test has to win; otherwise a repeat run would be
-			// reported as a brand-new 签到成功.
-			name: "the idempotent repeat is already-claimed", attempted: true,
-			outcomes:   []claimOutcome{{Code: codeAlreadyClaimed, OK: true, AlreadyClaimed: true}},
-			wantStatus: "already-claimed",
-		},
-		{
-			name: "a mixed batch prefers the fresh grant", attempted: true,
-			outcomes: []claimOutcome{
-				{Code: codeAlreadyClaimed, OK: true, AlreadyClaimed: true},
-				{Code: codeClaimSuccess, OK: true},
-			},
-			wantStatus: "claimed",
-		},
-		{
-			name: "nothing succeeded is failed", attempted: true,
-			outcomes:   []claimOutcome{{Code: 1005, OK: false}},
-			wantStatus: "failed",
-		},
-		{
-			name: "an errored claim with no outcome is failed", attempted: true,
-			wantStatus: "failed",
-		},
-		{
-			name: "a read-only load that already claimed today", attempted: false,
-			checkedIn: true, wantStatus: "already-claimed",
-		},
-		{
-			name: "a read-only load with something claimable", attempted: false,
-			claimable: 2, wantStatus: "claimable",
-		},
-		{
-			name: "a read-only load with nothing claimable", attempted: false,
-			wantStatus: "inactive",
-		},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			got := checkinStatusWord(testCase.attempted, testCase.outcomes, testCase.checkedIn, testCase.claimable)
-			if got != testCase.wantStatus {
-				t.Fatalf("status = %q, want %q", got, testCase.wantStatus)
-			}
-		})
-	}
-}
-
-// TestCheckinResponseCarriesTheStatusWord proves the field is actually wired
-// into the response rather than only computable: the defect this guards against
-// is a helper that exists but is never called, which the panel would show as an
-// unclassified row.
-func TestCheckinResponseCarriesTheStatusWord(t *testing.T) {
-	fake := newFakeHost()
-	fake.install(t)
-	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
-		switch {
-		case strings.Contains(request.URL, ClaimPath):
-			// 1003 = already claimed: an idempotent success, not an error.
-			return httpResponse(http.StatusOK, `{"code":1003,"msg":"already claimed"}`), nil
-		case strings.Contains(request.URL, PreviewPath):
-			return httpResponse(http.StatusOK, `{"code":0,"data":{"plans":[]}}`), nil
-		default:
-			return httpResponse(http.StatusOK, `{"code":0}`), nil
-		}
-	}
-	storedCredential(t, fake, "auth-1", "zcode-1.json", sampleCredential())
-
-	response := callManagement(t, testHost(), jsonManagementRequest(
-		http.MethodGet, "/v0/resource/plugins/zcode/checkin", url.Values{"action": {"claim"}}))
-
-	var document map[string]any
-	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
-		t.Fatalf("check-in document is not JSON: %v", errUnmarshal)
-	}
-	if got := document["status"]; got != "already-claimed" {
-		t.Fatalf("status = %v, want already-claimed (the panel reads this word): %s", got, response.Body)
-	}
-}
-
-// TestCheckinSummaryIsPublishedForTheHub pins the one field the hub renders.
-//
-// `interpretCheckinJSON` reads a TOP-LEVEL `message` and nothing else, so a
-// response without one reaches the user as the bare status word. That is how a
-// 3007 captcha rejection showed up as "failed" with the actionable sentence
-// stranded in `outcomes[].message`.
-func TestCheckinSummaryIsPublishedForTheHub(t *testing.T) {
-	cases := []struct {
-		name     string
-		outcomes []claimOutcome
-		errClaim any
-		want     string
-	}{
-		{"claimed", []claimOutcome{{OK: true}}, nil, "签到成功：1 个额度已领取"},
-		{"already", []claimOutcome{{OK: true, AlreadyClaimed: true}}, nil, "今日已签到：1 个额度无需重复领取"},
-		{
-			// A refusal outranks a success: the run is not "done" while one plan
-			// was rejected, and the rejection is what the user must act on.
-			"failure outranks success",
-			[]claimOutcome{{OK: true}, {OK: false, Code: codeCaptchaFailed, Message: "服务端要求人机验证（3007）"}},
-			nil,
-			"服务端要求人机验证（3007）",
-		},
-		{"transport error", nil, "连接超时", "连接超时"},
-		{"nothing to report", nil, nil, ""},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			if got := checkinSummary(testCase.outcomes, testCase.errClaim); got != testCase.want {
-				t.Fatalf("checkinSummary = %q, want %q", got, testCase.want)
-			}
-		})
-	}
-}
-
-// TestCheckinJSONCarriesTheFailureMessage goes through the route the hub calls,
-// so the wiring is covered and not just the formatter.
-func TestCheckinJSONCarriesTheFailureMessage(t *testing.T) {
-	fake := newFakeHost()
-	fake.install(t)
-	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
-		switch {
-		case strings.HasSuffix(request.URL, ClaimPath):
-			return httpResponse(http.StatusBadRequest, `{"code":3007,"msg":"captcha verify failed"}`), nil
-		case strings.HasSuffix(request.URL, EventReportPath):
-			return httpResponse(http.StatusOK, `{"code":0}`), nil
-		case strings.Contains(request.URL, PreviewPath):
-			return httpResponse(http.StatusOK, `{"code":0,"data":{"plans":[{"plan_id":"p1","priority":1}]}}`), nil
-		default:
-			return httpResponse(http.StatusOK, `{"code":0}`), nil
-		}
-	}
-	storedCredential(t, fake, "auth-1", "zcode-1.json", sampleCredential())
-
-	response := callManagement(t, testHost(), managementRequest(
-		http.MethodGet, "/v0/resource/plugins/zcode/checkin",
-		url.Values{"auth_index": {"auth-1"}, "action": {"claim"}, "format": {"json"}}, nil))
-
-	var document map[string]any
-	if errUnmarshal := json.Unmarshal(response.Body, &document); errUnmarshal != nil {
-		t.Fatalf("decode: %v", errUnmarshal)
-	}
-	message, _ := document["message"].(string)
-	if !strings.Contains(message, "3007") {
-		t.Fatalf("the hub renders a top-level message; got %q from %s", message, string(response.Body))
-	}
-	if document["status"] != "failed" {
-		t.Fatalf("status = %v, want failed so the row is honest", document["status"])
 	}
 }

@@ -29,7 +29,7 @@ CLIProxyAPI（CPA）原生 Go 插件集合。每个插件把 Jet-Hub 的一个�
 | `cline` | Cline | 状态、登录 | 9 | Cline（cline.bot），WorkOS 设备码登录，标准 OpenAI 兼容推理 |
 | `loomy` | Loomy（讯飞） | 状态、登录、签到 | 10 | 讯飞 Loomy，微信扫码登录（备用：短信验证码），两个积分池 + 新手任务 |
 | `raccoon` | Raccoon（商汤小浣熊） | 状态、登录、一次性奖励 | 7 | 商汤 Raccoon Work，**仅**微信扫码登录（手机验证码需要人机验证，未实现），模型价格随名称显示；**没有每日签到**，一键签到只领一次性登录奖励 |
-| `zcode` | ZCode（智谱） | 状态、登录、签到 | 9 | 智谱 ZCode 免费额度，CLI 设备码登录，Anthropic Messages 流式推理；推理**不需要**验证码，但**领取端点需要**，因此一键签到必然失败（详见下方取舍） |
+| `zcode` | ZCode（智谱） | 状态、登录 | 9 | 智谱 ZCode 免费额度，CLI 设备码登录，Anthropic Messages 流式推理；推理**不需要**验证码，但**领取端点强制需要**且插件无法满足，因此**不提供签到入口** |
 | `minimax` | MiniMax Code（中国版） | 状态、登录、签到 | 9 | MiniMax Code 中国版，OAuth 设备码 + PKCE，Anthropic Messages 流式推理，思考形态按模型区分 |
 | `atomcode` | AtomCode（AtomGit） | 状态、登录、签到 | 11 | AtomGit AtomCode 免费套餐，浏览器 OAuth 登录，上游就是 OpenAI Chat Completions 所以**原样转发**；令牌每次续期都会轮换 |
 | `hub` | Jet Hub | 状态、一键签到 | 4 | 编排型插件：读取各 provider 状态并一次点击完成全部签到 |

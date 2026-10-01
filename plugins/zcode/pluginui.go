@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
@@ -56,9 +55,10 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 			len(officialCLIPrefix)+len(officialStableSections()))},
 		plugui.Field{Label: "会话续期", Value: "不支持：JWT 没有 exp，服务端也没有续期端点；" +
 			"auth.refresh 只做有效性探测，失效需重新登录"},
-		plugui.Field{Label: "每日签到", Value: "支持：先补 app_launch / app_daily_active 活跃上报，再查 preview，再领取"},
-		plugui.Field{Label: "captcha", Value: "不产出：实测身份块正确时不带 captcha 头也返回 200；" +
-			"官方客户端自身也只在 billing/claim 一处还带它，且是「被动重试」语义"},
+		plugui.Field{Label: "每日签到", Value: "不支持：领取端点强制要求阿里云验证码（3007），" +
+			"本插件不产出验证码，因此与 cline 一样不提供签到入口；额度请在官方客户端或网页领取"},
+		plugui.Field{Label: "captcha", Value: "只被领取端点要求，推理实测不需要；" +
+			"本插件不提供领取入口，因此不涉及"},
 	))}
 
 	if len(accounts) == 0 {
@@ -183,20 +183,9 @@ func renderAccountCard(status accountStatus, current bool) template.HTML {
 			// to correlate it; the page keeps the truncated form above.
 			_ = credential
 		}
-		switch {
-		case status.CheckinErr != "":
-			fields = append(fields, plugui.Field{Label: "今日领取", Value: "查询失败：" + status.CheckinErr})
-		case status.Checkin != nil && status.Checkin.TodayCheckedIn:
-			fields = append(fields, plugui.Field{Label: "今日领取",
-				Value: "暂无可领额度（" + emptyText(status.Checkin.Note) + "）"})
-		case status.Checkin != nil:
-			fields = append(fields, plugui.Field{Label: "今日领取",
-				Value: fmt.Sprintf("有 %d 项可领", len(status.Checkin.Claimable))})
-		}
 	}
 
 	actions := []plugui.Action{
-		{Label: "签到页", Path: "checkin", Query: "auth_index=" + url.QueryEscape(entry.AuthIndex)},
 		// ZCode credentials are static — the JWT carries no expiry and the server
 		// exposes no refresh endpoint — so a dead credential can ONLY be replaced
 		// by logging in again. Without this link the page offers no route back to
@@ -206,7 +195,7 @@ func renderAccountCard(status accountStatus, current bool) template.HTML {
 	title := "账号 · " + entry.Name
 	if current {
 		// The same marker the account list uses, so a reader can tell which
-		// account the page's own links (签到页 / 重新登录) will act on.
+		// account the page's own links (重新登录) will act on.
 		title += "（当前）"
 	}
 	return plugui.Card(title, plugui.Fields(fields...), actions...)
@@ -368,121 +357,6 @@ func renderImportCard(h *abiboot.Host, cfg Config) template.HTML {
 	))
 }
 
-// renderCheckinPage renders the daily claim.
-func renderCheckinPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
-	cfg := settings()
-	entry, found := selectAccount(h, request)
-	if !found {
-		return pluguiPage("ZCode 每日额度",
-			plugui.Card("尚未添加账号",
-				plugui.Notice("warning", "当前实例还没有 ZCode 账号，无法签到。"),
-				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"}))
-	}
-	credential, errCredential := credentialOf(h, entry)
-	if errCredential != nil {
-		return pluguiPage("ZCode 每日额度",
-			plugui.Card("凭据不可用", plugui.Notice("danger", errCredential.Error())))
-	}
-
-	body := make([]template.HTML, 0, 4)
-	action := strings.ToLower(strings.TrimSpace(request.Query.Get("action")))
-	if action == "claim" {
-		outcomes, errClaim := claimDaily(h, credential, cfg, captchaTokenFromRequest(request))
-		switch {
-		case errClaim != nil:
-			body = append(body, plugui.Card("领取失败", plugui.Notice("danger", errClaim.Error())))
-		default:
-			fields := make([]plugui.Field, 0, len(outcomes))
-			tone := "success"
-			for _, outcome := range outcomes {
-				label := outcome.PlanID
-				if label == "" {
-					label = "每日额度"
-				}
-				value := "已领取"
-				switch {
-				case outcome.AlreadyClaimed:
-					value = "已经领取过（幂等成功，不是错误）"
-				case !outcome.OK:
-					value = outcome.Message
-					tone = "danger"
-				}
-				fields = append(fields, plugui.Field{Label: label, Value: value})
-			}
-			if len(fields) == 0 {
-				fields = append(fields, plugui.Field{Label: "结果", Value: "服务端没有返回任何结果"})
-			}
-			body = append(body, plugui.Card("领取结果",
-				plugui.Group(plugui.Notice(tone, "已向服务端提交领取请求。"), plugui.Fields(fields...))))
-
-			// A captcha demand is the one failure a human can clear, so it gets
-			// the real widget instead of only a sentence. Nothing is offered
-			// when a token was already supplied: repeating the widget after a
-			// rejected token would just loop.
-			if captchaDemanded(outcomes) && captchaTokenFromRequest(request) == nil {
-				if captcha, errCaptcha := fetchCaptchaConfig(h, credential, cfg); errCaptcha == nil && captcha.usable() {
-					body = append(body, plugui.Card("需要人机验证",
-						plugui.Group(
-							plugui.Notice("warning",
-								"服务端要求验证码。在下面完成验证后本页会带着结果重新提交领取——"+
-									"这一步必须由人完成，因此它永远不会出现在一键签到里。"),
-							captchaWidget(captcha),
-						)))
-				} else {
-					body = append(body, plugui.Card("需要人机验证",
-						plugui.Notice("warning",
-							"服务端要求验证码，但读取验证码配置失败，无法在本页渲染。"+
-								"请改用 ZCode 官方客户端或网页领取。")))
-				}
-			}
-		}
-	}
-
-	status, errStatus := fetchCheckinStatus(h, credential, cfg)
-	if errStatus != nil {
-		body = append(body, plugui.Card("签到状态",
-			plugui.Notice("danger", "查询失败："+errStatus.Error())))
-	} else {
-		state := "有可领额度"
-		if status.TodayCheckedIn {
-			state = "暂无可领额度"
-		}
-		fields := []plugui.Field{
-			{Label: "账号", Value: credential.displayLabel()},
-			{Label: "活动", Value: status.ActivityName},
-			{Label: "状态", Value: state},
-			{Label: "可领项", Value: fmt.Sprintf("%d", len(status.Claimable))},
-		}
-		for _, plan := range status.Claimable {
-			fields = append(fields, plugui.Field{
-				Label: plan.PlanID,
-				Value: fmt.Sprintf("优先级 %d %s", plan.Priority, emptyText(plan.Name)),
-			})
-		}
-		if status.Note != "" {
-			fields = append(fields, plugui.Field{Label: "说明", Value: status.Note})
-		}
-		body = append(body, plugui.Card("签到状态", plugui.Fields(fields...)))
-	}
-
-	body = append(body, plugui.Card("关于 ZCode 的签到", plugui.Group(
-		plugui.Notice("", "① 服务端不会主动推送活动：必须先补 app_launch 与 app_daily_active 两条活跃上报，"+
-			"否则 preview 恒为空 plans:[]（实测：补前为空、补后立刻出现 plan）。本插件在每次查询前都自动补报。"),
-		plugui.Notice("warning", "② 额度单位是 token，不是积分。面板按上游下发的 unit_type 显示，"+
-			"不会把 1 亿 token 伪装成 1 亿积分。"),
-		plugui.Notice("danger", "③ **领取无法完成**：claim 是官方客户端唯一还带阿里云验证码的端点，"+
-			"而本插件不产出验证码，服务端一律返回 3007。重试无效——请在 ZCode 官方客户端或网页里领取。"+
-			"推理不受影响。"),
-	)))
-	body = append(body, plugui.Card("操作", plugui.Group(plugui.Notice("",
-		"领取是不可逆的，因此只由显式点击触发：下面这个链接带 action=claim，刷新页面本身不会领取。")),
-		plugui.Action{Label: "立即领取", Query: "action=claim&auth_index=" + url.QueryEscape(entry.AuthIndex), Kind: "primary"},
-		plugui.Action{Label: "只看状态", Path: "checkin", Query: "auth_index=" + url.QueryEscape(entry.AuthIndex)},
-	))
-	return pluguiPage("ZCode 每日额度", body...)
-}
-
-// entryStatusText renders one credential entry's host-reported status.
 func entryStatusText(entry pluginapi.HostAuthFileEntry) string {
 	parts := make([]string, 0, 2)
 	if entry.Status != "" {
@@ -529,122 +403,4 @@ func jsonCompact(value any) string {
 		return ""
 	}
 	return string(encoded)
-}
-
-// jsStringLiteral renders a Go string as a JavaScript string literal that is
-// safe to embed inside a `<script>` element.
-//
-// `strconv.Quote` alone is NOT enough. The HTML parser looks for the literal
-// `</script` sequence while scanning the script element, so a value containing
-// it closes the tag even though it sits inside a JS string — the classic
-// script-context injection. The parameters here come from the server's own
-// document, so they are untrusted input, and escaping `<`, `>` and `&` as
-// `\uXXXX` removes the sequence without changing the value. U+2028/U+2029 are
-// escaped for the same reason: they are line terminators to a JS parser.
-func jsStringLiteral(value string) string {
-	quoted := strconv.Quote(value)
-	replacer := strings.NewReplacer(
-		"<", `\u003c`,
-		">", `\u003e`,
-		"&", `\u0026`,
-		"\u2028", `\u2028`,
-		"\u2029", `\u2029`,
-	)
-	return replacer.Replace(quoted)
-}
-
-// captchaDemanded reports whether any outcome was the captcha rejection.
-func captchaDemanded(outcomes []claimOutcome) bool {
-	for _, outcome := range outcomes {
-		if !outcome.OK && outcome.Code == codeCaptchaFailed {
-			return true
-		}
-	}
-	return false
-}
-
-// captchaWidget renders Aliyun's own captcha and, on success, reloads this page
-// with the token attached.
-//
-// This is the repository's ONE page that runs JavaScript and loads a third-party
-// script, and both are unavoidable: the token can only be minted by Aliyun's
-// frontend SDK in a browser. Consequences worth stating plainly:
-//
-//   - the browser talks to `o.alicdn.com` directly. If the manager's iframe
-//     policy blocks it, the widget never appears and the sentence above the card
-//     is the whole answer — which is why that sentence names the fallback.
-//   - the page is served from the resource mount, so `location.pathname` is the
-//     route CPAMP embedded; the URL is rebuilt from the CURRENT location rather
-//     than hardcoded, so it works under any mount prefix.
-//   - the scene parameters come from the server document, escaped here for both
-//     HTML and JavaScript contexts. They are not trusted input.
-func captchaWidget(captcha captchaConfig) template.HTML {
-	script := "https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"
-	js := jsStringLiteral
-	html := `<div id="zcode-captcha"></div>
-<p class="muted" id="zcode-captcha-state">正在加载验证码组件…</p>
-<script src="` + template.HTMLEscapeString(script) + `" async></script>
-<script>
-(function () {
-  var SCENE_ID = ` + js(captcha.SceneID) + `;
-  var PREFIX = ` + js(captcha.Prefix) + `;
-  var REGION = ` + js(captcha.Region) + `;
-  var state = document.getElementById('zcode-captcha-state');
-  function submit(param) {
-    var target = new URL(window.location.href);
-    target.searchParams.set('action', 'claim');
-    target.searchParams.set('captcha', param);
-    target.searchParams.set('captcha_region', REGION);
-    state.textContent = '验证通过，正在提交领取…';
-    window.location.href = target.toString();
-  }
-  function boot(attempt) {
-    if (typeof initAliyunCaptcha !== 'function') {
-      if (attempt < 25) { return setTimeout(function () { boot(attempt + 1); }, 200); }
-      state.textContent = '验证码组件未能加载（可能被管理面板的 CSP 拦截）。请改用 ZCode 官方客户端或网页领取。';
-      return;
-    }
-    initAliyunCaptcha({
-      SceneId: SCENE_ID,
-      prefix: PREFIX,
-      region: REGION,
-      mode: 'embed',
-      element: '#zcode-captcha',
-      button: '#zcode-captcha-submit',
-      captchaVerifyCallback: function (captchaVerifyParam) {
-        submit(captchaVerifyParam);
-        return { captchaResult: true, bizResult: true };
-      },
-      getInstance: function (instance) { window.__zcodeCaptcha = instance; },
-      language: 'cn',
-      immediate: true
-    });
-    // ⚠ The SDK can load and initialise while still rendering NOTHING: measured
-    // 2026-10-01 from a panel origin, initAliyunCaptcha ran, getInstance
-    // fired, no error was raised — and the element stayed empty. The likely
-    // cause is the Aliyun scene being restricted to ZCode's own origins, which
-    // is not something this side can change. So the page must not leave a
-    // spinner on screen forever: if no challenge appears, say so and point at
-    // the fallback, rather than inviting a click that can never work.
-    var waited = 0;
-    var render = setInterval(function () {
-      waited += 500;
-      if (document.querySelector('#zcode-captcha canvas, #zcode-captcha img, #zcode-captcha iframe, #zcode-captcha .aliyun-captcha')) {
-        clearInterval(render);
-        return;
-      }
-      if (waited >= 6000) {
-        clearInterval(render);
-        state.textContent = '验证码组件已加载但未能渲染出验证（通常是该验证码场景未授权本页面来源）。' +
-          '请改用 ZCode 官方客户端或网页领取。';
-        var submit = document.getElementById('zcode-captcha-submit');
-        if (submit) { submit.style.display = 'none'; }
-      }
-    }, 500);
-  }
-  boot(0);
-})();
-</script>
-<button class="btn primary" id="zcode-captcha-submit" type="button">提交验证</button>`
-	return template.HTML(html)
 }

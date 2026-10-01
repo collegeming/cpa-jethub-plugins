@@ -272,28 +272,6 @@ func TestJSONBodyRoundTripUsesNumbersWithoutPrecisionLoss(t *testing.T) {
 	}
 }
 
-// TestReportActivationSwallowsOneEventFailure covers the non-blocking contract: an
-// activity-report error must not prevent the preview query, and the next call will
-// try again.
-func TestReportActivationSwallowsOneEventFailure(t *testing.T) {
-	fake := newFakeHost()
-	fake.install(t)
-	calls := 0
-	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
-		calls++
-		if calls == 1 {
-			return nil, errFakeTransport
-		}
-		return httpResponse(http.StatusOK, `{"code":0}`), nil
-	}
-	// reportActivation has no error result by design.
-	reportActivation(testHost(), sampleCredential(), settings())
-	if calls != 2 {
-		t.Fatalf("event calls = %d, want it to continue after the first failed", calls)
-	}
-}
-
-// TestNonNegativeInt64HandlesTheLargestSignedValue covers the upper boundary.
 func TestNonNegativeInt64HandlesTheLargestSignedValue(t *testing.T) {
 	const max = int64(^uint64(0) >> 1)
 	if got := nonNegativeInt64(json.Number("9223372036854775807")); got != max {

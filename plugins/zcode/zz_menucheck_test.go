@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -42,9 +43,19 @@ func TestMenuCount(t *testing.T) {
 		}
 		pages = append(pages, resource.Path)
 	}
-	if want := []string{"/status", "/login", "/checkin"}; !slices.Equal(pages, want) {
+	if want := []string{"/status", "/login"}; !slices.Equal(pages, want) {
 		t.Fatalf("resource routes = %v, want %v: /status is what the hub links to, /login is what it and 新建账号 open",
 			pages, want)
+	}
+	// There is deliberately NO /checkin route. The claim endpoint requires an
+	// Aliyun captcha this plugin cannot produce, so the provider advertises no
+	// check-in at all — the same position cline takes for its missing upstream
+	// endpoint. Shipping the route would offer an action that reports a failure
+	// every single day, and the hub would call it on every sweep.
+	for _, path := range pages {
+		if strings.Contains(path, "checkin") || strings.Contains(path, "signin") {
+			t.Fatalf("resource route %s offers a check-in that cannot succeed", path)
+		}
 	}
 	// This plugin declares no route under the GLOBAL `/v0/management/` namespace:
 	// that namespace is shared with every other plugin and with the host's own
