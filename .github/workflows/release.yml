@@ -37,8 +37,13 @@ jobs:
           - { runner: ubuntu-latest, goos: linux, goarch: amd64, ext: so, cc: gcc }
           - { runner: ubuntu-latest, goos: linux, goarch: arm64, ext: so, cc: aarch64-linux-gnu-gcc }
           - { runner: ubuntu-latest, goos: windows, goarch: amd64, ext: dll, cc: x86_64-w64-mingw32-gcc }
-          - { runner: macos-14, goos: darwin, goarch: arm64, ext: dylib, cc: clang }
-          - { runner: macos-13, goos: darwin, goarch: amd64, ext: dylib, cc: clang }
+          # ⚠️ `macos-13` and `macos-14` are retired/deprecated labels
+          # (actions/runner-images README): the darwin/amd64 job sat QUEUED for
+          # the full 24 h ceiling in run 36821676865 and never ran a single
+          # step. `macos-15-intel` and `macos-15` are the current x64/arm64 GA
+          # labels.
+          - { runner: macos-15, goos: darwin, goarch: arm64, ext: dylib, cc: clang }
+          - { runner: macos-15-intel, goos: darwin, goarch: amd64, ext: dylib, cc: clang }
 
     steps:
       - uses: actions/checkout@v4
