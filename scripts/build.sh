@@ -78,35 +78,53 @@ mkdir -p "$OUT_DIR"
 
 # Windows links through a generated module-definition file whose LIBRARY line
 # carries the OUTPUT file name verbatim (`peCreateExportFile`,
-# cmd/link/internal/ld/pe.go). Before Go 1.27 that name is emitted UNQUOTED, and
-# GNU ld parses an unquoted `LIBRARY codearts-v0.1.0.dll` as an expression: the
-# dashes become minus signs and the link dies with
+# cmd/link/internal/ld/pe.go). Before Go 1.27 that name is emitted UNQUOTED:
+#
+#	LIBRARY codearts-v0.1.0.dll        (go1.26.0, go1.26.1)
+#	LIBRARY "codearts-v0.1.0.dll"      (go1.27.0+)
+#
+# and GNU ld's .def parser reads the unquoted form as an expression. The trigger
+# is NOT the dashes — it is the DOTTED VERSION NUMBER, which the parser tries to
+# read as a float. Measured against binutils 2.47 (and the same shape fails on the
+# runner's 2.41), with an otherwise identical EXPORTS body:
+#
+#	LIBRARY codearts.dll          OK      LIBRARY a-b-c.dll        OK
+#	LIBRARY codearts-v0.dll       OK      LIBRARY codearts-v0.1.dll FAIL
+#	LIBRARY codearts-v0.1.0.dll   FAIL    LIBRARY v1.2.3.dll       FAIL
+#	LIBRARY x0.1.dll              FAIL    LIBRARY x_0.1.dll        FAIL
+#
+# A dash or an underscore is fine; `digits.digits` anywhere in the name is not.
+# The failure is a hard link error, so all 15 plugins failed in every CI run and
+# no Windows asset has ever shipped:
 #
 #	export_file.def:1: syntax error
 #	file format not recognized; treating as linker script
 #
-# Reproduced with go1.26.0/go1.26.1 + binutils 2.41 and 2.47 alike, so it is a
-# toolchain property, not a mingw-version one. Every plugin failed this way in CI
-# (run 36821676865), which is why no Windows asset has ever shipped. Quoting the
-# name in the .def is what Go 1.27 fixed (`LIBRARY "name"`); until the module
-# requires >= 1.27, build Windows to a DASH-FREE temporary name and rename after
-# the link. `LIBRARY codearts.dll` parses fine on both toolchains.
+# Note this is unrelated to the mingw version: it reproduces on both go1.26.x and
+# the runner's toolchain. Quoting is the real fix and Go 1.27 does it; until the
+# module requires >= 1.27 we link Windows under the DOT-FREE bare plugin id and
+# rename to `<id>-v<version>.dll` afterwards. The bare id is exactly the name
+# release.sh already stages into the zip, and CPA derives the plugin id from the
+# FILE name, never from the internal LIBRARY name — so the rename is safe.
 case "$GOOS" in
-windows) LINK_SUFFIX=".link" ;;
-*) LINK_SUFFIX="" ;;
+windows) LINK_STANDIN=1 ;;
+*) LINK_STANDIN=0 ;;
 esac
 
-# link_target prints the file the compiler should actually write. On Windows it
-# is a dash-free stand-in; everywhere else it is the final path.
+# link_target prints the file the compiler should actually write.
+#   $1 = plugin id (used verbatim for the Windows stand-in; dots are stripped)
+#   $2 = final artifact path
 link_target() {
-	case "$LINK_SUFFIX" in
-	"") printf '%s' "$1" ;;
-	*) printf '%s' "${1%.${EXT}}${LINK_SUFFIX}.${EXT}" ;;
-	esac
+	local id="${1//./_}" final="$2"
+	if [[ "$LINK_STANDIN" == "0" ]]; then
+		printf '%s' "$final"
+		return 0
+	fi
+	printf '%s/%s.%s' "$(dirname "$final")" "$id" "$EXT"
 }
 
-# finalize_link moves the linker output onto its real name and prints the final
-# path. A no-op off Windows.
+# finalize_link moves the stand-in onto its real name and prints the final path.
+# A no-op off Windows.
 finalize_link() {
 	local wanted="$1" produced="$2"
 	if [[ "$produced" == "$wanted" ]]; then
@@ -118,7 +136,7 @@ finalize_link() {
 		return 1
 	fi
 	mv -f "$produced" "$wanted"
-	# The companion header keeps the stand-in stem; rename it too or the pair
+	# The companion header carries the stand-in stem; rename it too or the pair
 	# disagrees about the library name.
 	local wanted_header="${wanted%.${EXT}}.h" produced_header="${produced%.${EXT}}.h"
 	if [[ -f "$produced_header" ]]; then
@@ -191,7 +209,7 @@ build_variant() {
 	# quoted for the ldflags parser: it splits like a shell, and a bare space
 	# would be read as the start of the next flag.
 	ldflags="-X main.ProviderKey=${provider} -X \"main.DisplayName=${display}\" -X main.DefaultProduct=${product}"
-	link_out="$(link_target "$out")"
+	link_out="$(link_target "$id" "$out")"
 	echo "==> $id: $GO build -buildmode=c-shared -ldflags \"$ldflags\" -o $link_out $pkg"
 	if "$GO" build -buildmode=c-shared -ldflags "$ldflags" -o "$link_out" "$pkg" &&
 		out="$(finalize_link "$out" "$link_out")"; then
@@ -234,7 +252,7 @@ for p in "${PLUGINS[@]}"; do
 
 	version="$(plugin_version "$pkg")"
 	out="${OUT_DIR}/${p}-v${version}.${EXT}"
-	link_out="$(link_target "$out")"
+	link_out="$(link_target "$p" "$out")"
 	echo "==> $p: $GO build -buildmode=c-shared -o $link_out $pkg"
 	if "$GO" build -buildmode=c-shared -o "$link_out" "$pkg" &&
 		out="$(finalize_link "$out" "$link_out")"; then
