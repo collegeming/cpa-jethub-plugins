@@ -305,10 +305,8 @@ oauth-model-alias:
   cline:
     - name: "cline-free/deepseek-v4.1-flash"
       alias: "DeepSeek-V4.1-Flash"
-    - name: "cline-free/gemini-3.8-flash"
-      alias: "Gemini-3.8-Flash"
-    - name: "cline-free/mimo-v2.6-pro"
-      alias: "MiMo-V2.6-Pro"
+    - name: "cline-free/mimo-v2.6-flash"
+      alias: "MiMo-V2.6-Flash"
     - name: "qwen/qwen3.8-27b:free"
       alias: "Qwen3.8-27B"
   codebuddy:
@@ -599,6 +597,40 @@ plugins:
 
 ---
 
+### 3.9 免费模型会下线：静态表只是元数据，不是目录
+
+OAuth 渠道的免费模型是**上游的营销状态**，随时开始也随时结束。cline 的免费名单只由 `recommended-models` 的 `free` 数组下发（`/api/v1/models` 的 464 条里**一条 `cline-free/*` 都没有**），所以上游撤下一个免费模型时，本地不会有任何提示——直到你调用它。
+
+**实测事故（2026-10-02）**：`cline-free/gemini-3.8-flash` 被上游结束推广后：
+
+| 检查项 | 结果 |
+| --- | --- |
+| `recommended-models` 的 `free` 数组 | 4 条，**不含** gemini |
+| `GET /api/v1/models`（464 条） | `cline-free/gemini-3.8-flash` **零命中** |
+| 直连 `POST /v1/chat/completions` | `404 {"error":"model not found"}` |
+| **CPA `/v1/models`** | 仍然发布 `Gemini-3.8-Flash` ← 故障 |
+| 客户端调用 | 每次 `HTTP 502`（上游 404 被归类为 `upstream_error`） |
+
+**根因**：插件的静态回退表（`plugins/cline/product.go` 的 `clineFallbackModels`）是一份**快照**，用来补上游不给的上下文窗口/输出上限/图片支持。原实现把表里的 id 无条件并入公开列表，于是出现"列表里有、上游没有"的幽灵模型。表里另外 4 个 id 之所以没暴露问题，只是因为它们**恰好**还在线。
+
+**修法（v0.9.0）**：静态表条目只有在**仍被某个在线来源背书**时才发布。
+
+- 免费家族（`cline-free/*`）以 `recommended-models` 为唯一权威——`/api/v1/models` 永远无法为它们作证；
+- 该端点**必须真的返回了内容**才算权威。任一来源都不可用时（`hasRemoteData()` 为假）整表照旧发布，因为"列表为空"比"列表略旧"更糟；
+- 被撤下的条目不再发布，同时记一条 `warn`，让消失是可见的。
+
+```bash
+# 应看到下线告警，且列表里不再有该模型
+podman logs --tail 100 cli-proxy-api | grep "静态目录表条目已下线"
+curl -s http://127.0.0.1:8317/v1/models -H "Authorization: Bearer <你的Key>" | grep -c "Gemini-3.8-Flash"
+```
+
+**上游恢复推广时会自动恢复发布**，静态表的元数据（含 gemini 的 65536 输出上限——给成 131072 会被上游 vertex 以 400 拒绝）一并生效，无需改代码。若上游改成只发付费 id（`google/gemini-3.8-flash`），那属于计费模型，用 `oauth-excluded-models` 排除即可（见 §3.3）。
+
+> ⚠️ 同理适用于任何 OAuth 渠道：**模型的可用性以在线目录为准，静态表只提供元数据**。改动 `clineFallbackModels` 之类的表不会让一个上游已下线的模型重新可用。
+
+---
+
 ## 4. 验证
 
 ### 4.1 检查插件加载
@@ -702,6 +734,8 @@ curl -s -N -X POST http://localhost:8317/v1/chat/completions \
 | 同名模型被路由到非预期的渠道（例如免费 OAuth 模型走了付费 API Key 渠道） | 同名模型按优先级档选渠道，最高档优先，名字后缀不参与选择 | 调 `priority`；需要按 Key 区分渠道时按 §3.6 配置 |
 | 某渠道的模型整段超时（请求 20s 以上无响应） | 该渠道上游不可用 | 用 `/v1/models` 确认该模型是否还有其它渠道；必要时降低该渠道 `priority` 让它退出共享模型名所在档，或直接停用该渠道 |
 | 同名池化模型「有时能看图、有时答不出」，日志出现 `InferHub.001001020.406: The request model is not multimodal` | 同名模型由多个上游共用，各自模态能力不同；CPA 不按模态路由 | 升级到 codearts 剥图版本（v0.8.0 引入，见 §5.3）；根因说明见 §3.7 |
+| 某个模型在 `/v1/models` 里，但每次调用都是 `HTTP 502`，日志里是 `Cline 返回 HTTP 404：model not found` | 该模型是 OAuth 渠道已下线的免费模型，插件的静态回退表仍在发布它 | 升级到含「在线目录背书」的版本（v0.9.0 引入，见 §3.9）；同时删除 `oauth-model-alias` 里指向它的别名 |
+| 上游免费推广结束后，本地模型列表长期保留该模型 | 静态表被当成目录使用（它只是元数据快照） | 同上；确认 `model_discovery` 未关闭（默认 `true`），关闭后在线目录不参与判定 |
 
 ---
 

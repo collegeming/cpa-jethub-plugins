@@ -185,8 +185,10 @@ HUB 的 `failed` 计数是给**真的意外**用的。一个每天必然失败�
 典型是文生图之下的模态：`DeepSeek-V4.1-Flash` 由四个上游共用，codearts 收到图片会整单拒绝（`InferHub.001001020.406: The request model is not multimodal`），其余上游能正常读图。CPA **不按模态路由**，所以请求命中谁全看轮询。
 
 ```go
-// 上游吃不下 → 本地降级，并记 warn（不要静默）
-request.ImagesStripped = stripImagesForTextModel(request)
+// 上游吃不下 → 本地降级，并记 warn（不要静默）。
+// imagesStripped 是 translator 的第 4 个返回值——共享的 openai.Request
+// 刻意不做扩展，所以剥图结果走返回值而不是挂在请求结构上。
+imagesStripped := stripImagesForTextModel(request)
 ```
 
 | 做法 | 结果 |
@@ -197,7 +199,27 @@ request.ImagesStripped = stripImagesForTextModel(request)
 
 ⚠️ **降级必须留痕**：warn 日志要写清"哪条上游剥了什么"。否则下次现象就是"有时能看图、有时看不到"，排查者会以为是随机故障——本仓库的 codearts 剥图日志（`剥离了请求中的图片`）就是为此而加。
 
-**注意反向的坑**：不要为了"更好看"把该上游从名字里摘掉。摘掉会失去它的额度与并发；降级能同时保住两者。
+**注意反向的坑**：不要为了"更好看"把该上游从名字里摘掉。摘掉会失去它的额度与并发，降级能同时保住两者。
+
+### 5.1c 静态回退表只是元数据，永远不是目录
+
+新渠道通常要内嵌一份**静态模型表**，补上游不给的字段（上下文窗口、输出上限、是否支持图片）。这类表是**某一刻的快照**，有一个容易致命的用法：把它当成"可调用模型"的来源。
+
+**只有在线目录能决定一个 id 是否可调用。** 上游结束一次免费推广、或下架一个模型时，本地不会有任何提示；若静态表仍把该 id 并入公开列表，就会出现"列表里有、上游没有"的幽灵模型——每一次调用都必然失败。
+
+实测（cline，2026-10-02）：`cline-free/gemini-3.8-flash` 的推广被上游结束后，`/v1/models` 464 条里零命中、直连 404 `model not found`，而 CPA 仍在发布它，客户端侧表现为每次 `HTTP 502`。
+
+因此静态表条目必须**被某个在线来源背书**才发布：
+
+| 情况 | 做法 |
+|---|---|
+| 该 id 出现在在线目录里 | 发布，静态表只贡献元数据（名字/上限/模态） |
+| 该 id 只存在于静态表 | **不发布**，并记一条 warn 说明它已下线 |
+| 在线目录整体不可用（请求失败/空响应） | 整表照旧发布——"列表为空"比"列表略旧"更糟 |
+
+⚠️ 两种目录的**权威范围不同**：cline 的 `/api/v1/models`（464 条）里**一条 `cline-free/*` 都没有**，免费家族只能由 `recommended-models` 的 `free` 数组背书。判定时要按名字族区分来源，不能用一个来源去否定另一个的结论。
+
+⚠️ **空响应不等于权威**：端点返回 200 但内容为空/不可解析时，与请求失败同等对待，都不得触发删除。
 
 ### 5.2 只有显式 `action=claim` 才允许写
 
@@ -206,6 +228,35 @@ request.ImagesStripped = stripImagesForTextModel(request)
 
 一个反例值得记住：把**一次性**奖励放进每天都会按的按钮，必须双重设闸——先读状态（已领就
 一次写都不发），再依赖服务端幂等标志兜底。
+
+### 5.3 日志字段有白名单，自定义 key 会被静默丢弃
+
+`h.Log(level, message, fields)` 里的 `fields` **不是自由格式**。CPA 的控制台格式化器只打印白名单里的字段名：
+
+```go
+// internal/logging/global_logger.go:55-59（CPA v8.0.4）
+var logFieldOrder = []string{
+	"provider", "model",
+	"plugin_id", "plugin_name", "source_id",
+	"version", "active_version", "retired_version", "overwritten",
+	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",
+	"credential", "connection", "proxy_scheme", "remote_transport",
+	"media_session_id", "call_id", "peer", "state", "reason",
+}
+```
+
+白名单之外的 key **不报错、不警告，直接从日志行里消失**。实测：写 `{"models": "cline-free/gemini-3.8-flash"}` 的告警，落到日志里只剩 `provider=cline`——最关键的模型名没了。
+
+**规则**：任何不在上表的诊断信息，一律拼进 `message`；只有上表里的名字才放进 `fields`。
+
+```go
+// ❌ 模型名会消失（models 不在白名单）
+h.Log("warn", "静态目录表条目已下线", map[string]any{"provider": ProviderKey, "models": id})
+// ✅ 诊断信息在 message 里，字段只用白名单内的
+h.Log("warn", "静态目录表条目已下线，不再发布："+id, map[string]any{"provider": ProviderKey})
+```
+
+⚠️ 这条**无法用单测发现**：插件侧日志是 fire-and-forget 的 RPC（`abiboot.Host.Log` 丢弃返回值），单测里既不经过 CPA 的格式化器，也看不到被丢弃的结果。唯一可靠的验收方式是在真实容器日志里 `grep` 一次、确认内容完整。同理适用于 `error` 之外所有自定义字段——`provider` / `model` / `error` 是最常用的三个安全 key。
 
 ---
 

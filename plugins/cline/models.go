@@ -47,6 +47,17 @@ type catalogue struct {
 	ClinePass []catalogueEntry
 }
 
+// total counts the curated entries across all three arrays. Zero means the
+// endpoint either failed (nil catalogue) or answered without usable content;
+// both are indistinguishable from a broken answer, so neither is allowed to
+// act as an authority over the static table.
+func (c *catalogue) total() int {
+	if c == nil {
+		return 0
+	}
+	return len(c.Free) + len(c.Recommended) + len(c.ClinePass)
+}
+
 // modelCache memoises a fetched catalogue for a bounded time. The free list is
 // volatile marketing state, so the TTL is short by default and 0 disables the
 // cache entirely.
@@ -227,11 +238,78 @@ func isFreeModel(id string, remoteFree map[string]struct{}) bool {
 	return okFallback && fallback.IsFree
 }
 
+// staticAuthority answers "does any live catalogue source still carry this id?".
+//
+// The static table is a METADATA reference, not a catalogue: it is a frozen
+// snapshot taken at one moment, and an id in it is only callable while the live
+// catalogue still lists it. Publishing an id nobody vouches for advertises a
+// model whose every request answers `404 model not found` — measured 2026-10-02
+// with `cline-free/gemini-3.8-flash`, which upstream had dropped from the `free`
+// array, is absent from the 464-entry `/models` listing, and 404s when called
+// directly.
+//
+// ⚠️ The `/models` listing can NEVER vouch for a `cline-free/*` id — it contains
+// none of them, which is exactly why the free tier is only visible through the
+// curated endpoint. So the curated endpoint is the sole authority for the free
+// family, and it holds that authority only while it actually answers with
+// content: with `curatedAnswered` false there is nothing to check against, and
+// keeping the table is the lesser evil (an empty model list is worse than a
+// stale one).
+type staticAuthority struct {
+	curatedAnswered bool
+	known           map[string]struct{}
+}
+
+// newStaticAuthority indexes every id a live source reported.
+func newStaticAuthority(fetched *catalogue, remoteIDs []string) staticAuthority {
+	authority := staticAuthority{
+		curatedAnswered: fetched.total() > 0,
+		known:           make(map[string]struct{}, fetched.total()+len(remoteIDs)),
+	}
+	if fetched != nil {
+		for _, entry := range fetched.Free {
+			authority.known[entry.ID] = struct{}{}
+		}
+		for _, entry := range fetched.Recommended {
+			authority.known[entry.ID] = struct{}{}
+		}
+		for _, entry := range fetched.ClinePass {
+			authority.known[entry.ID] = struct{}{}
+		}
+	}
+	for _, id := range remoteIDs {
+		authority.known[id] = struct{}{}
+	}
+	return authority
+}
+
+// publishes reports whether a static-table id may still be advertised.
+func (a staticAuthority) publishes(id string) bool {
+	if !a.curatedAnswered {
+		return true
+	}
+	_, known := a.known[id]
+	return known
+}
+
+// staleStaticIDs lists the static-table ids the live catalogue no longer
+// vouches for, so the caller can report models that disappeared.
+func staleStaticIDs(fetched *catalogue, remoteIDs []string) []string {
+	authority := newStaticAuthority(fetched, remoteIDs)
+	var out []string
+	for _, model := range clineFallbackModels {
+		if !authority.publishes(model.ID) {
+			out = append(out, model.ID)
+		}
+	}
+	return out
+}
+
 // mergeCatalogue applies the four-step merge order and metadata precedence of
 // `cline-models.ts:192-235`.
 //
 //  1. remote free ids (order preserved)
-//  2. static fallback table
+//  2. static fallback table, restricted to ids a live source still vouches for
 //  3. recommended + clinePass entries
 //  4. every remaining /api/v1/models id, deliberately last (hundreds)
 //
@@ -240,6 +318,7 @@ func isFreeModel(id string, remoteFree map[string]struct{}) bool {
 // `cline-free/deepseek-v4.1-flash` come out as DeepSeek V4.1 Flash rather than as
 // a derived name.
 func mergeCatalogue(fetched *catalogue, remoteIDs []string) []pluginapi.ModelInfo {
+	authority := newStaticAuthority(fetched, remoteIDs)
 	if fetched == nil {
 		fetched = &catalogue{}
 	}
@@ -280,6 +359,9 @@ func mergeCatalogue(fetched *catalogue, remoteIDs []string) []pluginapi.ModelInf
 		add(entry, false)
 	}
 	for _, model := range clineFallbackModels {
+		if !authority.publishes(model.ID) {
+			continue
+		}
 		add(catalogueEntry{ID: model.ID, Name: model.Name}, false)
 	}
 	for _, entry := range fetched.Recommended {
@@ -441,6 +523,19 @@ func executeModelCatalog(h *abiboot.Host, credential *Credential, cfg Config) []
 	if !fetched.hasRemoteData() {
 		return staticModelInfos()
 	}
+	// A free promotion that ended upstream makes a model vanish from the public
+	// list. That is correct, but silent: report it, or the operator only sees
+	// the model disappear (or, before this guard, sees every call to it 404).
+	//
+	// ⚠️ The id list goes into the MESSAGE, not into a field. CPA's console
+	// formatter prints only the field names in `logFieldOrder`
+	// (`internal/logging/global_logger.go:55-59`, CPA v8.0.4); anything else is
+	// dropped without a trace, so `fields: {"models": ...}` would have produced
+	// a warning that never named a model.
+	if stale := staleStaticIDs(fetched.catalogue, fetched.remoteIDs); len(stale) > 0 && h != nil {
+		h.Log("warn", "cline 静态目录表条目已下线，不再发布："+strings.Join(stale, ", "),
+			map[string]any{"provider": ProviderKey})
+	}
 	models := mergeCatalogue(fetched.catalogue, fetched.remoteIDs)
 	if len(models) == 0 {
 		return staticModelInfos()
@@ -454,10 +549,7 @@ func (f catalogueFetch) hasRemoteData() bool {
 	if len(f.remoteIDs) > 0 {
 		return true
 	}
-	if f.catalogue == nil {
-		return false
-	}
-	return len(f.catalogue.Free)+len(f.catalogue.Recommended)+len(f.catalogue.ClinePass) > 0
+	return f.catalogue.total() > 0
 }
 
 // handleModelRegister reports the static fallback catalogue. It must not touch

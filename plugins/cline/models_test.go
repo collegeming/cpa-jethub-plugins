@@ -36,12 +36,17 @@ func TestIsFreeModel(t *testing.T) {
 }
 
 // TestMergeCatalogueOrderAndMetadata pins the four-step merge order and the
-// metadata precedence of `cline-models.ts:192-235`.
+// metadata precedence of `cline-models.ts:192-235`, with a fixture that mirrors
+// today's live free set so step 2 contributes no NEW ids here — only metadata
+// for the ids step 1 already listed.
 func TestMergeCatalogueOrderAndMetadata(t *testing.T) {
 	curated := parseCatalogue([]byte(`{
 	  "free": [
 	    {"id":"cline-free/deepseek-v4.1-flash","name":"Remote Name","description":"remote free description"},
 	    {"id":"other/model:free"},
+	    {"id":"stealth/space-bunny-alpha"},
+	    {"id":"cline-free/mimo-v2.6-flash"},
+	    {"id":"cline-free/muse-spark-1.3-contributor"},
 	    {"id":""}
 	  ],
 	  "recommended": [{"id":"deepseek/deepseek-v4.1-flash","name":"DeepSeek V4.1 Flash"}],
@@ -55,7 +60,6 @@ func TestMergeCatalogueOrderAndMetadata(t *testing.T) {
 		"other/model:free",
 		"stealth/space-bunny-alpha",
 		"cline-free/mimo-v2.6-flash",
-		"cline-free/gemini-3.8-flash",
 		"cline-free/muse-spark-1.3-contributor",
 		"deepseek/deepseek-v4.1-flash",
 		"cline-pass/model",
@@ -95,11 +99,6 @@ func TestMergeCatalogueOrderAndMetadata(t *testing.T) {
 		t.Errorf("image modality missing: %v", deepseek.SupportedInputModalities)
 	}
 
-	gemini := byID["cline-free/gemini-3.8-flash"]
-	if gemini.MaxCompletionTokens != 65_536 {
-		t.Errorf("gemini clamp = %d, want 65536", gemini.MaxCompletionTokens)
-	}
-
 	remotelyFree := byID["other/model:free"]
 	if !strings.HasSuffix(remotelyFree.DisplayName, "· 免费") {
 		t.Errorf("the :free suffix must mark the model free: %q", remotelyFree.DisplayName)
@@ -136,6 +135,110 @@ func TestMergeCatalogueOrderAndMetadata(t *testing.T) {
 		if !model.Thinking.ZeroAllowed {
 			t.Errorf("model %s must allow disabling reasoning (`none`)", model.ID)
 		}
+	}
+}
+
+// TestMergeCatalogueDropsStaticEntriesTheFreeListDropped is the regression for
+// the 2026-10-02 incident: upstream ended the `cline-free/gemini-3.8-flash`
+// promotion, so the curated `free` array stopped listing it. The static table
+// still knew the id, and publishing it made CPA advertise `Gemini-3.8-Flash`
+// whose every request answered `404 model not found`.
+func TestMergeCatalogueDropsStaticEntriesTheFreeListDropped(t *testing.T) {
+	// The live free set, gemini absent — exactly what upstream answers now.
+	curated := parseCatalogue([]byte(`{
+	  "free": [
+	    {"id":"cline-free/deepseek-v4.1-flash"},
+	    {"id":"stealth/space-bunny-alpha"},
+	    {"id":"cline-free/mimo-v2.6-flash"},
+	    {"id":"cline-free/muse-spark-1.3-contributor"}
+	  ],
+	  "recommended": [{"id":"anthropic/claude-sonnet-5.5"}],
+	  "clinePass": []
+	}`))
+	remoteIDs := parseRemoteModelIDs([]byte(`{"data":[{"id":"anthropic/claude-x"},{"id":"google/gemini-3.8-flash"}]}`))
+
+	models := mergeCatalogue(curated, remoteIDs)
+	for _, model := range models {
+		if model.ID == "cline-free/gemini-3.8-flash" {
+			t.Fatalf("a dropped free id must not be published: %v", idsOf(models))
+		}
+	}
+	// The paid twin is still a real upstream model, so it stays — it is the
+	// operator's job to hide it (`oauth-excluded-models`), not the catalogue's.
+	byID := map[string]pluginapi.ModelInfo{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	if _, okPaid := byID["google/gemini-3.8-flash"]; !okPaid {
+		t.Errorf("a live paid id must survive: %v", idsOf(models))
+	}
+	// Every id the free array still carries keeps its static metadata.
+	if got := byID["cline-free/mimo-v2.6-flash"]; got.MaxCompletionTokens != 131_072 || got.ContextLength != 1_048_576 {
+		t.Errorf("static metadata lost for a live free id: %+v", got)
+	}
+	// And the dropped entry is reported so the disappearance is not silent.
+	stale := staleStaticIDs(curated, remoteIDs)
+	if len(stale) != 1 || stale[0] != "cline-free/gemini-3.8-flash" {
+		t.Errorf("stale = %v, want exactly the dropped gemini id", stale)
+	}
+}
+
+// TestMergeCatalogueKeepsStaticMetadataWhenThePromotionReturns pins that the
+// table is still a METADATA reference: when upstream restores the id to the free
+// array it is republished, and the 65536 output clamp it needs must come back
+// with it. Publishing the id without the clamp makes upstream reject
+// `max_tokens=131072` with a 400.
+func TestMergeCatalogueKeepsStaticMetadataWhenThePromotionReturns(t *testing.T) {
+	// The full free set WITH gemini back — the fixture has to have this shape,
+	// because a curated array that listed only gemini would (correctly) drop the
+	// other four static entries as unvouched-for.
+	curated := parseCatalogue([]byte(`{"free":[
+	  {"id":"cline-free/deepseek-v4.1-flash"},
+	  {"id":"stealth/space-bunny-alpha"},
+	  {"id":"cline-free/mimo-v2.6-flash"},
+	  {"id":"cline-free/gemini-3.8-flash"},
+	  {"id":"cline-free/muse-spark-1.3-contributor"}
+	],"recommended":[],"clinePass":[]}`))
+	models := mergeCatalogue(curated, nil)
+	if len(models) != len(clineFallbackModels) {
+		t.Fatalf("models = %v, want the whole table republished", idsOf(models))
+	}
+	byID := map[string]pluginapi.ModelInfo{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	if gemini := byID["cline-free/gemini-3.8-flash"]; gemini.MaxCompletionTokens != 65_536 || gemini.ContextLength != 1_048_576 {
+		t.Errorf("gemini metadata lost: %+v", gemini)
+	}
+	if got := byID["stealth/space-bunny-alpha"].MaxCompletionTokens; got != 524_288 {
+		t.Errorf("space-bunny clamp = %d, want 524288", got)
+	}
+	if stale := staleStaticIDs(curated, nil); len(stale) != 0 {
+		t.Errorf("nothing is stale while the free array vouches: %v", stale)
+	}
+}
+
+// TestMergeCatalogueKeepsStaticsWhenTheCuratedEndpointFailed pins the other half
+// of the rule: with no curated answer there is nothing to check the table
+// against, so a stale entry is better than an empty model list.
+func TestMergeCatalogueKeepsStaticsWhenTheCuratedEndpointFailed(t *testing.T) {
+	// `mergeCatalogue` receives a nil catalogue when `recommended-models` failed.
+	models := mergeCatalogue(nil, []string{"anthropic/claude-x"})
+	if len(models) != len(clineFallbackModels)+1 {
+		t.Fatalf("merged %d models, want the whole static table plus the /models id: %v", len(models), idsOf(models))
+	}
+	if len(staleStaticIDs(nil, nil)) != 0 {
+		t.Errorf("no source answered, so nothing may be dropped")
+	}
+
+	// An endpoint that answers 200 with an unusable body is indistinguishable
+	// from a broken one: an empty catalogue must not authorise dropping either.
+	empty := parseCatalogue([]byte(`{}`))
+	if len(empty.Free)+len(empty.Recommended)+len(empty.ClinePass) != 0 {
+		t.Fatalf("fixture is not empty: %+v", empty)
+	}
+	if !newStaticAuthority(empty, nil).publishes("cline-free/gemini-3.8-flash") {
+		t.Errorf("an empty curated answer must not act as an authority")
 	}
 }
 

@@ -81,10 +81,14 @@ func prepareChatCall(h *abiboot.Host, request pluginapi.ExecutorRequest, credent
 		// Warn, not debug: the turn still succeeds, but the model answers
 		// without having seen the image. Silence here is exactly what made the
 		// original 406 look like a phantom failure (vision.go).
-		h.Log("warn", "CodeArts 剥离了请求中的图片（模型为纯文本）", map[string]any{
-			"model":  parsed.Model,
-			"images": imagesStripped,
-		})
+		//
+		// ⚠️ The count belongs in the MESSAGE: CPA's console formatter prints
+		// only the field names in `logFieldOrder`
+		// (`internal/logging/global_logger.go:55-59`, CPA v8.0.4), so a custom
+		// key such as `images` is dropped silently. `model` IS whitelisted and
+		// stays a field.
+		h.Log("warn", "CodeArts 剥离了请求中的图片（模型为纯文本），共 "+itoa(imagesStripped)+" 处",
+			map[string]any{"model": parsed.Model})
 	}
 
 	chatURL := SnapEngineBase + ChatAPIPath
