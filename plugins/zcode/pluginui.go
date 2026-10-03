@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
@@ -73,6 +74,10 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 				"若本机已装官方 ZCode 客户端并登录过，也可以在登录页用「导入官方客户端凭据」直接采用它的登录态。"),
 			plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 		))
+		// The catalogue card is rendered even without an account: the built-in
+		// table is what this channel would publish, and hiding the model list
+		// behind a login would leave the page unable to answer its own question.
+		body = append(body, renderCatalogueCard(h, request, cfg))
 		return pluguiPage("ZCode（智谱）", body...)
 	}
 
@@ -80,6 +85,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	if !found {
 		body = append(body, plugui.Card("账号不存在",
 			plugui.Notice("danger", "指定的 auth_index 不在本插件的账号列表里。")))
+		body = append(body, renderCatalogueCard(h, request, cfg))
 		return pluguiPage("ZCode（智谱）", body...)
 	}
 
@@ -90,7 +96,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		body = append(body, renderAccountCard(status, status.Entry.AuthIndex == selected.AuthIndex))
 	}
 	body = append(body, renderAccountList(accounts, selected.AuthIndex))
-	body = append(body, renderCatalogueCard())
+	body = append(body, renderCatalogueCard(h, request, cfg))
 	return pluguiPage("ZCode（智谱）", body...)
 }
 
@@ -206,33 +212,72 @@ func renderAccountCard(status accountStatus, current bool) template.HTML {
 	return plugui.Card(title, plugui.Fields(fields...), actions...)
 }
 
-// renderCatalogueCard lists the published catalogue.
-func renderCatalogueCard() template.HTML {
+// renderCatalogueCard lists the catalogue this deployment publishes.
+//
+// The rows are built from the same descriptors `model.for_auth` reports, so the
+// page cannot disagree with the published catalogue. `modelInfos` fills `Name`
+// from the PROVIDER's own name (`fallbackModel.Name`, upstream's
+// `builtinModels[].name`) and `ID` from the routed id — the shared card renders
+// the former as the label and shows the latter as 「请求用名」 only when they
+// differ, which on a healthy catalogue they do not.
+//
+// The listing is cache-or-built-in and never a fetch: a page load must not call
+// upstream. The source line says which of the two is on screen.
+func renderCatalogueCard(h *abiboot.Host, request pluginapi.ManagementRequest, cfg Config) template.HTML {
 	catalogue := currentCatalogue()
-	fields := make([]plugui.Field, 0, len(catalogue)+2)
-	for _, model := range catalogue {
+	// The prefix is the selected account's, so a prefixed deployment shows the
+	// name a request must actually carry. Without a usable account the listing is
+	// the unprefixed one, which is also what `model.register` publishes.
+	prefix := ""
+	if entry, found := selectAccount(h, request); found {
+		if credential, errCredential := credentialOf(h, entry); errCredential == nil {
+			prefix = modelPrefixFor(credential)
+		}
+	}
+	return plugui.Group(
+		plugui.CatalogueCard(plugui.ModelCatalogue{
+			Source:      catalogueSourceText(cfg),
+			Entries:     catalogueModelEntries(catalogue, prefix),
+			EmptyNotice: "暂无模型：目录尚未拉取，且内置表为空。",
+			Actions: []plugui.Action{
+				{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+			},
+		}),
+		plugui.Card("目录说明", plugui.Fields(
+			plugui.Field{Label: "上游模型池", Value: "目录里还有 GLM-5-Turbo 与 GLM-5.2，但它们在 Start Plan 权益下返回空响应" +
+				"（实测 0/3 正确，而 GLM-5.3 是 3/3），因此不对外暴露"},
+			plugui.Field{Label: "命名说明", Value: "GLM-5.3 与 GLM-5.3-Flash 已被其它渠道发布；" +
+				"CPA 会把同名模型合并成一个条目、由多个凭据共同供给，因此本插件是给已有模型 id 增加容量，而不是新建模型"},
+		)),
+	)
+}
+
+// catalogueModelEntries maps the served catalogue onto the shared card's rows.
+//
+// The rows are built from `modelInfos`, the very descriptors this plugin hands
+// the host for `model.for_auth`, so the page and the published catalogue cannot
+// disagree — including the account prefix, which is part of the name a request
+// must carry. `ModelEntriesFromInfo` reads `Name` as the displayed value and `ID`
+// as the routing name; `modelInfoFor` fills `Name` from the PROVIDER's own name
+// (upstream's `builtinModels[].name`, see parseBuiltinModels) rather than copying
+// the routed id, so the label is what ZCode calls the model.
+//
+// The per-model metadata this card always published (window, output cap, effort
+// ladder, vision) is kept as each row's detail.
+func catalogueModelEntries(catalogue []fallbackModel, prefix string) []plugui.ModelEntry {
+	return plugui.ModelEntriesFromInfo(modelInfos(catalogue, prefix), func(info pluginapi.ModelInfo) string {
 		levels := "无档位"
-		if len(model.ReasoningLevels) > 0 {
-			levels = strings.Join(model.ReasoningLevels, " / ")
+		if info.Thinking != nil && len(info.Thinking.Levels) > 0 {
+			levels = strings.Join(info.Thinking.Levels, " / ")
 		}
 		vision := "不支持图片"
-		if model.SupportsImage {
+		if slices.Contains(info.SupportedInputModalities, "image") {
 			vision = "支持图片"
 		}
-		fields = append(fields, plugui.Field{
-			Label: model.ID,
-			Value: fmt.Sprintf("上下文 %s、最大输出 %s、思考档位 %s、%s",
-				formatTokenMagnitude(int64(model.ContextWindow)),
-				formatTokenMagnitude(int64(model.MaxOutputTokens)), levels, vision),
-		})
-	}
-	fields = append(fields,
-		plugui.Field{Label: "上游模型池", Value: "目录里还有 GLM-5-Turbo 与 GLM-5.2，但它们在 Start Plan 权益下返回空响应" +
-			"（实测 0/3 正确，而 GLM-5.3 是 3/3），因此不对外暴露"},
-		plugui.Field{Label: "命名说明", Value: "GLM-5.3 与 GLM-5.3-Flash 已被其它渠道发布；" +
-			"CPA 会把同名模型合并成一个条目、由多个凭据共同供给，因此本插件是给已有模型 id 增加容量，而不是新建模型"},
-	)
-	return plugui.Card("模型目录", plugui.Fields(fields...))
+		return fmt.Sprintf("上下文 %s、最大输出 %s、思考档位 %s、%s",
+			formatTokenMagnitude(info.ContextLength),
+			formatTokenMagnitude(info.MaxCompletionTokens), levels, vision)
+	})
 }
 
 // renderLoginPage renders the device-authorization steps.

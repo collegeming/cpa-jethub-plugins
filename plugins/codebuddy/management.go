@@ -283,20 +283,76 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	return plugui.HTML("CodeBuddy", body...)
 }
 
-// catalogueCard reports the catalogue source and carries the manual refresh.
+// catalogueCard renders the shared 「模型目录」 card: what this deployment
+// publishes, listed by the provider's OWN model names, with the manual refresh.
 //
 // The refresh is the only control in this plugin that rewrites an auth file: the
 // write is what makes the host re-register this provider's models, and the host
 // has no ABI call for that. The background automatic refresh, when enabled,
 // covers the plugin's cache only.
 func catalogueCard(cfg Config) template.HTML {
-	return plugui.Card("模型目录", plugui.Fields(
-		plugui.Field{Label: "数据来源", Value: catalogueSourceText(cfg)},
-		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
-		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
-	),
-		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
-	)
+	product, _ := productByConfigValue(cfg.Product)
+	models, source := catalogueForPage(cfg, product)
+	emptyNotice := "暂无模型：厂商模型接口尚未拉取，且内置兜底表为空。"
+	if !cfg.DiscoverModels {
+		emptyNotice = "暂无模型：discover_models 已关闭，内置兜底表为空。"
+	}
+	return plugui.CatalogueCard(plugui.ModelCatalogue{
+		Source:      source,
+		Entries:     catalogueModelEntries(product, models),
+		EmptyNotice: emptyNotice,
+		Actions: []plugui.Action{
+			{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+		},
+	})
+}
+
+// catalogueForPage returns the listing the status page renders, plus the source
+// line that describes those very rows.
+//
+// It never touches the network: the cached remote catalog for the configured
+// product when one was fetched, the bundled fallback table otherwise. A page load
+// must not trigger a fetch — the card reports what this deployment currently has.
+//
+// The cache and background-refresh lines are folded into Source rather than
+// rendered as separate fields, because the shared card owns its own footer and
+// these three facts describe one thing: where the rows below came from.
+func catalogueForPage(cfg Config, product productConfig) ([]remoteModel, string) {
+	trailer := "；线上目录缓存：" + catalogueCacheText() + "；后台自动刷新：" + autoRefreshText(cfg)
+	if !cfg.DiscoverModels {
+		return staticCatalog(product), catalogueSourceText(cfg) + trailer
+	}
+	// peek, not get: the rows must match the cache line beside them, and a
+	// catalog that fell out of its TTL is still what was last fetched.
+	if cached, _, ok := discoveredModels.peek(cachedCatalogKey(product)); ok {
+		return cached, catalogueSourceText(cfg) + "，当前列出缓存结果" + trailer
+	}
+	return staticCatalog(product), catalogueSourceText(cfg) + "，线上目录尚未拉取，当前列出内置兜底表" + trailer
+}
+
+// catalogueModelEntries maps the page's listing onto the shared card's rows.
+//
+// Native is `ModelInfo.Name`, which `modelInfoFor` fills with `model.ID` — the
+// vendor's own id exactly as the model endpoint spells it (`models.go:899`).
+// `ModelInfo.ID` carries `publicModelID(model.ID)` (`models.go:893`), the
+// canonical spelling this deployment publishes; `publicModelIDs` (models.go:840)
+// renames nine ids, e.g. `glm-5.3-flash` → `GLM-5.3-Flash`. So the card's main
+// label is the vendor's name and the renamed result appears only as 「请求用名」.
+//
+// `model.ID` comes straight off the vendor's `/v3/config` answer
+// (`parseModelsFromConfig` sets `entry.ID = id` from the `data.models` key,
+// models.go:562).
+func catalogueModelEntries(product productConfig, models []remoteModel) []plugui.ModelEntry {
+	return plugui.ModelEntriesFromInfo(modelInfosFromCatalog(product, models), func(info pluginapi.ModelInfo) string {
+		detail := fmt.Sprintf("上下文 %d", info.ContextLength)
+		if info.MaxCompletionTokens > 0 {
+			detail += fmt.Sprintf("，输出上限 %d", info.MaxCompletionTokens)
+		}
+		if len(info.SupportedInputModalities) > 1 {
+			detail += "，支持图片"
+		}
+		return detail
+	})
 }
 
 // catalogueSourceText describes where the published catalogue comes from.

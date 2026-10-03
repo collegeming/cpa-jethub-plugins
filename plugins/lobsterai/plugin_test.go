@@ -249,7 +249,7 @@ func TestHandleManagementStatusPage(t *testing.T) {
 	body := string(response.Body)
 	for _, want := range []string{
 		"<!DOCTYPE html>", "LobsterAI", "lobsterai-uid-1.json", "可自动续期", "42.5",
-		"账号", "模型与远端参数", "签到",
+		"账号", "模型目录", "签到",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("status page does not contain %q:\n%s", want, firstLines(body, 40))

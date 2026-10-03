@@ -43,7 +43,18 @@ import (
 
 // fallbackModel is one entry of the built-in catalogue.
 type fallbackModel struct {
-	ID              string
+	// ID is the model id this deployment routes requests by.
+	//
+	// ⚠ Upstream's `builtinModels[].modelId` is the id the wire carries and the
+	// id users already have selected, and for every entry measured so far the two
+	// spellings are identical — this plugin renames nothing (see the naming
+	// collision note above: it deliberately adds capacity to EXISTING ids rather
+	// than creating new ones). ID is kept as its own field anyway, because the
+	// card has to show the provider's own name and a future rename must land in
+	// ONE place instead of silently changing what the card displays.
+	ID string
+	// Name is the provider's OWN model name: upstream's `builtinModels[].name`,
+	// falling back to `modelId` when upstream omits it (see parseBuiltinModels).
 	Name            string
 	ContextWindow   int
 	MaxOutputTokens int
@@ -59,6 +70,13 @@ type fallbackModel struct {
 
 // fallbackCatalogue is the built-in table, whose values are the upstream ones
 // (they were read off `client/configs`; they are a FALLBACK, not a guess).
+//
+// ⚠ `ID` and `Name` are equal for both entries, and that is upstream's own
+// shape, not a shortcut: `GET /api/v1/client/configs` returns
+// `builtinModels[].modelId == builtinModels[].name` for every entry measured
+// (`GLM-5.3`/`GLM-5.3`, `GLM-5.3-Flash`/`GLM-5.3-Flash`). They stay separate
+// fields because the card must display the provider's own name, and an upstream
+// that ever publishes `name` differently from `modelId` must change ONE thing.
 var fallbackCatalogue = []fallbackModel{
 	{
 		ID:              "GLM-5.3-Flash",
@@ -155,6 +173,14 @@ func modelInfoFor(model fallbackModel, prefix string, now time.Time) pluginapi.M
 		id = prefix + "/" + model.ID
 		displayName = prefix + "/" + model.Name
 	}
+	// Name is the PROVIDER's own model name, not a copy of `ID`. On the built-in
+	// table the two spellings coincide, but the remote path keeps them apart:
+	// `parseBuiltinModels` fills ID from upstream's `modelId` (the id the wire
+	// carries) and Name from upstream's `name` (what the vendor calls the model).
+	// Publishing `model.ID` here made Name a copy of the routing id, so a rename —
+	// or an upstream whose `name` differs from its `modelId` — would be invisible
+	// to every reader of Name. The account prefix stays on ID/DisplayName: it is
+	// this deployment's routing artifact, not something the vendor names.
 	info := pluginapi.ModelInfo{
 		ID:                         id,
 		Object:                     "model",
@@ -162,7 +188,7 @@ func modelInfoFor(model fallbackModel, prefix string, now time.Time) pluginapi.M
 		OwnedBy:                    ProviderKey,
 		Type:                       "chat",
 		DisplayName:                displayName,
-		Name:                       model.ID,
+		Name:                       model.Name,
 		Description:                "ZCode 免费额度通道（Anthropic Messages）：" + model.Name,
 		ContextLength:              int64(model.ContextWindow),
 		InputTokenLimit:            int64(model.ContextWindow),
@@ -270,10 +296,13 @@ func refreshRemoteCatalogue(h *abiboot.Host, credential *Credential, cfg Config)
 
 // fetchRemoteModels reads the model pool out of `GET /api/v1/client/configs`.
 //
-// ⚠ `builtinModels` is an OBJECT keyed by an index string, not an array —
-// measured as `{"0": {...}, "1": {...}}`. Testing it with `Array.isArray` yields
-// the false negative "zero models", which is exactly the bug that made the
-// reference fall back to its guessed table.
+// `builtinModels` is an ARRAY — measured 2026-10-03 against the live endpoint,
+// both anonymous and with a credential, as `[{"modelId": "GLM-5.3", ...}, ...]`.
+// `parseBuiltinModels` also accepts an object keyed by index string, because an
+// earlier measurement of this endpoint saw that shape and the reference's
+// `Array.isArray` test produced the false negative "zero models" on it. Both
+// shapes reach the same list, so the parser does not have to know which one the
+// endpoint is currently sending.
 func fetchRemoteModels(h *abiboot.Host, credential *Credential, cfg Config) ([]fallbackModel, error) {
 	appVersion := credential.appVersionOrDefault(cfg)
 	rawURL := Origin + ClientConfigsPath +

@@ -76,6 +76,11 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
 	)}
 
+	// The catalogue itself. Qoder's is a compile-time table with no upstream
+	// directory endpoint, so the card lists that table and says so; it makes no
+	// network call and cannot be read as evidence that something was fetched.
+	body = append(body, qoderCatalogueCard(activeRegion()))
+
 	accounts := qoderAccounts(h)
 	if len(accounts) == 0 {
 		body = append(body, plugui.Card("尚未添加账号",

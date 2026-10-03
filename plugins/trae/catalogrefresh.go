@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"sort"
 	"strconv"
@@ -216,6 +217,111 @@ func catalogueRefreshJSON(h *abiboot.Host, request pluginapi.ManagementRequest) 
 		body["publish_error"] = result.PublishErr.Error()
 	}
 	return jsonManagementResponse(http.StatusOK, body)
+}
+
+// catalogueRefreshAction is the GET link that triggers a manual refresh.
+func catalogueRefreshAction() plugui.Action {
+	return plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"}
+}
+
+// catalogueForPage returns what the status page's catalogue card renders: the
+// rows, the host-facing descriptors behind them, and the source line that
+// describes those very rows.
+//
+// It NEVER touches the network. `catalogFor` — the function a client request uses
+// — would issue `batch_get_detail_param` on a cold cache, and a page view is not
+// a reason to call the vendor. So the cache is PEEKED (past its TTL on purpose:
+// an expired entry is still the listing this deployment last actually had) and
+// the bundled table answers otherwise.
+//
+// The returned descriptors come from the SAME path `model.for_auth` uses
+// (`isModelCallable` + `modelInfoForRemote`), so the card cannot advertise a model
+// that a request would be rejected for.
+func catalogueForPage(cfg Config, credential *Credential) ([]remoteModel, []pluginapi.ModelInfo, string) {
+	if !cfg.DiscoverModels {
+		return nil, staticModelInfos(cfg), "内置兜底列表（discover_models 已关闭，不访问网络）"
+	}
+	if credential != nil {
+		if cached, ok := peekCatalog(cfg, credential); ok && len(cached.models) > 0 {
+			models := make([]remoteModel, 0, len(cached.models))
+			infos := make([]pluginapi.ModelInfo, 0, len(cached.models))
+			for _, model := range cached.models {
+				if !isModelCallable(model) {
+					continue
+				}
+				models = append(models, model)
+				infos = append(infos, modelInfoForRemote(model, cfg))
+			}
+			if len(infos) > 0 {
+				return models, infos, "线上目录（缓存于 " + cached.fetchedAt.Local().Format("15:04") + "）"
+			}
+		}
+	}
+	return nil, staticModelInfos(cfg), "内置兜底列表（线上目录尚未拉取）"
+}
+
+// catalogueModelEntries maps the page's listing onto the shared card's rows.
+//
+// Native is the upstream model name: `modelInfoForRemote` sets `Name: model.ID`
+// (models.go:606), and `model.ID` is the vendor's own `config_name`
+// (`parseTraeConfigEntry`, models.go:299-301) — the string its chat endpoint is
+// actually addressed with (`configNameFor`, models.go:848). This plugin renames
+// nothing, so `ModelInfo.ID` carries the same string and the card correctly grows
+// no 「请求用名」 row.
+//
+// The vendor's separate human label (`display_config.display_name`, read into
+// `remoteModel.Name`, models.go:303-312) is NOT upstream's identifier and is not
+// used as the label; it is reported as context instead, together with the channel
+// and the size figures the page already showed.
+func catalogueModelEntries(models []remoteModel, infos []pluginapi.ModelInfo) []plugui.ModelEntry {
+	byID := make(map[string]remoteModel, len(models))
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	return plugui.ModelEntriesFromInfo(infos, func(info pluginapi.ModelInfo) string {
+		detail := ""
+		if model, ok := byID[info.ID]; ok {
+			if label := strings.TrimSpace(model.Name); label != "" && label != model.ID {
+				detail = "上游标签 " + label + "；"
+			}
+			if channel := strings.TrimSpace(model.Channel); channel != "" {
+				detail += "通道 " + channel + "；"
+			}
+		}
+		if info.ContextLength > 0 {
+			detail += "上下文 " + strconv.FormatInt(info.ContextLength, 10)
+		} else {
+			detail += "上下文未知"
+		}
+		detail += "，最大输出 " + strconv.FormatInt(info.MaxCompletionTokens, 10)
+		if len(info.SupportedInputModalities) > 1 {
+			detail += "，输入 text+image"
+		} else {
+			detail += "，输入 text"
+		}
+		return detail
+	})
+}
+
+// catalogueCard renders the shared 「模型目录」 card, listing the models this
+// channel offers by the names upstream uses, with the manual refresh.
+//
+// The card is new for this plugin rather than a replacement: the page used to
+// report only counters (可调用模型数 / 各通道模型数), which answer "how many" and
+// never "which". Both sets of figures are kept — the counters stay in the
+// 通道与模型 card above it, and the rows below them are the list itself.
+func catalogueCard(cfg Config, credential *Credential) template.HTML {
+	models, infos, source := catalogueForPage(cfg, credential)
+	emptyNotice := "暂无模型：内置兜底列表为空。"
+	if cfg.DiscoverModels {
+		emptyNotice = "暂无模型：线上目录尚未拉取，且内置兜底列表为空。"
+	}
+	return plugui.CatalogueCard(plugui.ModelCatalogue{
+		Source:      source,
+		Entries:     catalogueModelEntries(models, infos),
+		EmptyNotice: emptyNotice,
+		Actions:     []plugui.Action{catalogueRefreshAction()},
+	})
 }
 
 // publishText describes whether the catalog reached the host registry.

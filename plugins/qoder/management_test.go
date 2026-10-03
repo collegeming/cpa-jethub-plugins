@@ -408,10 +408,18 @@ func TestLoginPageTwoStepFlow(t *testing.T) {
 
 // TestLoginPagePollWithoutStateIsAnError keeps a stale bookmark from silently
 // starting a new flow.
+//
+// The login sessions are package state, and a poll with no `state` falls back to
+// the newest PENDING session. Another test that started one would therefore turn
+// this page into a successful poll and the assertion below would fail — which is
+// exactly what happened under `-shuffle=on`. Clearing the sessions first makes
+// the case this test names ("no state to poll") the case it actually exercises.
 func TestLoginPagePollWithoutStateIsAnError(t *testing.T) {
 	host := newFakeHost()
 	host.install(t)
 	withSettings(t, DefaultConfig())
+	shutdownLoginSessions()
+	t.Cleanup(shutdownLoginSessions)
 	response := managementCall(t, testHost(), managementRequest("/login", map[string]string{"action": "poll"}, "text/html"))
 	if !strings.Contains(string(response.Body), "缺少 state") {
 		t.Fatalf("the poll page did not report the missing state:\n%s", response.Body)

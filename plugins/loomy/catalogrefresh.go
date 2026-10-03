@@ -221,6 +221,106 @@ func publishText(result catalog.Result) string {
 	}
 }
 
+// catalogueRefreshAction is the GET link that triggers a manual refresh. It is
+// repeated on the catalogue card because that is the card an operator is looking
+// at when they want a refresh; the settings card carries the same action.
+func catalogueRefreshAction() plugui.Action {
+	return plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"}
+}
+
+// catalogueForPage returns the listing the status page renders plus the source
+// line that describes those very rows.
+//
+// It never touches the network: the cached remote listing when one was fetched,
+// the bundled table otherwise. A page load must not trigger a fetch — the card
+// reports what this deployment currently has — which is why `activeCatalogue` is
+// deliberately not used here: on a cold cache it CALLS the vendor, and a page
+// view is not a reason to ask upstream anything.
+func catalogueForPage(cfg Config) ([]modelDescriptor, string) {
+	if !cfg.DiscoverModels {
+		return fallbackModels(), "内置兜底表（discover_models 已关闭，不访问网络）"
+	}
+	if cached := peekDiscoveredModels(); len(cached) > 0 {
+		fetchedAt := discoveredCatalogueFetchedAt()
+		return cached, "实时目录 GET " + ModelsPath + "（缓存于 " +
+			fetchedAt.Local().Format("15:04") + "）"
+	}
+	return fallbackModels(), "内置兜底表（实时目录 GET " + ModelsPath + " 尚未拉取）"
+}
+
+// discoveredCatalogueFetchedAt reports when the cached listing was fetched.
+func discoveredCatalogueFetchedAt() time.Time {
+	discoveredCatalogue.mu.Lock()
+	defer discoveredCatalogue.mu.Unlock()
+	return discoveredCatalogue.fetchedAt
+}
+
+// catalogueModelEntries maps the page's listing onto the shared card's rows.
+//
+// Native is the vendor's OWN model name, verbatim: `modelDescriptor.Name` is
+// documented as "the raw wire name" (models.go:99-101), filled from the `name`
+// field of the vendor's `/models` answer (models.go:330-335).
+//
+// The trailing multiplier inside it is the VENDOR's own spelling, not this
+// plugin's annotation: models.go:19-23 records that the price is embedded in the
+// name and nowhere else ("a search for credit/multiplier/price/factor/rate in the
+// `/models` response returns zero hits"), and models.go:22-23 lists the three
+// vendor spellings — `MiniMax M3 （x4.0）`, `Qwen 3.8 Max (x12.0)`,
+// `GLM 5.3 Flash(x0.8)`. So the multiplier stays in the label because that is
+// where upstream put it; stripping it (which `bareName` does for a different
+// purpose) would edit the vendor's string rather than report it.
+//
+// `ModelInfo.Name` is deliberately NOT the source, for the exact reason the task
+// asked about: `info()` fills it with `bareName()` (models.go:153), which is
+// `splitLoomyRate(m.Name)` — a LOCAL normalisation that strips that multiplier.
+// Using it would display a name upstream never published. `ModelInfo.ID` is the
+// wire `id`, a slug (`MiniMax-M3`, `deepseek-v4-flash-0731`) that requests are
+// routed by, so it belongs in the row as the routed name, not as the label.
+func catalogueModelEntries(entries []modelDescriptor) []plugui.ModelEntry {
+	now := time.Now()
+	rows := make([]plugui.ModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		info := entry.info(now)
+		native := strings.TrimSpace(entry.Name)
+		if native == "" {
+			// A deserialised entry with no name: the id is all upstream gave,
+			// and the shared card would drop a blank row entirely.
+			native = strings.TrimSpace(entry.ID)
+		}
+		detail := ""
+		if info.ContextLength > 0 {
+			detail = "上下文 " + strconv.FormatInt(info.ContextLength, 10)
+		} else {
+			// 0 means unknown, and models.go:102-104 forbids replacing it with a
+			// guess, so the row says so rather than printing 0.
+			detail = "上下文未知"
+		}
+		detail += "，最大输出 " + strconv.FormatInt(info.MaxCompletionTokens, 10)
+		if len(info.SupportedInputModalities) > 1 {
+			detail += "，输入 text+image"
+		} else {
+			detail += "，输入 text"
+		}
+		rows = append(rows, plugui.ModelEntry{
+			Native: native,
+			// Empty when it matches Native, so the card omits 请求用名 rather
+			// than printing the same string twice.
+			ID:     routedName(native, entry.ID),
+			Detail: detail,
+		})
+	}
+	return rows
+}
+
+// routedName reports the id a request must use, or "" when it is the same string
+// as the name already shown.
+func routedName(native, id string) string {
+	if strings.TrimSpace(id) == native {
+		return ""
+	}
+	return strings.TrimSpace(id)
+}
+
 // catalogueCacheText reports what the catalogue cache currently holds.
 //
 // It reads the raw store, so an entry past its TTL is still shown: "there is a

@@ -372,6 +372,10 @@ func TestConfigureStartsAndStopsTheScheduler(t *testing.T) {
 	if errConfigure := plugin.Configure([]byte("model_refresh_ms: 20\n")); errConfigure != nil {
 		t.Fatalf("Configure: %v", errConfigure)
 	}
+	// The run tally describes one armed loop, and the scheduler is a
+	// package-level singleton: without clearing it, a tick from another test in
+	// the same binary reads as "this loop already ran" (fails under -shuffle).
+	catalogueScheduler.ResetCounters()
 	if _, runs, _, _ := catalogueScheduler.Status(); runs != 0 {
 		t.Fatalf("runs = %d before the first tick", runs)
 	}

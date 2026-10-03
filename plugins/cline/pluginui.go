@@ -51,6 +51,21 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
 	)}
 
+	// The catalogue itself, listed by the provider's own names.
+	pageModels, pageSource := catalogueForPage()
+	emptyNotice := "暂无模型：线上目录尚未拉取，且静态表为空。"
+	if !cfg.ModelDiscovery {
+		emptyNotice = "暂无模型：model_discovery 已关闭，静态表为空。"
+	}
+	body = append(body, plugui.CatalogueCard(plugui.ModelCatalogue{
+		Source:      pageSource,
+		Entries:     catalogueModelEntries(pageModels),
+		EmptyNotice: emptyNotice,
+		Actions: []plugui.Action{
+			{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+		},
+	}))
+
 	accounts := clineAccounts(h)
 	if len(accounts) == 0 {
 		body = append(body, plugui.Card("尚未添加账号",

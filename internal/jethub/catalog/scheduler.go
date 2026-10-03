@@ -108,6 +108,24 @@ func (s *Scheduler) Status() (interval time.Duration, runs int, lastRun time.Tim
 	return s.interval, s.runs, s.lastRun, s.lastErr
 }
 
+// ResetCounters clears the run tally and the last error, leaving the interval
+// and the running loop alone.
+//
+// The tally describes one armed loop. A test that arms a loop has to start
+// counting from zero, and the scheduler is a package-level singleton, so without
+// this a tick from another test reads as "this loop already ran" — a failure
+// that only appears when the test order changes.
+func (s *Scheduler) ResetCounters() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.runs = 0
+	s.lastRun = time.Time{}
+	s.lastErr = ""
+	s.mu.Unlock()
+}
+
 // loop refreshes every interval until cancelled.
 //
 // Each tick carries no host payload, so a refresh that needs one is left to the

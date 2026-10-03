@@ -30,9 +30,6 @@ import (
 // persisting the resulting credential (see pollLoginForManagement) — the host
 // only saves what the normal auth.login.poll reply returns.
 
-// maxModelsOnPage bounds how many model rows the status page renders.
-const maxModelsOnPage = 10
-
 // wantsJSON reports whether the caller asked for machine-readable output.
 //
 // The defaults follow what each mount is for:
@@ -241,43 +238,105 @@ func accountQuery(entry pluginapi.HostAuthFileEntry) string {
 	return "auth_index=" + entry.AuthIndex
 }
 
-// renderModelCard lists the catalog with the remote model parameters this
-// adapter consumes. The thinking levels show the product-side names while the
-// wire values are what actually travels (openclawLevel).
+// renderModelCard renders the shared 「模型目录」 card: the catalog this
+// deployment publishes, listed by the provider's OWN model names, with the
+// remote parameters this adapter consumes and the manual 刷新目录 control.
 //
-// It also carries the catalogue's provenance and the manual 刷新目录 control:
-// that button is the only path in this plugin that rewrites an auth file, which
+// The refresh is the only path in this plugin that rewrites an auth file, which
 // is what makes the host re-register this provider's models — the host has no
 // ABI call for that. The background automatic refresh, when enabled, covers the
 // plugin's cache only.
+//
+// It replaces a hand-written list that capped itself at `maxModelsOnPage` rows
+// and labelled each row with `displayNameFor`, which appends the cost marker
+// (`… · x0.5` / `… · 免费`) to the name: the shared card lists every model, lets
+// the reader filter, and keeps the label the vendor's own.
 func renderModelCard() template.HTML {
 	cfg := settings()
-	catalog := currentCatalog(time.Now())
-	fields := make([]plugui.Field, 0, maxModelsOnPage+4)
-	fields = append(fields, plugui.Field{Label: "模型数量", Value: fmt.Sprintf("%d", len(catalog))})
-	fields = append(fields, catalogueFields(cfg)...)
-	for index, model := range catalog {
-		if index >= maxModelsOnPage {
-			fields = append(fields, plugui.Field{
-				Label: "…",
-				Value: fmt.Sprintf("其余 %d 个模型省略", len(catalog)-maxModelsOnPage),
-			})
-			break
-		}
-		fields = append(fields, plugui.Field{Label: displayNameFor(model), Value: modelParameterSummary(model)})
-	}
-	return plugui.Card("模型与远端参数", plugui.Fields(fields...), catalogueRefreshAction())
+	catalog, source := catalogueForPage(cfg)
+	return plugui.CatalogueCard(plugui.ModelCatalogue{
+		Source:      source,
+		Entries:     catalogueModelEntries(catalog),
+		EmptyNotice: "暂无模型：远端目录尚未拉取，且内置兜底列表为空。",
+		Actions:     []plugui.Action{catalogueRefreshAction()},
+	})
 }
 
-// catalogueFields describes where the published catalogue comes from and what
-// the background refresh is doing. Both the model card and the empty-state card
-// render them, so the two can never disagree.
-func catalogueFields(cfg Config) []plugui.Field {
-	return []plugui.Field{
-		{Label: "数据来源", Value: catalogSource()},
-		{Label: "线上目录缓存", Value: catalogueCacheText()},
-		{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
+// catalogueForPage returns the catalog the status page renders, plus the source
+// line that describes those very rows.
+//
+// It never touches the network: the cached remote catalog when one was fetched,
+// the bundled fallback list otherwise. A page load must not trigger a fetch —
+// the card reports what this deployment currently has.
+//
+// The cache and background-refresh lines are folded into Source rather than
+// rendered as separate fields, because the shared card owns its own footer and
+// these three facts describe one thing: where the rows below came from.
+func catalogueForPage(cfg Config) ([]remoteModel, string) {
+	trailer := "；线上目录缓存：" + catalogueCacheText() + "；后台自动刷新：" + autoRefreshText(cfg)
+	if !cfg.DiscoverModels {
+		return fallbackModels, "内置兜底列表（discover_models 已关闭）" + trailer
 	}
+	// peek, not get: the rows must match the cache line beside them, and a
+	// catalog that fell out of its TTL is still what was last fetched.
+	if cached, _ := discoveredModels.peek(); len(cached) > 0 {
+		return cached, catalogSource() + "，当前列出缓存结果" + trailer
+	}
+	return fallbackModels, catalogSource() + "，当前列出内置兜底列表" + trailer
+}
+
+// catalogueModelEntries maps the page's catalog onto the shared card's rows.
+//
+// Native is `ModelInfo.Name`, which `modelInfoFor` fills with `model.ID`
+// (models.go:420) — the id the vendor's own `/api/models/available` answered
+// with (`parseModels` reads `modelId` into `ID`, models.go:256-264).
+// `ModelInfo.ID` carries `publicModelID(model.ID)` (models.go:414), the canonical
+// spelling this deployment publishes; `publicModelIDs` (models.go:379) renames
+// six ids, e.g. `glm-5.3-flash` → `GLM-5.3-Flash`. So the card's main label is
+// the vendor's name and the renamed result appears only as 「请求用名」.
+//
+// The per-row detail keeps every parameter the old card showed, so replacing the
+// card loses no information: the cost marker is reported here rather than being
+// spliced into the label.
+func catalogueModelEntries(catalog []remoteModel) []plugui.ModelEntry {
+	return plugui.ModelEntriesFromInfo(modelInfos(catalog), func(info pluginapi.ModelInfo) string {
+		detail := "上下文未知"
+		if info.ContextLength > 0 {
+			detail = fmt.Sprintf("上下文 %d", info.ContextLength)
+		}
+		if info.MaxCompletionTokens > 0 {
+			detail += fmt.Sprintf("，单次输出上限 %d", info.MaxCompletionTokens)
+		}
+		if len(info.SupportedInputModalities) > 1 {
+			detail += "，图片 是"
+		} else {
+			detail += "，图片 否"
+		}
+		for _, model := range catalog {
+			if publicModelID(model.ID) != info.ID {
+				continue
+			}
+			if summary := costSummary(model); summary != "" {
+				detail += "，" + summary
+			}
+			if thinking := thinkingDisplayNames(model); thinking != "" {
+				detail += "，思考档位 " + thinking
+			}
+			break
+		}
+		return detail
+	})
+}
+
+// costSummary describes a model's cost multiplier without touching its name.
+func costSummary(model remoteModel) string {
+	if model.CostMultiplier == nil {
+		return ""
+	}
+	if *model.CostMultiplier == 0 {
+		return "免费"
+	}
+	return fmt.Sprintf("倍率 x%g", *model.CostMultiplier)
 }
 
 // catalogueRefreshAction is the GET link that triggers a manual refresh.
@@ -286,10 +345,9 @@ func catalogueRefreshAction() plugui.Action {
 }
 
 // catalogueControlCard is the catalogue card for the no-account state: a fresh
-// install still sees where the catalogue comes from and what the refresh does.
-func catalogueControlCard() template.HTML {
-	return plugui.Card("模型目录", plugui.Fields(catalogueFields(settings())...), catalogueRefreshAction())
-}
+// install still sees the models this deployment would publish, where they come
+// from, and what the refresh does.
+func catalogueControlCard() template.HTML { return renderModelCard() }
 
 // catalogSource reports whether the advertised catalog is the discovered one or
 // the static fallback.
@@ -298,38 +356,6 @@ func catalogSource() string {
 		return "远端 /api/models/available（已缓存）"
 	}
 	return "内置兜底列表（未发现远端目录）"
-}
-
-// modelParameterSummary renders the parameters consumed for one model.
-func modelParameterSummary(model remoteModel) string {
-	parts := make([]string, 0, 5)
-	if model.ContextWindow != nil {
-		parts = append(parts, fmt.Sprintf("上下文 %d", *model.ContextWindow))
-	}
-	if model.MaxTokens != nil {
-		parts = append(parts, fmt.Sprintf("单次输出上限 %d", *model.MaxTokens))
-	}
-	if model.Thinking != nil {
-		pairs := make([]string, 0, len(model.Thinking.Options))
-		for _, option := range model.Thinking.Options {
-			pairs = append(pairs, option.Level+"→"+option.OpenclawLevel)
-		}
-		parts = append(parts, "思考档位(展示→wire) "+strings.Join(pairs, ", "))
-	}
-	if model.SupportsImage != nil {
-		parts = append(parts, "图片 "+yesNo(*model.SupportsImage))
-	}
-	if model.CostMultiplier != nil {
-		if *model.CostMultiplier == 0 {
-			parts = append(parts, "免费")
-		} else {
-			parts = append(parts, "倍率 x"+fmt.Sprintf("%g", *model.CostMultiplier))
-		}
-	}
-	if len(parts) == 0 {
-		return "远端未下发参数（仅 id/name）"
-	}
-	return strings.Join(parts, "；")
 }
 
 // renderAccountList renders the switcher across accounts.

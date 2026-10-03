@@ -7,7 +7,15 @@
 // `/v0/resource/plugins/...`). CPAMP additionally injects a stylesheet into the
 // iframe <head> that defines the host theme as CSS custom properties, so a page
 // only has to consume those variables to look native in both light and dark
-// themes — no JavaScript, no build step, no asset pipeline.
+// themes — no build step and no asset pipeline.
+//
+// Pages are served without JavaScript as the baseline: every fact a page states
+// is in the markup, so the page is complete before any script runs. A page MAY
+// add a small inline script for a purely local affordance — the model-catalogue
+// filter (catalogue.go) is the one in use — and it must degrade to "the control
+// does nothing, every row still visible". Verified to execute in
+// CPA-Manager-Plus's plugin iframe: same origin, no `sandbox` attribute, and no
+// Content-Security-Policy on the route.
 //
 // The variables the host guarantees are:
 //
@@ -117,6 +125,34 @@ a { color: var(--primary-color, #1f6feb); }
 .badge.warning { border-color: var(--warning-color, #9a6700); color: var(--warning-color, #9a6700); }
 .badge.danger  { border-color: var(--danger-color, #cf222e);  color: var(--danger-color, #cf222e); }
 .muted { color: var(--text-secondary, #59636e); }
+/* catalogue: the filter and the model table. A model's routing name gets its own
+   quiet line so the provider's own name stays the prominent one. */
+.cat-filter { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.cat-filter input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  color: var(--text-primary, #1f2328);
+  background: var(--app-input-bg, var(--bg-tertiary, #f6f8fa));
+  border: 1px solid var(--app-border, var(--border-color, #d8dee4));
+  border-radius: var(--app-radius-sm, 6px);
+  padding: 6px 10px;
+}
+.cat-filter input:focus {
+  outline: none;
+  border-color: var(--focus-border, var(--primary-color, #1f6feb));
+  background: var(--app-input-bg-focus, var(--app-input-bg, #ffffff));
+}
+.cat-table { width: 100%; border-collapse: collapse; margin: 0; }
+.cat-table td { padding: 5px 0; vertical-align: top; word-break: break-all; }
+.cat-table tbody tr + tr td { border-top: 1px solid var(--app-border, var(--border-color, #d8dee4)); }
+.cat-routed {
+  display: block;
+  font-size: 12px;
+  color: var(--text-tertiary, var(--text-secondary, #59636e));
+}
+.cat-detail { display: block; font-size: 12px; }
+.cat-none { margin: 10px 0 0; }
 code { background: var(--app-surface-muted, var(--bg-tertiary, #f6f8fa)); padding: 1px 5px; border-radius: 4px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
 </style>

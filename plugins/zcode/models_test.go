@@ -256,13 +256,13 @@ func TestHandleModelForAuthUsesTheCredentialPrefix(t *testing.T) {
 	}
 }
 
-// TestParseBuiltinModelsAcceptsBothShapes covers the measured object shape and the
-// array alternative.
+// TestParseBuiltinModelsAcceptsBothShapes covers the array shape the endpoint
+// currently sends and the object-keyed-by-index shape an earlier measurement saw.
 //
-// ⚠ `builtinModels` is an OBJECT keyed by an index string — measured as
-// `{"0": {...}, "1": {...}}`. Testing it with an array check yields the false
-// negative "zero models", which is what pushed the reference onto a guessed
-// fallback table in the first place.
+// `builtinModels` measured 2026-10-03 (live endpoint, anonymous and with a
+// credential) is an ARRAY. The object shape stays covered because the reference's
+// `Array.isArray` check produced the false negative "zero models" on it, which is
+// what pushed the reference onto a guessed fallback table.
 func TestParseBuiltinModelsAcceptsBothShapes(t *testing.T) {
 	entry := map[string]any{
 		"modelId":             "GLM-5.3-Flash",

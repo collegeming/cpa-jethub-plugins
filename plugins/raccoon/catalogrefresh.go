@@ -208,6 +208,75 @@ func publishText(result catalog.Result) string {
 	}
 }
 
+// catalogueRefreshAction is the GET link that triggers a manual refresh. It is
+// repeated on the catalogue card because that is the card an operator is looking
+// at when they want a refresh; the settings card carries the same action.
+func catalogueRefreshAction() plugui.Action {
+	return plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"}
+}
+
+// catalogueForPage returns the listing the status page renders plus the source
+// line that describes those very rows.
+//
+// It never touches the network: the cached remote listing when one was fetched,
+// the bundled table otherwise. A page load must not trigger a fetch — the card
+// reports what this deployment currently has — which is why `activeCatalogue` is
+// deliberately not used here: on a cold cache it CALLS the vendor, and a page
+// view is not a reason to ask upstream anything.
+func catalogueForPage(cfg Config) ([]catalogueEntry, string) {
+	if !cfg.DiscoverModels {
+		return fallbackModels(), "内置兜底表（discover_models 已关闭，不访问网络）"
+	}
+	if cached, fetchedAt := peekCachedModels(); len(cached) > 0 {
+		return cached, "实时目录 GET " + ModelCatalogPath + "（缓存于 " +
+			fetchedAt.Local().Format("15:04") + "）"
+	}
+	return fallbackModels(), "内置兜底表（实时目录 GET " + ModelCatalogPath + " 尚未拉取）"
+}
+
+// catalogueModelEntries maps the page's listing onto the shared card's rows.
+//
+// Native is `catalogueEntry.ID`, the wire `name` field the vendor's own catalogue
+// publishes and accepts requests under. `normaliseCatalogueEntry` reads it
+// verbatim (models.go:267-268 — "⚠️ `name` is the MODEL ID, not a display name"),
+// and this provider applies no rename of its own (models.go:19-23 — "The id is
+// used verbatim — no lowercasing, no alias table, no provider prefix"). So Native
+// and the routing name are the same string here, and the card correctly grows no
+// 「请求用名」 row: claiming a rename would be a fiction.
+//
+// `ModelInfo.Name` is deliberately NOT the source. `catalogueEntry.info` fills it
+// with `displayName()` (models.go:119,134) — a locally composed
+// `description · x<multiplier>`, pinned by models_test.go:49-55. That suffix is
+// this plugin's own annotation rather than anything the vendor said, so using it
+// as Native would present local rendering as upstream data and would also
+// re-introduce the price into the label the user asked to be upstream's own name.
+// The vendor's human label and the multiplier move to the row's detail instead,
+// which keeps README.md:31's "模型价格随名称显示" visible on the page (the client's
+// own model picker still gets the priced name through `info()`, untouched).
+func catalogueModelEntries(entries []catalogueEntry) []plugui.ModelEntry {
+	now := time.Now()
+	rows := make([]plugui.ModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		info := entry.info(now)
+		// The vendor's human label plus this plugin's multiplier rendering, i.e.
+		// the exact string the old card showed (`Kimi-K3 · x1`). It stays in the
+		// detail so the price remains on every row — including x1, for the reason
+		// models.go:89-91 gives — while the label above it is the vendor's id.
+		detail := entry.displayName()
+		if info.ContextLength > 0 {
+			detail += "，上下文 " + strconv.FormatInt(info.ContextLength, 10)
+		}
+		detail += "，最大输出 " + strconv.FormatInt(info.MaxCompletionTokens, 10)
+		if len(info.SupportedInputModalities) > 1 {
+			detail += "，输入 text+image"
+		} else {
+			detail += "，输入 text"
+		}
+		rows = append(rows, plugui.ModelEntry{Native: entry.ID, ID: entry.ID, Detail: detail})
+	}
+	return rows
+}
+
 // catalogueCacheText reports what the catalogue cache currently holds.
 func catalogueCacheText() string {
 	cached, fetchedAt := peekCachedModels()

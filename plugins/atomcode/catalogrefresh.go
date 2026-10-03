@@ -71,6 +71,58 @@ func catalogueRefresh(h *abiboot.Host, cfg Config) (catalog.Outcome, error) {
 	return catalog.Outcome{Models: len(serving), Changed: !sameIDSet(previousIDs, ids)}, nil
 }
 
+// catalogueForPage returns the catalogue the status page should list, without
+// touching the network: the cached remote listing when one was fetched for this
+// account, the bundled snapshot (plus configured extras) otherwise. A page load
+// must never trigger a fetch — the card reports what this deployment currently
+// serves, and a monitoring poll of `/status` would otherwise become an upstream
+// request on every hit.
+//
+// The whole cache is scanned rather than one tier's key, because the tier is
+// decided by `resolvePlanType`, which calls `status-v2` and is therefore itself a
+// network call. The cached entry is labelled with its fetch time so a figure that
+// came from an older tier is never presented as current.
+func catalogueForPage(cfg Config, credential *Credential) ([]modelEntry, string) {
+	if entry, ok := cataloguePeekEntry(credential); ok {
+		return append([]modelEntry(nil), entry.models...),
+			"服务端 models-v2（缓存于 " + entry.fetched.Local().Format("15:04") + "）"
+	}
+	if !cfg.DiscoverModels {
+		return pageFallbackEntries(cfg), "内置快照（discover_models 已关闭）"
+	}
+	return pageFallbackEntries(cfg), "内置快照（尚未拉取服务端目录）"
+}
+
+// pageFallbackEntries is the bundled snapshot plus the operator's extras — the
+// same list `staticModelEntries` degrades to, minus the fetch that produced it.
+func pageFallbackEntries(cfg Config) []modelEntry {
+	return append(append([]modelEntry(nil), fallbackCatalogue...),
+		extraEntries(cfg.ExtraModels, fallbackCatalogue)...)
+}
+
+// cataloguePeekEntry returns the account's most recently cached catalogue and
+// the time it was fetched, without touching the network.
+func cataloguePeekEntry(credential *Credential) (catalogue, bool) {
+	account := credential.AccountID()
+	if strings.TrimSpace(account) == "" {
+		return catalogue{}, false
+	}
+	catalogueMu.Lock()
+	defer catalogueMu.Unlock()
+	var newest catalogue
+	found := false
+	for key, entry := range catalogueCache {
+		if !strings.HasPrefix(key, account+"|") || len(entry.models) == 0 {
+			continue
+		}
+		if !found || entry.fetched.After(newest.fetched) {
+			newest = entry
+			found = true
+		}
+	}
+	return newest, found
+}
+
 // cataloguePeek returns the account's cached catalogue without touching the
 // network, so the caller can compare the pre- and post-refresh listings.
 func cataloguePeek(credential *Credential) []modelEntry {

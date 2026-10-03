@@ -30,6 +30,10 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 				),
 				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 			),
+			// The catalogue card is shown without an account too: the bundled
+			// snapshot is what this channel would serve, and hiding the model list
+			// behind a login would leave the page unable to answer its own question.
+			modelCard(cfg, nil),
 		)
 	}
 
@@ -37,7 +41,8 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	if !found {
 		return plugui.HTML("AtomCode 状态",
 			plugui.Card("账号不存在", plugui.Notice("danger", "指定的 auth_index 不存在"),
-				plugui.Action{Label: "返回", Path: "status"}))
+				plugui.Action{Label: "返回", Path: "status"}),
+			modelCard(cfg, nil))
 	}
 
 	cards := []template.HTML{}
@@ -79,7 +84,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	))
 
 	cards = append(cards, planCard(h, cfg, credential, selected)...)
-	cards = append(cards, modelCard(h, cfg, credential))
+	cards = append(cards, modelCard(cfg, credential))
 	cards = append(cards, plugui.Card("接入参数",
 		plugui.Fields(configRows(cfg)...)))
 	return plugui.HTML("AtomCode 状态", cards...)
@@ -161,58 +166,104 @@ func planCard(h *abiboot.Host, cfg Config, credential *Credential, entry plugina
 }
 
 // modelCard renders the serving catalogue and says where it came from.
-func modelCard(h *abiboot.Host, cfg Config, credential *Credential) template.HTML {
-	source := modelSource(h, cfg, credential)
-	entries := staticModelEntries(h, cfg, credential)
-	rows := make([]plugui.Field, 0, len(entries))
+//
+// The rows come from `catalogueForPage`, which is cache-or-snapshot ONLY: a page
+// load must never call upstream, or every monitoring poll of `/status` would
+// become a `models-v2` request. `modelSource` and `staticModelEntries` both fetch
+// (they must, for `model.for_auth`), so they are deliberately not used here.
+//
+// The card is the shared one, so it lists the provider's own model names with a
+// filter once the list is long enough — the per-model metadata this plugin used
+// to spell out in a `Field` value now rides along as each row's detail.
+func modelCard(cfg Config, credential *Credential) template.HTML {
+	entries, source := catalogueForPage(cfg, credential)
 	extra := 0
 	for _, entry := range entries {
-		detail := ""
-		if entry.ContextWindow != nil {
-			detail = itoa(entry.effectiveContextWindow()) + " ctx"
-		}
-		if entry.acceptsImages() {
-			detail += " · 支持图片"
-		}
-		if len(entry.ReasoningEffortLevels) > 0 {
-			detail += " · 思考级别 " + strings.Join(entry.ReasoningEffortLevels, "/")
-		}
 		if entry.FromConfig {
 			extra++
-			if detail == "" {
-				detail = "服务端目录未下发"
-			}
-			detail = "补充模型 · " + detail
 		}
-		if detail == "" {
-			detail = "服务端未声明窗口"
-		}
-		rows = append(rows, plugui.Field{Label: entry.DisplayModelName, Value: detail})
 	}
-	notice := plugui.Notice("", "模型目录来自服务端 models-v2（来源："+modelSourceLabel(source)+"）。")
+	notice := plugui.Notice("", "模型目录来自服务端 models-v2（来源："+source+"）。")
 	if extra > 0 {
 		notice = plugui.Notice("warning",
 			"其中 "+itoa(extra)+" 个是 extra_models 补充的模型：网关能调用，但服务端目录已不下发，"+
 				"因此不受套餐目录背书——随时可能被上游撤下，请以实际调用结果为准。")
 	}
-	return plugui.Card("可用模型",
-		plugui.Group(notice,
-			plugui.Fields(
-				plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
-				plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
+	return plugui.Group(
+		// The source / cache / background-refresh facts keep their own card: they
+		// describe HOW the catalogue is obtained, while the shared card below
+		// answers WHICH models it holds. Merging them would put three fields and a
+		// long list under one heading and bury the list.
+		plugui.Card("可用模型",
+			plugui.Group(
+				notice,
+				plugui.Fields(
+					plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+					plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
+				),
 			),
-			plugui.Fields(rows...),
+			plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
 		),
-		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+		plugui.CatalogueCard(plugui.ModelCatalogue{
+			Source:      source,
+			Entries:     catalogueModelEntries(entries, cfg, credential),
+			EmptyNotice: "暂无模型：服务端目录尚未拉取，且内置快照为空。",
+			Actions: []plugui.Action{
+				{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+			},
+		}),
 	)
 }
 
-// modelSourceLabel renders a model-source code for people.
-func modelSourceLabel(source string) string {
-	if source == "server" {
-		return "服务端实时目录"
+// catalogueModelEntries maps the serving entries onto the shared card's rows.
+//
+// Native is `DisplayModelName`, the gateway's OWN id — `models-v2` returns it
+// verbatim as `display_model_name`, and it is the spelling the gateway answers to
+// (the request path translates back to it, `upstreamModelName`).
+//
+// ID is taken from `modelInfos`, the very descriptors this plugin hands the host,
+// so the routing name shown is the one a request must carry — including the
+// account prefix when `model_prefix` is on. Recomputing it here instead would
+// duplicate that rule and let the page drift from what the host registered.
+//
+// The per-model metadata this plugin already published is kept as the row's
+// detail, because it was the only place a reader could see the context window,
+// the image capability and the effort ladder together.
+func catalogueModelEntries(entries []modelEntry, cfg Config, credential *Credential) []plugui.ModelEntry {
+	infos := modelInfos(entries, cfg, credential)
+	rows := make([]plugui.ModelEntry, 0, len(entries))
+	for index, entry := range entries {
+		rows = append(rows, plugui.ModelEntry{
+			Native: entry.DisplayModelName,
+			ID:     infos[index].ID,
+			Detail: modelEntryDetail(entry),
+		})
 	}
-	return "内置快照（服务端目录不可用时使用）"
+	return rows
+}
+
+// modelEntryDetail renders one entry's metadata for the card's trailing line.
+func modelEntryDetail(entry modelEntry) string {
+	detail := ""
+	if entry.ContextWindow != nil {
+		detail = itoa(entry.effectiveContextWindow()) + " ctx"
+	}
+	if entry.acceptsImages() {
+		detail += " · 支持图片"
+	}
+	if len(entry.ReasoningEffortLevels) > 0 {
+		detail += " · 思考级别 " + strings.Join(entry.ReasoningEffortLevels, "/")
+	}
+	if entry.FromConfig {
+		if detail == "" {
+			detail = "服务端目录未下发"
+		}
+		detail = "补充模型 · " + detail
+	}
+	if detail == "" {
+		detail = "服务端未声明窗口"
+	}
+	return detail
 }
 
 // renderRefreshNotice reports what the pre-flight credential check did.

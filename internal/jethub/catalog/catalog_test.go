@@ -485,3 +485,47 @@ func TestSchedulerTickPublishesOnChangeAndStaysSilentOtherwise(t *testing.T) {
 		t.Errorf("saves = %d, want exactly 1 for one change", saves)
 	}
 }
+
+// The run tally describes one armed loop, so a caller must be able to start
+// counting from zero: the scheduler is a package-level singleton, and without
+// this a tick from an earlier test reads as "this loop already ran".
+func TestSchedulerResetCountersClearsTheTally(t *testing.T) {
+	fixture := &fakeHost{listOK: true}
+	fixture.install(t)
+
+	scheduler := NewScheduler(10 * time.Millisecond)
+	scheduler.Start(Request{
+		Host:     &abiboot.Host{},
+		Provider: "demo",
+		Refresh:  func() (Outcome, error) { return Outcome{Models: 1}, nil },
+	})
+	defer scheduler.Stop()
+
+	deadline := time.After(3 * time.Second)
+	for {
+		if _, runs, _, _ := scheduler.Status(); runs > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the scheduler never ran")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	scheduler.ResetCounters()
+	_, runs, lastRun, lastErr := scheduler.Status()
+	if runs != 0 {
+		t.Errorf("runs = %d after ResetCounters, want 0", runs)
+	}
+	if !lastRun.IsZero() {
+		t.Errorf("lastRun = %v after ResetCounters, want the zero time", lastRun)
+	}
+	if lastErr != "" {
+		t.Errorf("lastErr = %q after ResetCounters, want empty", lastErr)
+	}
+	// ResetCounters must not disturb the interval or stop the loop.
+	if interval, _, _, _ := scheduler.Status(); interval != 10*time.Millisecond {
+		t.Errorf("interval = %v after ResetCounters, want it unchanged", interval)
+	}
+}

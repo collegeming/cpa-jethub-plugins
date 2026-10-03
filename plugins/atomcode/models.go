@@ -395,6 +395,15 @@ func modelInfoFor(entry modelEntry, prefix string) pluginapi.ModelInfo {
 		// parts on every model that declares `supports_vision`.
 		modalities = append(modalities, "image")
 	}
+	// Two names, and the order matters: `DisplayModelName` is the gateway's OWN
+	// id (the `glm5.3-flash` spelling it answers to), while `display` is the
+	// canonical name this deployment routes by. `ID` is the routing name the host
+	// registers and that requests carry; `Name` is the provider-native spelling,
+	// carried WITHOUT the account prefix — the prefix is a deployment artifact of
+	// this plugin, not something the gateway calls the model.
+	// Publishing the canonical name in BOTH fields made `Name` a copy of the
+	// rename, so a reader of `Name` learned nothing about what the gateway calls
+	// the model (`models-v2` returns `display_model_name: "glm5.3-flash"`).
 	display := canonicalModelName(entry.DisplayModelName)
 	info := pluginapi.ModelInfo{
 		ID:                         prefix + display,
@@ -403,7 +412,7 @@ func modelInfoFor(entry modelEntry, prefix string) pluginapi.ModelInfo {
 		OwnedBy:                    ProviderKey,
 		Type:                       "chat",
 		DisplayName:                display,
-		Name:                       prefix + display,
+		Name:                       entry.DisplayModelName,
 		Description:                modelDescription(display, entry.FromConfig),
 		ContextLength:              int64(contextWindow),
 		InputTokenLimit:            int64(contextWindow),

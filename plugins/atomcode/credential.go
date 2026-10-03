@@ -137,6 +137,13 @@ func (c *Credential) Label() string {
 }
 
 // AccountID is the stable identity used for prefixes and file names.
+//
+// A nil receiver yields "": the status page renders the catalogue card with no
+// account bound (so the page still answers which models the channel serves), and
+// a missing credential is exactly the "no identity" case rather than a fault.
 func (c *Credential) AccountID() string {
+	if c == nil {
+		return ""
+	}
 	return strings.TrimSpace(c.User.ID)
 }

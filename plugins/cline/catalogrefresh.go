@@ -7,6 +7,7 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/catalog"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/plugui"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -117,3 +118,34 @@ func startCatalogueScheduler(cfg Config) {
 
 // stopCatalogueScheduler ends the background loop at shutdown.
 func stopCatalogueScheduler() { catalogueScheduler.Stop() }
+
+// catalogueForPage returns the catalogue the status page should list, without
+// touching the network: the cached remote listing when one was fetched, the
+// static table otherwise. A page load must never trigger a fetch — the card
+// reports what this deployment currently publishes.
+//
+// The rows carry the provider's OWN model name (`ModelInfo.Name`, filled from the
+// vendor's answer) rather than the routed id, because the card answers "which
+// models does Cline offer". The two differ where this deployment renames an id so
+// one model does not appear twice under two spellings.
+func catalogueForPage() ([]pluginapi.ModelInfo, string) {
+	if cached, fetchedAt := discoveredModels.peek(); len(cached) > 0 {
+		return cached, "线上目录（缓存于 " + fetchedAt.Local().Format("15:04") + "）"
+	}
+	cfg := settings()
+	if !cfg.ModelDiscovery {
+		return staticModelInfos(), "内置静态表（model_discovery 已关闭）"
+	}
+	return staticModelInfos(), "内置静态表（尚未拉取线上目录）"
+}
+
+// catalogueModelEntries maps the page's listing onto the shared card's rows.
+func catalogueModelEntries(infos []pluginapi.ModelInfo) []plugui.ModelEntry {
+	return plugui.ModelEntriesFromInfo(infos, func(info pluginapi.ModelInfo) string {
+		detail := "上限 " + trimNumber(float64(info.MaxCompletionTokens))
+		if len(info.SupportedInputModalities) > 0 {
+			detail += "，输入 " + strings.Join(info.SupportedInputModalities, "+")
+		}
+		return detail
+	})
+}

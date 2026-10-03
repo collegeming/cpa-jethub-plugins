@@ -168,6 +168,11 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 				),
 				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 			),
+			// The catalogue renders here too: with no credential it is the
+			// bundled table, and it answers "which models does this channel
+			// offer" without an account having to be configured first. Nothing
+			// is fetched — `catalogueCard` peeks this plugin's cache only.
+			catalogueCard(cfg, nil),
 		)
 	}
 
@@ -272,6 +277,11 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	body = append(body, plugui.Card("通道与模型", plugui.Group(plugui.Fields(catalogFields...)),
 		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
 	))
+
+	// The catalogue itself, listed by upstream's own model names. It renders from
+	// this plugin's cache or the bundled table and never calls the vendor: the
+	// counters above answer "how many", this answers "which".
+	body = append(body, catalogueCard(cfg, credential))
 
 	// One sweep, one credit card per account: each card carries that account's
 	// own figures, never the selected account's repeated.

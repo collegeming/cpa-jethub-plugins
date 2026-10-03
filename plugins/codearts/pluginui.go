@@ -163,21 +163,74 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	return plugui.HTML("CodeArts Agent", body...)
 }
 
-// renderCatalogueCard reports the catalogue source and carries the manual
-// refresh.
+// renderCatalogueCard renders the shared 「模型目录」 card: what this deployment
+// publishes, listed by the provider's OWN model names, with the manual refresh.
 //
 // The refresh is the only control in this plugin that rewrites an auth file: the
 // write is what makes the host re-register this provider's models, and the host
 // has no ABI call for that. The background automatic refresh, when enabled,
 // covers the plugin's cache only.
 func renderCatalogueCard(cfg Config) template.HTML {
-	return plugui.Card("模型目录", plugui.Fields(
-		plugui.Field{Label: "数据来源", Value: catalogueSourceText(cfg)},
-		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
-		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
-	),
-		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
-	)
+	models, source := catalogueForPage(cfg)
+	emptyNotice := "暂无模型：线上目录尚未拉取，且内置列表为空。"
+	if !cfg.DiscoverModels {
+		emptyNotice = "暂无模型：discover_models 已关闭，内置列表为空。"
+	}
+	return plugui.CatalogueCard(plugui.ModelCatalogue{
+		Source:      source,
+		Entries:     catalogueModelEntries(models),
+		EmptyNotice: emptyNotice,
+		Actions: []plugui.Action{
+			{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+		},
+	})
+}
+
+// catalogueForPage returns the listing the status page renders, plus the source
+// line that describes those very rows.
+//
+// It never touches the network: the cached remote listing when one was fetched,
+// the built-in table otherwise. A page load must not trigger a fetch — the card
+// reports what this deployment currently has.
+//
+// The cache and background-refresh lines are folded into Source rather than
+// rendered as separate fields, because the shared card owns its own footer and
+// these three facts describe one thing: where the rows below came from.
+func catalogueForPage(cfg Config) ([]pluginapi.ModelInfo, string) {
+	trailer := "；线上目录缓存：" + catalogueCacheText() + "；后台自动刷新：" + autoRefreshText(cfg)
+	if !cfg.DiscoverModels {
+		return staticModelInfos(), catalogueSourceText(cfg) + trailer
+	}
+	// peek, not get: the rows must match the cache line beside them, and a
+	// listing that fell out of its TTL is still what was last fetched.
+	if cached, _ := discoveredModels.peek(); len(cached) > 0 {
+		return cached, catalogueSourceText(cfg) + "，当前列出缓存结果" + trailer
+	}
+	return staticModelInfos(), catalogueSourceText(cfg) + "，线上目录尚未拉取，当前列出内置列表" + trailer
+}
+
+// catalogueModelEntries maps the page's listing onto the shared card's rows.
+//
+// Native is `ModelInfo.Name`, which `modelInfoFor` fills with the CodeArts-native
+// id (`models.go:195`: `Name: id`); `ModelInfo.ID` carries `publicModelID(id)` —
+// the renamed, client-facing spelling (`models.go:184,189`). So the card's main
+// label is the vendor's own name and the renamed result appears only as
+// 「请求用名」.
+//
+// `id` itself is the vendor's own spelling: `recordModel` normalises the raw
+// `model_id` and stores the raw `model_name` beside it (models.go:366-381), so
+// the map `discoverModels` walks is keyed by vendor ids.
+func catalogueModelEntries(models []pluginapi.ModelInfo) []plugui.ModelEntry {
+	return plugui.ModelEntriesFromInfo(models, func(info pluginapi.ModelInfo) string {
+		// A model absent from `contextWindows` is advertised without a limit
+		// rather than with a guessed one, so the row says so instead of
+		// printing 0.
+		window := "上下文未知"
+		if info.ContextLength > 0 {
+			window = fmt.Sprintf("上下文 %d", info.ContextLength)
+		}
+		return window + fmt.Sprintf("，输出上限 %d", info.MaxCompletionTokens)
+	})
 }
 
 // catalogueSourceText describes where the published catalogue comes from.

@@ -55,6 +55,10 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 				"同一页也提供手机验证码登录作为备用路径。"),
 			plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 		))
+		// The catalogue renders here too: it is the bundled table until a
+		// credential exists, and it answers "which models does this channel
+		// offer" without needing an account to be configured first.
+		body = append(body, catalogueCard(cfg))
 		return pluguiPage("Loomy", body...)
 	}
 
@@ -73,11 +77,10 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	}
 	body = append(body, renderAccountList(accounts, entry.AuthIndex))
 
-	// The catalogue is a property of the selected account's credential, so it
-	// stays a single card for the selected one.
-	if credential, errCredential := credentialOf(h, entry); errCredential == nil {
-		body = append(body, catalogueCard(h, credential, cfg))
-	}
+	// The catalogue is a property of the configuration, not of one account's
+	// credential: `catalogueForPage` reads this plugin's own cache and the
+	// bundled table, so the card renders even when a credential is unreadable.
+	body = append(body, catalogueCard(cfg))
 	return pluguiPage("Loomy", body...)
 }
 
@@ -146,30 +149,31 @@ func accountQuery(entry pluginapi.HostAuthFileEntry) string {
 	return "auth_index=" + entry.AuthIndex
 }
 
-// catalogueCard renders the model catalogue currently in use.
-func catalogueCard(h *abiboot.Host, credential *Credential, cfg Config) template.HTML {
-	label := "内置兜底目录"
+// catalogueCard renders the shared 「模型目录」 card: the models this channel
+// offers, listed by the names the VENDOR publishes, with the manual refresh.
+//
+// It REPLACES the hand-written card that used to live here, rather than sitting
+// beside it: two cards both titled 模型目录 would leave a reader unsure which one
+// answers "which models does this channel offer". The old card rendered one
+// `plugui.Field` per model, labelled by `info.ID` (the wire slug) and valued by
+// `entry.displayName()` (the vendor name with its multiplier). The shared card
+// shows the vendor's own name as the label, the slug as 「请求用名」, and keeps
+// the multiplier — it is part of the vendor's own name, per models.go:19-23.
+//
+// The listing comes from `catalogueForPage`, which never touches the network: a
+// page view must not be what makes this deployment call the vendor.
+func catalogueCard(cfg Config) template.HTML {
+	entries, source := catalogueForPage(cfg)
+	emptyNotice := "暂无模型：内置兜底表为空。"
 	if cfg.DiscoverModels {
-		label = "实时目录（GET /models，失败时回退到内置目录）"
+		emptyNotice = "暂无模型：实时目录尚未拉取，且内置兜底表为空。"
 	}
-	entries := activeCatalogue(h, credential, cfg)
-	fields := []plugui.Field{
-		{Label: "来源", Value: label},
-		{Label: "数量", Value: itoaInt(len(entries))},
-	}
-	now := time.Now()
-	infos := make([]pluginapi.ModelInfo, 0, len(entries))
-	for _, entry := range entries {
-		infos = append(infos, entry.info(now))
-	}
-	for _, info := range infos {
-		modalities := strings.Join(info.SupportedInputModalities, "+")
-		fields = append(fields, plugui.Field{
-			Label: info.ID,
-			Value: fmt.Sprintf("%s（上下文 %s，输入 %s）", info.DisplayName, trimAmount(float64(info.ContextLength)), modalities),
-		})
-	}
-	return plugui.Card("模型目录", plugui.Fields(fields...))
+	return plugui.CatalogueCard(plugui.ModelCatalogue{
+		Source:      source,
+		Entries:     catalogueModelEntries(entries),
+		EmptyNotice: emptyNotice,
+		Actions:     []plugui.Action{catalogueRefreshAction()},
+	})
 }
 
 // renderAccountList renders the switcher across accounts.

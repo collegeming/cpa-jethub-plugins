@@ -82,7 +82,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	for _, state := range states {
 		body = append(body, renderAccountCard(state, state.Entry.AuthIndex == entry.AuthIndex))
 	}
-	body = append(body, renderModelCard(entries))
+	body = append(body, renderModelCard(cfg, entries))
 	body = append(body, renderAccountList(accounts, entry.AuthIndex))
 	return pluguiPage("MiniMax Code", body...)
 }
@@ -201,48 +201,101 @@ func signinText(state accountState) string {
 	}
 }
 
-// renderModelCard lists the published catalogue with its thinking matrix.
+// renderModelCard renders the shared 「模型目录」 card: the catalogue this
+// deployment publishes, listed by the provider's OWN model names, with the
+// thinking matrix this provider's rows need.
 //
-// The matrix is shown because it is the one thing about this provider a user
+// The matrix is kept because it is the one thing about this provider a user
 // cannot infer: two models look identical in a picker and behave completely
 // differently when "thinking off" is requested.
-func renderModelCard(entries []ModelCatalogEntry) template.HTML {
-	rows := make([]plugui.Field, 0, len(entries)*3)
+//
+// The window note the old card carried now rides in the rows' own detail, so the
+// reading it documents — the max `context_window_options` tier, not
+// `limit.context` — is next to the number it applies to.
+//
+// cfg is passed in rather than re-read from settings(), so the source line and
+// the rows it describes always come from one configuration snapshot.
+func renderModelCard(cfg Config, entries []ModelCatalogEntry) template.HTML {
+	return plugui.CatalogueCard(plugui.ModelCatalogue{
+		Source:      catalogueSourceText(cfg) + "；线上目录缓存：" + catalogueCacheText(),
+		Entries:     catalogueModelEntries(entries),
+		EmptyNotice: "暂无模型：远端目录尚未拉取，且内置兜底表为空。",
+		Actions: []plugui.Action{
+			{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+		},
+	})
+}
+
+// catalogueModelEntries maps the catalogue onto the shared card's rows.
+//
+// Native is the model's OWN id — `MiniMax-M3.1-Flash-Preview`, the key the
+// vendor's catalogue object uses and the id the inference endpoint expects
+// (`parseModelsPayload` sets `entry.ID = strings.TrimSpace(id)` from the object
+// KEY, models.go:194; `ModelCatalogEntry.ID`'s doc, product.go:133-135). `Name` is
+// the SHORT display name the official IDE shows
+// (`M3.1-Flash-Preview`), which is a different fact and becomes the row's detail
+// rather than its label — so the card lists what a request may name, and the
+// friendly spelling is not mistaken for it.
+//
+// This plugin has no rename table: `modelInfoFor` (models.go:338,344) sets
+// `ID: entry.ID` and `Name: entry.Name`, so there is no renamed routing id to
+// report here and the card never renders a 「请求用名」 line.
+func catalogueModelEntries(entries []ModelCatalogEntry) []plugui.ModelEntry {
+	rows := make([]plugui.ModelEntry, 0, len(entries))
 	for _, entry := range entries {
-		thinking := "未知（目录未声明思考模式）"
-		switch entry.ThinkingMode {
-		case thinkingSwitchable:
-			thinking = "可开关：不传即不思考；开启需显式发 adaptive"
-		case thinkingForcedOn:
-			if requiresAdaptiveThinking(entry.ID) {
-				thinking = "强制开启：必须发 adaptive，传 disabled 会被硬拒（HTTP 400 / 业务码 2013）"
-			} else {
-				thinking = "强制开启：服务端总是思考，传 disabled 会被静默忽略"
-			}
+		parts := make([]string, 0, 4)
+		// The short name is stated only when it is a DIFFERENT spelling: a
+		// catalogue entry whose `name` equals its key would otherwise grow a
+		// line repeating the label beside it.
+		if strings.TrimSpace(entry.Name) != "" && entry.Name != entry.ID {
+			parts = append(parts, "官方显示名 "+entry.Name)
 		}
-		efforts := "无档位"
-		if len(entry.EffortOptions) > 0 {
-			efforts = strings.Join(entry.EffortOptions, " / ")
-		}
-		rows = append(rows,
-			plugui.Field{Label: entry.ID, Value: entry.Name + " · " + contextText(entry) + " · " + efforts},
-			plugui.Field{Label: "思考", Value: thinking},
-		)
+		parts = append(parts, contextText(entry), effortsText(entry), thinkingText(entry))
+		rows = append(rows, plugui.ModelEntry{
+			Native: entry.ID,
+			ID:     entry.ID,
+			Detail: strings.Join(parts, " · "),
+		})
 	}
-	return plugui.Card("模型目录", plugui.Group(
-		plugui.Fields(rows...),
-		plugui.Notice("", "上下文窗口取远端 context_window_options 的最大档（M3.1 与 M3 为 1M），"+
-			"不是 limit.context（M3.1 的 limit.context 只有 512000）。"),
-	))
+	return rows
+}
+
+// effortsText renders the thinking ladder a model publishes.
+func effortsText(entry ModelCatalogEntry) string {
+	if len(entry.EffortOptions) == 0 {
+		return "无档位"
+	}
+	return strings.Join(entry.EffortOptions, " / ")
+}
+
+// thinkingText renders the thinking matrix row for one model.
+func thinkingText(entry ModelCatalogEntry) string {
+	switch entry.ThinkingMode {
+	case thinkingSwitchable:
+		return "思考可开关：不传即不思考；开启需显式发 adaptive"
+	case thinkingForcedOn:
+		if requiresAdaptiveThinking(entry.ID) {
+			return "思考强制开启：必须发 adaptive，传 disabled 会被硬拒（HTTP 400 / 业务码 2013）"
+		}
+		return "思考强制开启：服务端总是思考，传 disabled 会被静默忽略"
+	default:
+		return "思考模式未知（目录未声明）"
+	}
 }
 
 // contextText renders one entry's window and image support.
+//
+// The window is documented where it is shown because the number is the one a
+// reader would otherwise second-guess: it is the MAXIMUM tier of
+// `context_window_options` (M3.1 and M3 reach 1M), not `limit.context` (which is
+// 512000 for M3.1). The host has a single context field, so the max tier is what
+// is published.
 func contextText(entry ModelCatalogEntry) string {
 	window := itoa64(entry.ContextWindow)
 	if entry.ContextWindow <= 0 {
 		window = "窗口未知"
 	} else {
-		window += " 上下文"
+		window += " 上下文（context_window_options 最大档）"
 	}
 	if entry.SupportsImage {
 		return window + " · 支持图片"

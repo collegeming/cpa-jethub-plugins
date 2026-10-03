@@ -248,6 +248,36 @@ imagesStripped := stripImagesForTextModel(request)
 
 ⚠️ **`h.SaveAuth` 的 `Incoming` 可能为空**：登录轮询等回调载荷里不带旧凭据文件，此时 `SaveAuth` 会自己回读宿主持有的文件来保住 `priority`/`weight` 等宿主字段（见 `internal/abiboot/host.go`）。自定义写凭据路径时不要绕开它。
 
+### 5.1e 模型目录卡片必须列出模型，且用上游原名
+
+每个渠道的状态页都有一张「模型目录」卡片，用 `plugui.CatalogueCard` 渲染。它回答的是"这个渠道提供哪些模型"，所以**必须真的列出模型**——只写"来源/缓存/自动刷新"而没有清单，等于这张卡片没有回答问题。
+
+```go
+plugui.CatalogueCard(plugui.ModelCatalogue{
+    Source:  "线上目录（缓存于 22:10）",   // 来源一行
+    Entries: plugui.ModelEntriesFromInfo(models, detail), // 逐条模型
+    Actions: []plugui.Action{{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"}},
+    EmptyNotice: "暂无模型：线上目录尚未拉取。",
+})
+```
+
+**显示上游本身的名称。** `ModelEntry` 有两个名字字段，含义不同：
+
+| 字段 | 是什么 | 出现在卡片上的位置 |
+|---|---|---|
+| `Native` | 上游厂商自己的模型名 | 主标签 |
+| `ID` | 本部署路由用的名字（改名后／带账号前缀） | 仅当与 `Native` 不同时，作为「请求用名」一行 |
+
+`ModelEntriesFromInfo` 从 `pluginapi.ModelInfo` 取这两个值：`Name` → `Native`，`ID` → 路由名。**若插件有改名表**（`publicModelID` / `canonicalModelName` 之类），改名结果是路由名而**不是** `Native`，要确保卡片显示的是上游原名。
+
+⚠️ **不要对卡片应用模型禁用或别名**：`oauth-excluded-models` 与 `oauth-model-alias` 在**宿主**层生效，插件不该重复实现一遍。卡片照上游目录如实列出即可。
+
+⚠️ **去重按路由 id，不按显示名**：上游会让两个不同的模型共用一个显示名（cline 上实测 `qwen/qwen3.8-27b` 与 `qwen/qwen3.8-27b:free` 的显示名都是 `Qwen3.8 27b`，共 12 组）。按显示名去重会**静默删掉真实模型**。
+
+⚠️ **页面加载不触网**：卡片只渲染缓存或静态表里已有的内容。若从未拉取过，就如实显示"尚未拉取"并给 `EmptyNotice`，不要让一次页面浏览触发上游请求。
+
+**筛选框**在模型超过 12 条时才出现，由共享组件实现（纯本地 JS，切换已渲染的行，不发请求）。少于 12 条不渲染——一个列表本来就一屏放得下时，多一个控件只是碍事。
+
 ### 5.2 只有显式 `action=claim` 才允许写
 
 页面加载、监控轮询、hub 的一次状态读取都会 GET 这个路由。没有这个闸，任何一次轮询都在

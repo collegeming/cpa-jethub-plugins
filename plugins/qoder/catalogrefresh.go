@@ -1,7 +1,10 @@
 package main
 
 import (
+	"html/template"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/catalog"
@@ -198,6 +201,73 @@ func catalogueRefreshJSON(h *abiboot.Host, request pluginapi.ManagementRequest) 
 		body["publish_skipped"] = "没有可用的账号文件，未通知宿主重新注册；请先登录一个账号"
 	}
 	return jsonManagementResponse(http.StatusOK, body)
+}
+
+// qoderCatalogueCard renders the shared 「模型目录」 card for one region.
+//
+// ⚠️ Native here is the model name THIS PLUGIN's built-in table publishes — the
+// catalog key (`qmodel_38max`, `dmodel`, …) — and the card says so in its Source
+// line. Qoder has no upstream catalogue endpoint (see the file header: the
+// vendor's listing path is signature-gated and cannot be signed with the shipped
+// WASM artifact), so there is no vendor-side name to display. Substituting a
+// prettier label, or the `display_name` field, as if it were upstream's model
+// name would be an invention presented as data; the task explicitly forbids that.
+//
+// The table's own human label (`catalogModel.Display`) is reported as context
+// instead: it is a locally curated display string from the same built-in table,
+// not a name any upstream endpoint returned.
+//
+// `public_models` entries are listed from `staticModelInfos` too, so the card
+// shows exactly what `model.for_auth` would publish for this region — operator-
+// declared names included, and marked as user-defined rather than as vendor data.
+func qoderCatalogueCard(region Region) template.HTML {
+	infos := staticModelInfos(settings(), region)
+	return plugui.CatalogueCard(plugui.ModelCatalogue{
+		Source:      catalogueSourceText(region) + "；本卡片按内置静态表原样列出（未拉取任何上游目录）",
+		Entries:     qoderCatalogueModelEntries(infos),
+		EmptyNotice: "暂无模型：内置静态表为空，且 public_models 未声明任何模型名。",
+		Actions: []plugui.Action{
+			{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+		},
+	})
+}
+
+// qoderCatalogueModelEntries maps the published listing onto the card's rows.
+//
+// Native is `ModelInfo.Name`, which `modelInfoFor` fills with the built-in
+// table's `catalogModel.Display` (models.go:153) — the catalog's own
+// `display_name` for that model (product.go:74-75) — and, for `public_models`
+// rows, the operator's declared name (models.go:201). `ModelInfo.ID` is the
+// routing name: the catalog `Key` requests are addressed with (models.go:147,
+// product.go:70-73).
+//
+// ⚠️ The built-in rows therefore legitimately show a 「请求用名」 line: the table's
+// model name (`DeepSeek-V4-Pro`) and the key requests are routed by (`dmodel`)
+// really are different strings, and the card reports that rather than hiding it.
+// Neither is presented as a name fetched from an upstream directory — the card's
+// Source line states plainly that the table is built in and nothing was fetched.
+func qoderCatalogueModelEntries(infos []pluginapi.ModelInfo) []plugui.ModelEntry {
+	return plugui.ModelEntriesFromInfo(infos, func(info pluginapi.ModelInfo) string {
+		detail := ""
+		if info.UserDefined {
+			// An operator-declared name: it is published for the public endpoint,
+			// which rejects catalog keys (product.go:41-43).
+			detail = "public_models 声明（公开端点用名）；"
+		}
+		if info.ContextLength > 0 {
+			detail += "上下文 " + strconv.FormatInt(info.ContextLength, 10)
+		}
+		detail += "，最大输出 " + strconv.FormatInt(info.MaxCompletionTokens, 10)
+		if len(info.SupportedInputModalities) > 1 {
+			detail += "，输入 text+image"
+		} else {
+			detail += "，输入 text"
+		}
+		if info.Thinking != nil && len(info.Thinking.Levels) > 0 {
+			detail += "，思考档位 " + strings.Join(info.Thinking.Levels, "/")
+		}
+		return detail
+	})
 }
 
 // publishText describes whether the catalogue reached the host registry.
