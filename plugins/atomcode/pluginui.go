@@ -196,7 +196,15 @@ func modelCard(h *abiboot.Host, cfg Config, credential *Credential) template.HTM
 				"因此不受套餐目录背书——随时可能被上游撤下，请以实际调用结果为准。")
 	}
 	return plugui.Card("可用模型",
-		plugui.Group(notice, plugui.Fields(rows...)))
+		plugui.Group(notice,
+			plugui.Fields(
+				plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+				plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
+			),
+			plugui.Fields(rows...),
+		),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)
 }
 
 // modelSourceLabel renders a model-source code for people.

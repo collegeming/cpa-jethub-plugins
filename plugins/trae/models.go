@@ -758,6 +758,19 @@ func invalidateCatalog(cfg Config, credential *Credential) {
 	catalogMu.Unlock()
 }
 
+// peekCatalog returns the cached catalog for one account regardless of its TTL.
+//
+// `cachedCatalog` cannot serve this: it answers "is the cache still fresh?", not
+// "what is in there?". A refresh needs the second question answered, because the
+// listing it is about to replace must be compared with the one that replaces it
+// even when the old entry has aged out.
+func peekCatalog(cfg Config, credential *Credential) (catalog, bool) {
+	catalogMu.Lock()
+	defer catalogMu.Unlock()
+	entry, ok := catalogCache[catalogKey(cfg, credential)]
+	return entry, ok
+}
+
 // fetchCatalog calls `batch_get_detail_param` and parses the response
 // (trae-auth.ts:484-540). A non-2xx answer or an unparsable body is an error;
 // callers fall back to the static catalog.

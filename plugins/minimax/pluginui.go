@@ -34,14 +34,18 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	cfg := settings()
 	entries := staticCatalogueEntries(cfg)
 
-	body := []template.HTML{plugui.Card("推理协议", plugui.Fields(
+	body := []template.HTML{plugui.Card("推理协议", plugui.Group(plugui.Fields(
 		plugui.Field{Label: "协议", Value: "Anthropic Messages（本仓库首个该协议族的 provider）"},
 		plugui.Field{Label: "端点", Value: APIDisplayHost() + InferPath},
 		plugui.Field{Label: "请求头", Value: "仅 Authorization / Content-Type / Accept（实测不需要 anthropic-version）"},
 		plugui.Field{Label: "模型数量", Value: itoaInt(len(entries))},
 		plugui.Field{Label: "模型目录", Value: catalogueSourceText(cfg)},
+		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
 		plugui.Field{Label: "签到时区", Value: cfg.timezoneID() + "（必须作为 query 参数下发）"},
-	))}
+	)),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)}
 
 	// ⚠️ The verification state is on the page on purpose. The inference path
 	// was measured end to end; the login and refresh round trips were not.

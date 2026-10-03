@@ -66,9 +66,15 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	channelFields = append(channelFields,
 		plugui.Field{Label: "客户端版本", Value: clientVersion(cfg)},
 		plugui.Field{Label: "会话类型", Value: sessionType(cfg, productByID(string(activeRegion())))},
+		// This provider has no upstream catalogue, so the row the other channels
+		// use for the background refresh states the absence instead of showing a
+		// disabled switch that a reader would assume could be turned on.
+		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText()},
 	)
 
-	body := []template.HTML{plugui.Card("推理通道", plugui.Fields(channelFields...))}
+	body := []template.HTML{plugui.Card("推理通道", plugui.Group(plugui.Fields(channelFields...)),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)}
 
 	accounts := qoderAccounts(h)
 	if len(accounts) == 0 {

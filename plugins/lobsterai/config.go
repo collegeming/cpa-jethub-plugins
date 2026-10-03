@@ -117,6 +117,12 @@ type Config struct {
 	DefaultMaxTokens int
 	// ModelCacheTTLMS controls how long a discovered model list is reused.
 	ModelCacheTTLMS int
+	// ModelRefreshMS is how often the catalogue is refetched in the background,
+	// so the cache does not depend on a client request to stay fresh. 0 disables
+	// the background refresh, which is the default: it costs one vendor round
+	// trip per interval, and the status page's 刷新目录 button covers the manual
+	// case.
+	ModelRefreshMS int
 	// RequestTimeoutMS is advertised for operators; the host transport owns the
 	// real timeout, so this is currently informational only.
 	RequestTimeoutMS int
@@ -151,6 +157,7 @@ func DefaultConfig() Config {
 		DiscoverModels:   true,
 		DefaultMaxTokens: 0,
 		ModelCacheTTLMS:  2 * 60 * 60 * 1000,
+		ModelRefreshMS:   0,
 		RequestTimeoutMS: RequestTimeoutMS,
 		DailyCheckin:     true,
 		ModelPrefix:      true,
@@ -187,6 +194,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.ClientVersionOverride = coerceString(raw["client_version"], cfg.ClientVersionOverride)
 	cfg.DefaultMaxTokens = coerceInt(raw["max_tokens"], cfg.DefaultMaxTokens)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	cfg.RequestTimeoutMS = coerceInt(raw["request_timeout_ms"], cfg.RequestTimeoutMS)
 	cfg.CallbackPort = coerceInt(raw["callback_port"], cfg.CallbackPort)
 	cfg.CallbackBindHost = coerceString(raw["callback_bind_host"], cfg.CallbackBindHost)
@@ -271,6 +279,8 @@ func ConfigFields() []configField {
 		{Name: "client_version", Type: "string", Description: "固定客户端版本号（如 2026.9.4）；留空表示从有道更新接口动态获取，失败时回退 2026.9.4"},
 		{Name: "max_tokens", Type: "integer", Description: "请求未指定 max_tokens 且远端模型未声明 maxTokens 时使用的默认值（0 = 不下发该字段）"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "动态模型列表缓存时长，毫秒"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新模型目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重新调用 /api/models/available，只更新插件缓存、不改任何凭据文件；手动刷新请用状态页的「刷新目录」按钮"},
 		{Name: "daily_checkin", Type: "boolean", Description: "启用每日签到（/api/client-activities 领取积分）与状态页签到入口"},
 		{Name: "callback_port", Type: "integer", Description: "登录回调固定端口（容器部署必填，并需在 compose 中发布同名端口；0=随机端口，仅本机部署可用）"},
 		{Name: "callback_bind_host", Type: "string", Description: "回调监听绑定的本机地址（容器部署填 0.0.0.0，默认 127.0.0.1）"},

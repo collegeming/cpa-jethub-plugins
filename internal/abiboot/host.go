@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/credjson"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -174,13 +176,73 @@ func (s *HTTPStream) Close() error {
 // carried forward from Incoming. Without that, every self-initiated refresh
 // would erase host-owned routing members such as `priority` and `weight`, and
 // the credential would silently fall back to the default tier.
+//
+// Incoming is empty on the paths whose payload carries no auth file — a device
+// login poll is the common one, and a background refresh has no payload at all.
+// The host's own copy of the file is then the only source for those members, so
+// it is read back through host.auth.get before the save. That lookup is best
+// effort: a first login has no stored file, and a lookup failure must not stop
+// the credential from being written.
 func (h *Host) SaveAuth(name string, storage json.RawMessage) (*pluginapi.HostAuthSaveResponse, error) {
-	payload := pluginapi.HostAuthSaveRequest{Name: name, JSON: credjson.MergePreserved(h.Incoming, storage)}
+	base := h.Incoming
+	if len(bytes.TrimSpace(base)) == 0 {
+		base = h.storedAuthFile(name)
+	}
+	payload := pluginapi.HostAuthSaveRequest{Name: name, JSON: credjson.MergePreserved(base, storage)}
 	out := &pluginapi.HostAuthSaveResponse{}
 	if err := HostCallInto(pluginabi.MethodHostAuthSave, payload, out); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// storedAuthFile returns the auth file the host currently holds for name, or
+// nil when there is none. The match is on the file name, because the callers
+// that need this (a login poll, a background refresh) know the target file but
+// not its runtime index; host.auth.get is addressed by index, so the entry has
+// to be resolved from the host's own list first.
+func (h *Host) storedAuthFile(name string) json.RawMessage {
+	target := strings.TrimSpace(name)
+	if target == "" {
+		return nil
+	}
+	entries, errList := h.ListAuth()
+	if errList != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if !authEntryMatchesName(entry, target) {
+			continue
+		}
+		if strings.TrimSpace(entry.AuthIndex) == "" {
+			return nil
+		}
+		auth, errGet := h.GetAuth(entry.AuthIndex)
+		if errGet != nil {
+			return nil
+		}
+		return auth.JSON
+	}
+	return nil
+}
+
+// authEntryMatchesName reports whether an auth entry is the one backed by the
+// given file name. A credential with no backing file has none of these members
+// and is matched by its runtime identifier instead.
+//
+// filepath.Base is only applied to a non-empty path: Base("") is ".", and a
+// target of "." would otherwise match an entry that has no file at all.
+func authEntryMatchesName(entry pluginapi.HostAuthFileEntry, target string) bool {
+	candidates := []string{entry.Name, entry.ID}
+	if path := strings.TrimSpace(entry.Path); path != "" {
+		candidates = append(candidates, filepath.Base(path))
+	}
+	for _, candidate := range candidates {
+		if candidate != "" && candidate == target {
+			return true
+		}
+	}
+	return false
 }
 
 // GetAuth reads a previously stored auth file by its auth index.

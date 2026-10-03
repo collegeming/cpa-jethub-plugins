@@ -33,15 +33,19 @@ func pluguiPage(heading string, body ...template.HTML) pluginapi.ManagementRespo
 // point pools.
 func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	cfg := settings()
-	body := []template.HTML{plugui.Card("插件设置", plugui.Fields(
+	body := []template.HTML{plugui.Card("插件设置", plugui.Group(plugui.Fields(
 		plugui.Field{Label: "推理端点", Value: APIBase + ChatCompletionsPath},
 		plugui.Field{Label: "账号端点", Value: AccountBase},
 		plugui.Field{Label: "模型目录", Value: catalogueModeText(cfg)},
 		plugui.Field{Label: "模型数量", Value: itoaInt(len(fallbackCatalogue))},
+		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
 		plugui.Field{Label: "登录页", Value: loginResourcePath},
 		plugui.Field{Label: "会话续期", Value: "不支持：Loomy 没有 refresh 端点，" +
 			"auth.refresh 只对 " + PointsRecordsPath + " 做一次有效性探测"},
-	))}
+	)),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)}
 
 	accounts := loomyAccounts(h)
 	if len(accounts) == 0 {

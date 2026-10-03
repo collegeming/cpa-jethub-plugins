@@ -136,6 +136,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 				plugui.Notice("warning", "当前实例还没有 CodeArts 账号。先在浏览器完成一次登录授权即可。"),
 				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 			),
+			renderCatalogueCard(settings()),
 		)
 	}
 
@@ -148,7 +149,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 
 	quotas := collectAccountQuotas(h, accounts)
 
-	body := make([]template.HTML, 0, len(quotas)+2)
+	body := make([]template.HTML, 0, len(quotas)+3)
 	if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "checkin") {
 		body = append(body, renderCheckinOutcome(h, entry))
 	}
@@ -158,7 +159,36 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	// 新建账号 stays reachable even for a single account, which is why the
 	// account list card is rendered whenever there is at least one account.
 	body = append(body, renderAccountList(accounts, entry.AuthIndex))
+	body = append(body, renderCatalogueCard(settings()))
 	return plugui.HTML("CodeArts Agent", body...)
+}
+
+// renderCatalogueCard reports the catalogue source and carries the manual
+// refresh.
+//
+// The refresh is the only control in this plugin that rewrites an auth file: the
+// write is what makes the host re-register this provider's models, and the host
+// has no ABI call for that. The background automatic refresh, when enabled,
+// covers the plugin's cache only.
+func renderCatalogueCard(cfg Config) template.HTML {
+	return plugui.Card("模型目录", plugui.Fields(
+		plugui.Field{Label: "数据来源", Value: catalogueSourceText(cfg)},
+		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
+	),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)
+}
+
+// catalogueSourceText describes where the published catalogue comes from.
+func catalogueSourceText(cfg Config) string {
+	if !cfg.DiscoverModels {
+		return "内置列表（discover_models 已关闭）"
+	}
+	if cfg.ModelCacheTTLMS > 0 {
+		return fmt.Sprintf("两个签名接口 + 内置兜底表，缓存 %d 秒", cfg.ModelCacheTTLMS/1000)
+	}
+	return "两个签名接口 + 内置兜底表，不缓存"
 }
 
 // renderQuotaCard renders one account: its identity, its OWN quota and its OWN

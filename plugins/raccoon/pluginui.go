@@ -42,17 +42,21 @@ func pluguiPage(heading string, body ...template.HTML) pluginapi.ManagementRespo
 // card per account.
 func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	cfg := settings()
-	body := []template.HTML{plugui.Card("插件设置", plugui.Fields(
+	body := []template.HTML{plugui.Card("插件设置", plugui.Group(plugui.Fields(
 		plugui.Field{Label: "推理端点", Value: APIBase + ChatCompletionsPath},
 		plugui.Field{Label: "模型目录", Value: catalogueModeText(cfg)},
 		plugui.Field{Label: "兜底模型数", Value: itoaInt(len(fallbackCatalogue))},
+		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
 		plugui.Field{Label: "登录页", Value: loginResourcePath},
 		plugui.Field{Label: "登录方式", Value: "仅微信扫码（" + smsLoginNotice + "）"},
 		plugui.Field{Label: "会话续期", Value: "支持：POST " + RefreshPath + "，到期前 " +
 			itoaInt(cfg.refreshWindow()) + " 秒提前续期；401 / code 200003 视为登录态终止"},
 		plugui.Field{Label: "每日签到", Value: "没有：每日积分由服务端自动发放，没有接口可调用；" +
 			"唯一可领取的是一次性桌面端登录奖励（" + LoginPointsGrantPath + "）"},
-	))}
+	)),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)}
 
 	accounts := raccoonAccounts(h)
 	if len(accounts) == 0 {

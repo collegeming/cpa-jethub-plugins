@@ -146,6 +146,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 				plugui.Notice("warning", "当前实例还没有 LobsterAI 账号。先在浏览器完成一次授权即可。"),
 				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 			),
+			catalogueControlCard(),
 		)
 	}
 
@@ -243,11 +244,18 @@ func accountQuery(entry pluginapi.HostAuthFileEntry) string {
 // renderModelCard lists the catalog with the remote model parameters this
 // adapter consumes. The thinking levels show the product-side names while the
 // wire values are what actually travels (openclawLevel).
+//
+// It also carries the catalogue's provenance and the manual 刷新目录 control:
+// that button is the only path in this plugin that rewrites an auth file, which
+// is what makes the host re-register this provider's models — the host has no
+// ABI call for that. The background automatic refresh, when enabled, covers the
+// plugin's cache only.
 func renderModelCard() template.HTML {
+	cfg := settings()
 	catalog := currentCatalog(time.Now())
-	fields := make([]plugui.Field, 0, maxModelsOnPage+2)
+	fields := make([]plugui.Field, 0, maxModelsOnPage+4)
 	fields = append(fields, plugui.Field{Label: "模型数量", Value: fmt.Sprintf("%d", len(catalog))})
-	fields = append(fields, plugui.Field{Label: "数据来源", Value: catalogSource()})
+	fields = append(fields, catalogueFields(cfg)...)
 	for index, model := range catalog {
 		if index >= maxModelsOnPage {
 			fields = append(fields, plugui.Field{
@@ -258,7 +266,29 @@ func renderModelCard() template.HTML {
 		}
 		fields = append(fields, plugui.Field{Label: displayNameFor(model), Value: modelParameterSummary(model)})
 	}
-	return plugui.Card("模型与远端参数", plugui.Fields(fields...))
+	return plugui.Card("模型与远端参数", plugui.Fields(fields...), catalogueRefreshAction())
+}
+
+// catalogueFields describes where the published catalogue comes from and what
+// the background refresh is doing. Both the model card and the empty-state card
+// render them, so the two can never disagree.
+func catalogueFields(cfg Config) []plugui.Field {
+	return []plugui.Field{
+		{Label: "数据来源", Value: catalogSource()},
+		{Label: "线上目录缓存", Value: catalogueCacheText()},
+		{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
+	}
+}
+
+// catalogueRefreshAction is the GET link that triggers a manual refresh.
+func catalogueRefreshAction() plugui.Action {
+	return plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"}
+}
+
+// catalogueControlCard is the catalogue card for the no-account state: a fresh
+// install still sees where the catalogue comes from and what the refresh does.
+func catalogueControlCard() template.HTML {
+	return plugui.Card("模型目录", plugui.Fields(catalogueFields(settings())...), catalogueRefreshAction())
 }
 
 // catalogSource reports whether the advertised catalog is the discovered one or

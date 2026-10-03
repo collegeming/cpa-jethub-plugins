@@ -84,6 +84,12 @@ type Config struct {
 	ChunkTimeoutMS int
 	// ModelCacheTTLMS controls how long a discovered model list is reused.
 	ModelCacheTTLMS int
+	// ModelRefreshMS is how often the catalogue is refetched in the background,
+	// so the cache does not depend on a client request to stay fresh. 0 disables
+	// the background refresh, which is the default: it costs one signed vendor
+	// round trip per interval, and the status page's 刷新目录 button covers the
+	// manual case.
+	ModelRefreshMS int
 	// MaxAccountsPerAuth is reserved for the shared account pool; 0 means
 	// unlimited.
 	MaxAccountsPerAuth int
@@ -123,6 +129,7 @@ func DefaultConfig() Config {
 		FirstTokenTimeoutMS: 300000,
 		ChunkTimeoutMS:      600000,
 		ModelCacheTTLMS:     2 * 60 * 60 * 1000,
+		ModelRefreshMS:      0,
 	}
 }
 
@@ -160,6 +167,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.FirstTokenTimeoutMS = coerceInt(raw["first_token_timeout_ms"], cfg.FirstTokenTimeoutMS)
 	cfg.ChunkTimeoutMS = coerceInt(raw["chunk_timeout_ms"], cfg.ChunkTimeoutMS)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	cfg.MaxAccountsPerAuth = coerceInt(raw["max_accounts_per_auth"], cfg.MaxAccountsPerAuth)
 	cfg.CallbackPort = coerceInt(raw["callback_port"], cfg.CallbackPort)
 	cfg.CallbackBindHost = coerceString(raw["callback_bind_host"], cfg.CallbackBindHost)
@@ -253,6 +261,8 @@ func ConfigFields() []configField {
 		{Name: "first_token_timeout_ms", Type: "integer", Description: "等待上游首个 SSE 分片的超时，毫秒"},
 		{Name: "chunk_timeout_ms", Type: "integer", Description: "两个上游 SSE 分片之间的超时，毫秒"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "动态模型列表缓存时长，毫秒"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新模型目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重新调用两个签名模型接口，只更新插件缓存、不改任何凭据文件；手动刷新请用状态页的「刷新目录」按钮"},
 		{Name: "callback_port", Type: "integer", Description: "登录回调固定端口（容器部署必填，并需在 compose 中发布同名端口；0=随机端口，仅本机部署可用）"},
 		{Name: "callback_bind_host", Type: "string", Description: "回调监听绑定的本机地址（容器部署填 0.0.0.0，默认 127.0.0.1）"},
 		{Name: "callback_public_host", Type: "string", Description: "浏览器访问回调时使用的主机名（默认 127.0.0.1）"},

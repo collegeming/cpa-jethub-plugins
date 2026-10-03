@@ -122,15 +122,25 @@ func (p *plugin) Registration() abiboot.Registration {
 
 // Configure applies the instance settings delivered by the host.
 func (p *plugin) Configure(configYAML []byte) error {
-	setSettings(ConfigFromYAML(configYAML))
+	cfg := ConfigFromYAML(configYAML)
+	setSettings(cfg)
+	// The background catalogue refresh is restarted on every Configure, so a
+	// changed interval takes effect on a config reload instead of at the next
+	// process start.
+	startCatalogueScheduler(cfg)
 	return nil
 }
 
-// Quiesce is a no-op: the adapter holds no background workers.
-func (p *plugin) Quiesce() {}
+// Quiesce stops the background refresh: the host calls it before unloading the
+// plugin, and a tick firing against a closed instance would only log failures.
+func (p *plugin) Quiesce() { stopCatalogueScheduler() }
 
-// Shutdown releases the plugin's loopback callback listener.
-func (p *plugin) Shutdown() { shutdownLoginSessions() }
+// Shutdown stops the background refresh and releases the plugin's loopback
+// callback listener.
+func (p *plugin) Shutdown() {
+	stopCatalogueScheduler()
+	shutdownLoginSessions()
+}
 
 // configFieldsForHost converts the settings description into the host type.
 func configFieldsForHost() []pluginapi.ConfigField {
@@ -181,6 +191,8 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 				Description: "TRAE 账号状态（JSON，脚本用）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin",
 				Description: "执行 TRAE 每日签到（JSON，脚本用）"},
+			{Method: http.MethodGet, Path: "/" + ProviderKey + "/catalog",
+				Description: "刷新模型目录并发布到宿主（JSON；等价于状态页的「刷新目录」按钮）"},
 		},
 		// Browser-reachable pages that must NOT become sidebar entries: a
 		// ResourceRoute only shows in the manager nav when it carries a Menu.
@@ -207,6 +219,9 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 
 	switch managementRoute(request.Path) {
 	case "/status":
+		if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "refresh-catalog") {
+			return catalogueRefreshPage(h, request), nil
+		}
 		if wantsJSON(request) {
 			return statusJSON(h, request), nil
 		}
@@ -224,6 +239,9 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 
 	case "/checkin":
 		return checkinResponse(h, request), nil
+
+	case "/catalog":
+		return catalogueRefreshJSON(h, request), nil
 	}
 
 	return jsonManagementResponse(http.StatusNotFound, map[string]any{"error": "unknown TRAE management route"}), nil

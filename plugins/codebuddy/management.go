@@ -119,6 +119,7 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 			// 脚本/API 用：不带 Menu，因此挂在全局管理命名空间下，必须自带前缀。
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/status", Description: "账号状态（JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（JSON）"},
+			{Method: http.MethodGet, Path: "/" + ProviderKey + "/catalog", Description: "刷新模型目录并发布到宿主（JSON；等价于状态页的「刷新目录」按钮）"},
 		},
 		Resources: resources,
 	}, nil
@@ -134,10 +135,15 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 
 	switch route {
 	case "/status":
+		if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "refresh-catalog") {
+			return catalogueRefreshPage(h, request), nil
+		}
 		if wantsJSON(request) {
 			return statusJSON(h, request), nil
 		}
 		return renderStatusPage(h, request), nil
+	case "/catalog":
+		return catalogueRefreshJSON(h, request), nil
 	case "/login":
 		if wantsJSON(request) {
 			return loginJSON(request), nil
@@ -246,6 +252,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
 			),
 			productCard(settings().Product, nil),
+			catalogueCard(settings()),
 		)
 	}
 
@@ -272,7 +279,35 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	}
 	body = append(body, renderAccountList(accounts, entry.AuthIndex))
 	body = append(body, productCard(configured.ConfigValue, accountProduct))
+	body = append(body, catalogueCard(settings()))
 	return plugui.HTML("CodeBuddy", body...)
+}
+
+// catalogueCard reports the catalogue source and carries the manual refresh.
+//
+// The refresh is the only control in this plugin that rewrites an auth file: the
+// write is what makes the host re-register this provider's models, and the host
+// has no ABI call for that. The background automatic refresh, when enabled,
+// covers the plugin's cache only.
+func catalogueCard(cfg Config) template.HTML {
+	return plugui.Card("模型目录", plugui.Fields(
+		plugui.Field{Label: "数据来源", Value: catalogueSourceText(cfg)},
+		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
+	),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)
+}
+
+// catalogueSourceText describes where the published catalogue comes from.
+func catalogueSourceText(cfg Config) string {
+	if !cfg.DiscoverModels {
+		return "内置兜底表（discover_models 已关闭）"
+	}
+	if cfg.ModelCacheTTLMS > 0 {
+		return fmt.Sprintf("厂商模型接口 + 内置兜底表，缓存 %d 秒", cfg.ModelCacheTTLMS/1000)
+	}
+	return "厂商模型接口 + 内置兜底表，不缓存"
 }
 
 // renderQuotaCard renders one account: its identity, its OWN credits and its own

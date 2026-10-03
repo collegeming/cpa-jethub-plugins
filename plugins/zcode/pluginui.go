@@ -43,7 +43,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	cfg := settings()
 	accounts := zcodeAccounts(h)
 
-	body := []template.HTML{plugui.Card("插件设置", plugui.Fields(
+	body := []template.HTML{plugui.Card("插件设置", plugui.Group(plugui.Fields(
 		plugui.Field{Label: "推理端点", Value: Origin + MessagesPath},
 		plugui.Field{Label: "协议", Value: "Anthropic Messages（流式 SSE）—— 该通道没有 OpenAI 形态的端点"},
 		plugui.Field{Label: "客户端版本", Value: cfg.AppVersion},
@@ -53,13 +53,18 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 			"拆成独立文本块按序下发；调用方 system 追加在最后",
 			len(officialCLIPrefix), len(officialStableSections()),
 			len(officialCLIPrefix)+len(officialStableSections()))},
+		plugui.Field{Label: "模型目录", Value: catalogueSourceText(cfg)},
+		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
 		plugui.Field{Label: "会话续期", Value: "不支持：JWT 没有 exp，服务端也没有续期端点；" +
 			"auth.refresh 只做有效性探测，失效需重新登录"},
 		plugui.Field{Label: "每日签到", Value: "不支持：领取端点强制要求阿里云验证码（3007），" +
 			"本插件不产出验证码，因此与 cline 一样不提供签到入口；额度请在官方客户端或网页领取"},
 		plugui.Field{Label: "captcha", Value: "只被领取端点要求，推理实测不需要；" +
 			"本插件不提供领取入口，因此不涉及"},
-	))}
+	)),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)}
 
 	if len(accounts) == 0 {
 		body = append(body, plugui.Card("尚未添加账号",

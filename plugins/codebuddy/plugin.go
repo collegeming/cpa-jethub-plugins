@@ -111,17 +111,25 @@ func (p *plugin) Registration() abiboot.Registration { return Registration() }
 // model cache is dropped so a product switch never serves another product's
 // model pool.
 func (p *plugin) Configure(configYAML []byte) error {
-	setSettings(ConfigFromYAML(configYAML))
+	cfg := ConfigFromYAML(configYAML)
+	setSettings(cfg)
 	discoveredModels.reset()
+	// The background catalogue refresh is restarted on every Configure, so a
+	// changed interval takes effect on a config reload instead of at the next
+	// process start.
+	startCatalogueScheduler(cfg)
 	return nil
 }
 
-// Quiesce is a no-op: the adapter holds no background workers (upstream polling
-// is driven by CPA through auth.login.poll).
-func (p *plugin) Quiesce() {}
+// Quiesce stops the background refresh: the host calls it before unloading the
+// plugin, and a tick firing against a closed instance would only log failures.
+func (p *plugin) Quiesce() { stopCatalogueScheduler() }
 
 // Shutdown releases the in-flight login sessions.
-func (p *plugin) Shutdown() { shutdownLoginSessions() }
+func (p *plugin) Shutdown() {
+	stopCatalogueScheduler()
+	shutdownLoginSessions()
+}
 
 // configFieldsForHost converts the settings description into the host type.
 func configFieldsForHost() []pluginapi.ConfigField {

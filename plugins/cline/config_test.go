@@ -153,6 +153,7 @@ func TestConfigFieldNames(t *testing.T) {
 		"model_discovery":    true,
 		"model_prefix":       true,
 		"model_cache_ttl_ms": true,
+		"model_refresh_ms":   true,
 		"max_tokens":         true,
 		"max_output_tokens":  true,
 		"reasoning_effort":   true,

@@ -104,6 +104,7 @@ func TestConfigFieldsAreDeclared(t *testing.T) {
 		"discover_models":      "boolean",
 		"model_prefix":         "boolean",
 		"model_cache_ttl_ms":   "integer",
+		"model_refresh_ms":     "integer",
 		"sms_code_ttl_seconds": "integer",
 		"session_ttl_seconds":  "integer",
 		"login_timeout_ms":     "integer",

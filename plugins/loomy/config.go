@@ -152,6 +152,11 @@ type Config struct {
 	ModelPrefix bool
 	// ModelCacheTTLMS bounds the discovered catalogue lifetime.
 	ModelCacheTTLMS int
+	// ModelRefreshMS is how often the catalogue is refetched in the background,
+	// so the cache does not depend on a client request to stay fresh. 0 disables
+	// the background refresh, which is the default: it costs one vendor round
+	// trip per interval, and the page's 刷新目录 button covers the manual case.
+	ModelRefreshMS int
 }
 
 // DefaultConfig returns the settings used when the user provides nothing.
@@ -164,6 +169,7 @@ func DefaultConfig() Config {
 		LoginTimeoutMS:    LoginTimeoutMS,
 		RequestTimeoutMS:  RequestTimeoutMS,
 		ModelCacheTTLMS:   ModelCacheTTLMS,
+		ModelRefreshMS:    0,
 	}
 }
 
@@ -203,6 +209,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.DiscoverModels = coerceBool(raw["discover_models"], cfg.DiscoverModels)
 	cfg.ModelPrefix = coerceBool(raw["model_prefix"], cfg.ModelPrefix)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	return cfg
 }
 
@@ -293,6 +300,10 @@ func ConfigFields() []configField {
 			Description: "是否用账号会话实时拉取 GET /models 目录（默认关闭）。关闭时只使用内置的 8 个兜底模型"},
 		{Name: "model_prefix", Type: "boolean", Description: "是否把账号 ID 作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "实时模型目录的缓存时长，毫秒（默认 2 小时）"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重拉一次 GET /models；" +
+				"只有在目录确实变化时才写凭据文件通知宿主重新注册（目录不变则不写，因此稳定期零写入）；" +
+				"无论是否变化都可用状态页的「刷新目录」按钮手动刷新并强制通知宿主"},
 		{Name: "sms_code_ttl_seconds", Type: "integer", Description: "向讯飞账号服务声明的短信验证码有效期，秒（默认 300）"},
 		{Name: "session_ttl_seconds", Type: "integer",
 			Description: "向讯飞账号服务声明的会话有效期，秒（默认 1209600 = 14 天）。服务端不回传过期时间，本地 expires_at 由该值推算"},

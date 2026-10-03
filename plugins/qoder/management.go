@@ -38,6 +38,8 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 				Description: "账号与积分状态（JSON）"},
 			{Method: http.MethodGet, Path: "/" + ProviderKey + "/checkin",
 				Description: "执行每日领取（JSON）"},
+			{Method: http.MethodGet, Path: "/" + ProviderKey + "/catalog",
+				Description: "让宿主重新注册当前模型目录（JSON；目录本身是内置静态表，无上游端点可拉取）"},
 		},
 		// Browser-reachable pages that must NOT become sidebar entries: a
 		// ResourceRoute only shows in the manager nav when it carries a Menu.
@@ -63,6 +65,9 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 
 	switch managementRoute(request.Path) {
 	case "/status":
+		if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "refresh-catalog") {
+			return catalogueRefreshPage(h, request), nil
+		}
 		if wantsJSON(request) {
 			return statusJSON(h, request), nil
 		}
@@ -76,6 +81,9 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 
 	case "/checkin":
 		return checkinResponse(h, request), nil
+
+	case "/catalog":
+		return catalogueRefreshJSON(h, request), nil
 	}
 
 	return jsonManagementResponse(http.StatusNotFound, map[string]any{

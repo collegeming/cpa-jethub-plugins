@@ -38,15 +38,18 @@ func pluguiNoticeCard(title, tone, message string, actions ...plugui.Action) tem
 // balance and the catalogue size.
 func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	cfg := settings()
-	body := []template.HTML{plugui.Card("接口与目录", plugui.Fields(
+	body := []template.HTML{plugui.Card("接口与目录", plugui.Group(plugui.Fields(
 		plugui.Field{Label: "接口基址", Value: APIBase},
 		plugui.Field{Label: "登录服务", Value: WorkOSBase},
 		plugui.Field{Label: "工作流", Value: "WorkOS 设备码（无本地回调端口）"},
 		plugui.Field{Label: "模型目录", Value: catalogueText(cfg)},
 		plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+		plugui.Field{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
 		plugui.Field{Label: "思考级别", Value: strings.Join(reasoningLevels, " / ") + "（默认不发送，由客户端或宿主决定）"},
 		plugui.Field{Label: "max_tokens 上限", Value: itoaInt(maxOutputTokens(cfg))},
-	))}
+	)),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	)}
 
 	accounts := clineAccounts(h)
 	if len(accounts) == 0 {
@@ -310,6 +313,24 @@ func catalogueText(cfg Config) string {
 }
 
 // catalogueCacheText reports what the catalogue cache currently holds.
+// autoRefreshText describes the background catalogue refresh.
+func autoRefreshText(cfg Config) string {
+	if cfg.ModelRefreshMS <= 0 {
+		return "已关闭（model_refresh_ms = 0）；自动刷新只更新插件缓存，不写任何凭据文件"
+	}
+	interval, runs, lastRun, lastErr := catalogueScheduler.Status()
+	text := "每 " + (time.Duration(cfg.ModelRefreshMS) * time.Millisecond).String() +
+		"（只更新插件缓存，不写凭据文件）；已完成 " + itoaInt(runs) + " 次"
+	if !lastRun.IsZero() {
+		text += "，最近一次 " + lastRun.Local().Format("15:04:05")
+	}
+	if lastErr != "" {
+		text += "，最近一次失败：" + lastErr
+	}
+	_ = interval
+	return text
+}
+
 func catalogueCacheText() string {
 	cached, fetchedAt := discoveredModels.peek()
 	if len(cached) == 0 {

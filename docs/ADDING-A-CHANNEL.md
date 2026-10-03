@@ -221,6 +221,33 @@ imagesStripped := stripImagesForTextModel(request)
 
 ⚠️ **空响应不等于权威**：端点返回 200 但内容为空/不可解析时，与请求失败同等对待，都不得触发删除。
 
+### 5.1d 目录刷新接进 `internal/jethub/catalog`
+
+新渠道接完目录发现之后，要一并接上「自动刷新 + 手动刷新按钮」。共享包已经把两层机制封好了，插件只需提供自己的发现函数。
+
+**先分清刷的是哪一层**：
+
+| 层 | 内容 | 谁能改 | 触发方式 |
+|---|---|---|---|
+| ① 插件缓存 | 上游目录端点返回的清单 | 插件 | 清缓存重拉，零副作用 |
+| ② 宿主注册表 | `GET /v1/models` 返回的内容 | CPA | 宿主重新注册该 provider |
+
+插件**没有**"让宿主重新注册我的模型"这种调用能力——`sdk/pluginabi` 里没有对应方法。宿主只在进程启动、`config.yaml` 变更、**凭据文件语义变化**这三种时机重新注册，第三种是插件唯一能自己触发的。
+
+接法（照 `plugins/cline/` 抄）：
+
+1. **刷新函数**：先 `reset()` 自己的缓存，再走自己正常的发现路径（`discoverModels` / `catalogueForAuth`），返回 `catalog.Outcome{Models, Changed}`。`Changed` 由刷新前后的模型 ID 集合对比得出。
+2. **自动刷新**：`catalog.NewScheduler` + `Scheduler.Start(Request{...})`，Request 里设 **`PublishOnChange: true`** 且 **`AuthName` 留空** —— 目录变化时才发布到 ②。在 `Configure` 里按 `model_refresh_ms` 启动，`Quiesce`/`Shutdown` 里 `Stop()`。
+3. **手动按钮**：管理页加 `plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"}`，处理函数里用 `catalog.Run` 并传 `AuthName`（该账号的凭据文件名）——手动路径**无条件**写 ②，因为用户按下按钮就是期望重新注册。
+
+⚠️ **自动刷新只在目录变化时发布**：`Request.PublishOnChange = true` 让宿主只在目录真的变了时才重新注册。宿主自己续期令牌时也在写同一个凭据文件，一个每周期都无条件写的循环会和它反复互相覆盖；等到真变化才写，这个冲突就从"持续"变成"偶发"。目录稳定时自动路径是零写入的。
+
+⚠️ **不要用固定的 `AuthName` 做自动发布**：`Configure` 发生在登录之前，那一刻还没有账号，名字取到空串后自动发布就永远不会触发。留空 `AuthName` 并用 `PublishOnChange`，发布目标由共享包在每个周期从 `host.auth.list` 现取。
+
+⚠️ **回退到静态表不算刷新成功**：若上游全挂时插件会回退到静态表，该次刷新必须返回 error。把回退报成成功，等于告诉运维"上游确认了这个目录"，而它根本没应答。
+
+⚠️ **`h.SaveAuth` 的 `Incoming` 可能为空**：登录轮询等回调载荷里不带旧凭据文件，此时 `SaveAuth` 会自己回读宿主持有的文件来保住 `priority`/`weight` 等宿主字段（见 `internal/abiboot/host.go`）。自定义写凭据路径时不要绕开它。
+
 ### 5.2 只有显式 `action=claim` 才允许写
 
 页面加载、监控轮询、hub 的一次状态读取都会 GET 这个路由。没有这个闸，任何一次轮询都在

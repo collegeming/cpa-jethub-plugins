@@ -24,6 +24,11 @@ type Config struct {
 	// every time (`README.md:1269-1270`), so the default is short (10 min) and 0
 	// disables caching entirely.
 	ModelCacheTTLMS int
+	// ModelRefreshMS is how often the catalogue is refetched in the background,
+	// so the cache does not depend on a client request to stay fresh. 0 disables
+	// the background refresh, which is the default: it costs one vendor round
+	// trip per interval, and the page's 刷新目录 button covers the manual case.
+	ModelRefreshMS int
 	// DefaultMaxTokens is applied when a request omits `max_tokens`; 0 sends
 	// none, which is what the TypeScript does (`cline-adapter.ts:434-435`).
 	DefaultMaxTokens int
@@ -58,6 +63,7 @@ func DefaultConfig() Config {
 		ModelDiscovery:         true,
 		ModelPrefix:            true,
 		ModelCacheTTLMS:        600_000,
+		ModelRefreshMS:         0,
 		DefaultMaxTokens:       0,
 		MaxOutputTokens:        MaxOutputTokensCeiling,
 		DefaultReasoningEffort: "",
@@ -97,6 +103,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.ModelDiscovery = coerceBool(raw["model_discovery"], cfg.ModelDiscovery)
 	cfg.ModelPrefix = coerceBool(raw["model_prefix"], cfg.ModelPrefix)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	cfg.DefaultMaxTokens = coerceInt(raw["max_tokens"], cfg.DefaultMaxTokens)
 	cfg.MaxOutputTokens = coerceInt(raw["max_output_tokens"], cfg.MaxOutputTokens)
 	cfg.DefaultReasoningEffort = coerceReasoningEffort(raw["reasoning_effort"], cfg.DefaultReasoningEffort)
@@ -207,6 +214,8 @@ func ConfigFields() []configField {
 		{Name: "model_prefix", Type: "boolean", Description: "是否把账号 ID 作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字"},
 		{Name: "model_cache_ttl_ms", Type: "integer",
 			Description: "线上目录缓存时长，毫秒（默认 600000）。免费名单是服务端营销状态，随时会变，0 表示每次都重新拉取"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重拉一次上游目录，只更新插件缓存、不改任何凭据文件；手动刷新请用状态页的「刷新目录」按钮"},
 		{Name: "max_tokens", Type: "integer",
 			Description: "请求未带 max_tokens 时的默认值，0 表示不发送（与原始实现一致）"},
 		{Name: "max_output_tokens", Type: "integer",

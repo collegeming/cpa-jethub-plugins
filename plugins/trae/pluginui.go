@@ -195,6 +195,7 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 		{Label: "区域", Value: cfg.Region},
 		{Label: "配置通道", Value: strings.Join(cfg.Channels, ", ")},
 		{Label: "默认通道", Value: cfg.DefaultChannel},
+		{Label: "后台自动刷新", Value: autoRefreshText(cfg)},
 	}
 	credential, freshness, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
@@ -258,14 +259,19 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 	if len(accountFields) > 0 {
 		body = append(body, plugui.Card("账号 · "+entry.Name+"（当前）", plugui.Fields(accountFields...),
 			plugui.Action{Label: "签到", Query: "action=checkin&" + accountQuery(entry), Kind: "primary"},
-			plugui.Action{Label: "刷新模型目录", Query: "action=refresh"},
+			// Labelled for what it actually does: this one only drops the cache,
+			// it never publishes. The publishing refresh is the 刷新目录 action
+			// on the catalog card below, and the two must not read alike.
+			plugui.Action{Label: "清空目录缓存", Query: "action=refresh"},
 			plugui.Action{Label: "重新登录", Path: "login", Query: accountQuery(entry)},
 		))
 	} else {
 		body = append(body, plugui.Card("账号 · "+entry.Name+"（当前）",
 			plugui.Notice("danger", "凭据无法读取："+errCredential.Error())))
 	}
-	body = append(body, plugui.Card("通道与模型", plugui.Fields(catalogFields...)))
+	body = append(body, plugui.Card("通道与模型", plugui.Group(plugui.Fields(catalogFields...)),
+		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+	))
 
 	// One sweep, one credit card per account: each card carries that account's
 	// own figures, never the selected account's repeated.

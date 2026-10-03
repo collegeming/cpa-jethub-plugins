@@ -39,6 +39,10 @@ type fakeHost struct {
 	files []pluginapi.HostAuthFileEntry
 	// saved records every host.auth.save call by name.
 	saved map[string][]byte
+	// saveCount counts every host.auth.save call, including repeats of the
+	// same file name. The `saved` map alone cannot show a repeated write,
+	// and "did the timer write AGAIN?" is exactly the property under test.
+	saveCount int
 	// logs records every host.log payload.
 	logs []string
 }
@@ -96,6 +100,7 @@ func (f *fakeHost) install(t *testing.T) {
 			}
 			f.mu.Lock()
 			f.saved[payload.Name] = payload.JSON
+			f.saveCount++
 			f.mu.Unlock()
 			return envelopeOK(pluginapi.HostAuthSaveResponse{Name: payload.Name, Path: "/auths/" + payload.Name})
 
@@ -255,4 +260,12 @@ func decodeBody(t *testing.T, request abiboot.HTTPDoRequest) map[string]any {
 		t.Fatalf("decode request body %q: %v", string(request.Body), errUnmarshal)
 	}
 	return decoded
+}
+
+// saveWrites reports how many host.auth.save calls were made, including repeats
+// of the same file name.
+func (f *fakeHost) saveWrites() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.saveCount
 }

@@ -28,6 +28,12 @@ type Config struct {
 	// ModelCacheTTLMS bounds how long a discovered catalogue is reused.
 	ModelCacheTTLMS int
 
+	// ModelRefreshMS is how often the catalogue is refetched in the background,
+	// so the cache does not depend on a client request to stay fresh. 0 disables
+	// the background refresh, which is the default: it costs one vendor round
+	// trip per interval, and the page's 刷新目录 button covers the manual case.
+	ModelRefreshMS int
+
 	// RequestTimeoutMS bounds auth, user_info and credits calls.
 	RequestTimeoutMS int
 	// CatalogueTimeoutMS bounds the catalogue call.
@@ -47,6 +53,7 @@ func DefaultConfig() Config {
 		DiscoverModels:        true,
 		ModelPrefix:           true,
 		ModelCacheTTLMS:       ModelCacheTTLMS,
+		ModelRefreshMS:        0,
 		RequestTimeoutMS:      RequestTimeoutMS,
 		CatalogueTimeoutMS:    CatalogueTimeoutMS,
 		LoginTimeoutMS:        LoginTimeoutMS,
@@ -76,6 +83,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.DiscoverModels = coerceBool(raw["discover_models"], cfg.DiscoverModels)
 	cfg.ModelPrefix = coerceBool(raw["model_prefix"], cfg.ModelPrefix)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	cfg.RequestTimeoutMS = coerceInt(raw["request_timeout_ms"], cfg.RequestTimeoutMS)
 	cfg.CatalogueTimeoutMS = coerceInt(raw["catalogue_timeout_ms"], cfg.CatalogueTimeoutMS)
 	cfg.LoginTimeoutMS = coerceInt(raw["login_timeout_ms"], cfg.LoginTimeoutMS)
@@ -141,6 +149,9 @@ func ConfigFields() []configField {
 				"远端目录拉取失败时也会静默回退到兜底表，不会报错"},
 		{Name: "model_prefix", Type: "boolean", Description: "是否把账号 ID 作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "实时模型目录的缓存时长，毫秒（默认 2 小时）"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重拉一次 GET /model_catalog；" +
+				"仅当目录真的变化时才通知宿主重新注册（稳定期零写入），手动刷新请用状态页的「刷新目录」按钮"},
 		{Name: "request_timeout_ms", Type: "integer",
 			Description: "auth / user_info / 积分接口的单次请求超时，毫秒（默认 60000）"},
 		{Name: "catalogue_timeout_ms", Type: "integer",

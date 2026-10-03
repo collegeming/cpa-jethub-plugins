@@ -409,6 +409,12 @@ type Config struct {
 	ChunkTimeoutMS      int
 	// ModelCacheTTLMS controls how long a discovered model list is reused.
 	ModelCacheTTLMS int
+	// ModelRefreshMS is how often the catalogue is refetched in the background,
+	// so the cache does not depend on a client request to stay fresh. 0 disables
+	// the background refresh, which is the default: it costs one vendor round
+	// trip per interval, and the status page's 刷新目录 button covers the manual
+	// case.
+	ModelRefreshMS int
 	// CheckinEnabled allows the daily check-in route to call upstream.
 	CheckinEnabled bool
 	// ModelPrefix 是否把账号 ID 作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字。
@@ -427,6 +433,7 @@ func DefaultConfig() Config {
 		FirstTokenTimeoutMS: 120000,
 		ChunkTimeoutMS:      120000,
 		ModelCacheTTLMS:     2 * 60 * 60 * 1000,
+		ModelRefreshMS:      0,
 		CheckinEnabled:      true,
 		ModelPrefix:         true,
 	}
@@ -471,6 +478,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.FirstTokenTimeoutMS = coerceInt(raw["first_token_timeout_ms"], cfg.FirstTokenTimeoutMS)
 	cfg.ChunkTimeoutMS = coerceInt(raw["chunk_timeout_ms"], cfg.ChunkTimeoutMS)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	return cfg
 }
 
@@ -574,6 +582,8 @@ func ConfigFields() []configField {
 		{Name: "first_token_timeout_ms", Type: "integer", Description: "等待上游首个 SSE 分片的超时，毫秒"},
 		{Name: "chunk_timeout_ms", Type: "integer", Description: "两个上游 SSE 分片之间的超时，毫秒"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "动态模型列表缓存时长，毫秒"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新模型目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重新调用厂商模型接口，只更新插件缓存、不改任何凭据文件；手动刷新请用状态页的「刷新目录」按钮"},
 	}
 }
 

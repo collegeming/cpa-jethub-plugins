@@ -244,6 +244,11 @@ type Config struct {
 	RotateMachineID bool
 	// ModelCacheTTLMS is how long a discovered catalog is reused.
 	ModelCacheTTLMS int
+	// ModelRefreshMS is how often the catalog is refetched in the background, so
+	// the cache does not depend on a client request to stay fresh. 0 disables the
+	// background refresh, which is the default: it costs one vendor round trip
+	// per interval, and the page's 刷新目录 button covers the manual case.
+	ModelRefreshMS int
 	// CallbackPort pins the loopback callback listener to an exact port. The
 	// TRAE portal echoes `auth_callback_url` verbatim, so the port is ours to
 	// choose.
@@ -284,6 +289,7 @@ func DefaultConfig() Config {
 		MaxHistoryChars:     DefaultMaxHistoryChars,
 		RotateMachineID:     false,
 		ModelCacheTTLMS:     DefaultModelCacheTTLMS,
+		ModelRefreshMS:      0,
 		CallbackPort:        0,
 		LoginTimeoutMS:      DefaultLoginTimeoutMS,
 		RequestTimeoutMS:    DefaultRequestTimeoutMS,
@@ -331,6 +337,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.MaxHistoryChars = coerceInt(raw["max_history_chars"], cfg.MaxHistoryChars)
 	cfg.RotateMachineID = coerceBool(raw["rotate_machine_id"], cfg.RotateMachineID)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	cfg.CallbackPort = coerceInt(raw["callback_port"], cfg.CallbackPort)
 	cfg.CallbackBindHost = coerceString(raw["callback_bind_host"], cfg.CallbackBindHost)
 	cfg.CallbackPublicHost = coerceString(raw["callback_public_host"], cfg.CallbackPublicHost)
@@ -465,6 +472,9 @@ func ConfigFields() []configField {
 			Description: "每 4 次请求轮换 machine_id（默认关）。设备身份漂移可能触发重新登录，仅在集中 401/风控时启用"},
 		{Name: "model_cache_ttl_ms", Type: "integer",
 			Description: "远端模型目录缓存时长，毫秒（默认 30000）"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重拉一次 batch_get_detail_param；" +
+				"仅当目录真的变化时才通知宿主重新注册（稳定期零写入），手动刷新请用状态页的「刷新目录」按钮"},
 		{Name: "callback_port", Type: "integer",
 			Description: "登录回调端口：留空=优先 18080 并自动改用其它空闲端口（仅本机部署可用）；容器部署填固定端口并在 compose 中发布同名端口"},
 		{Name: "callback_bind_host", Type: "string",

@@ -125,6 +125,11 @@ type Config struct {
 	// copy it (it pulls the catalogue on demand); the default here is the same
 	// 5 minutes the server advertises.
 	ModelCacheTTLMS int
+	// ModelRefreshMS is how often the catalogue is refetched in the background,
+	// so the cache does not depend on a client request to stay fresh. 0 disables
+	// the background refresh, which is the default: it costs one vendor round
+	// trip per interval, and the page's 刷新目录 button covers the manual case.
+	ModelRefreshMS int
 
 	// RequestTimeoutMS bounds catalogue, sign-in and credit calls.
 	RequestTimeoutMS int
@@ -158,6 +163,7 @@ func DefaultConfig() Config {
 		DiscoverModels:       true,
 		ModelPrefix:          true,
 		ModelCacheTTLMS:      ModelCacheTTLMS,
+		ModelRefreshMS:       0,
 		RequestTimeoutMS:     RequestTimeoutMS,
 		CatalogueTimeoutMS:   RequestTimeoutMS,
 		OAuthTimeoutMS:       OAuthTimeoutMS,
@@ -188,6 +194,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.DiscoverModels = coerceBool(raw["discover_models"], cfg.DiscoverModels)
 	cfg.ModelPrefix = coerceBool(raw["model_prefix"], cfg.ModelPrefix)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	cfg.RequestTimeoutMS = coerceInt(raw["request_timeout_ms"], cfg.RequestTimeoutMS)
 	cfg.CatalogueTimeoutMS = coerceInt(raw["catalogue_timeout_ms"], cfg.CatalogueTimeoutMS)
 	cfg.OAuthTimeoutMS = coerceInt(raw["oauth_timeout_ms"], cfg.OAuthTimeoutMS)
@@ -264,6 +271,10 @@ func ConfigFields() []configField {
 				"关闭时只用内置的 4 个实测模型；远端拉取失败时也会静默回退，不报错"},
 		{Name: "model_prefix", Type: "boolean", Description: "是否把账号标识作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "远端模型目录的缓存时长，毫秒（默认 300000 = 5 分钟，与远端下发的 ttlSeconds 一致）"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重拉一次远端目录；" +
+				"只有在目录确实变化时才写凭据文件通知宿主重新注册（目录不变则不写，因此稳定期零写入）；" +
+				"无论是否变化都可用状态页的「刷新目录」按钮手动刷新并强制通知宿主"},
 		{Name: "request_timeout_ms", Type: "integer", Description: "签到 / 积分接口的单次请求超时，毫秒（默认 30000）"},
 		{Name: "catalogue_timeout_ms", Type: "integer", Description: "模型目录接口的单次请求超时，毫秒（默认 30000）"},
 		{Name: "oauth_timeout_ms", Type: "integer", Description: "单次 OAuth 调用（设备码 / 令牌 / 续期）的超时，毫秒（默认 20000，比业务请求短）"},

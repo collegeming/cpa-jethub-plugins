@@ -126,6 +126,11 @@ type Config struct {
 	// window, output cap and reasoning levels. Failure falls back to the static
 	// table, so this is safe to leave on.
 	DiscoverModels bool
+	// ModelRefreshMS is how often the catalogue is refetched in the background,
+	// so the cache does not depend on a client request to stay fresh. 0 disables
+	// the background refresh, which is the default: it costs one vendor round
+	// trip per interval, and the page's 刷新目录 button covers the manual case.
+	ModelRefreshMS int
 	// ToolCacheBreakpoint puts one prompt-caching breakpoint on the LAST tool.
 	ToolCacheBreakpoint bool
 	// DefaultMaxTokens is applied when the request omits `max_tokens`; 0 sends none.
@@ -161,6 +166,7 @@ func DefaultConfig() Config {
 		ClientLanguage:         DefaultClientLanguage,
 		ClientTimezone:         DefaultClientTimezone,
 		DiscoverModels:         true,
+		ModelRefreshMS:         0,
 		ToolCacheBreakpoint:    true,
 		DefaultMaxTokens:       DefaultDefaultMaxTokens,
 		ConcurrencyRetryMax:    DefaultConcurrencyRetryMax,
@@ -204,6 +210,7 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.ClientTimezone = coerceString(raw["client_timezone"], cfg.ClientTimezone)
 	cfg.ModelPrefix = coerceBool(raw["model_prefix"], cfg.ModelPrefix)
 	cfg.DiscoverModels = coerceBool(raw["discover_models"], cfg.DiscoverModels)
+	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
 	cfg.ToolCacheBreakpoint = coerceBool(raw["tool_cache_breakpoint"], cfg.ToolCacheBreakpoint)
 	cfg.DefaultMaxTokens = coerceInt(raw["max_tokens"], cfg.DefaultMaxTokens)
 	cfg.ConcurrencyRetryMax = coerceInt(raw["concurrency_retry_max"], cfg.ConcurrencyRetryMax)
@@ -315,6 +322,10 @@ func ConfigFields() []configField {
 		{Name: "discover_models", Type: "boolean",
 			Description: "是否从 GET /api/v1/client/configs 读取权威的上下文窗口、最大输出与思考档位；" +
 				"拉取失败自动回退内置表，不影响可用性"},
+		{Name: "model_refresh_ms", Type: "integer",
+			Description: "后台自动刷新目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重拉一次 client/configs，" +
+				"只有在目录确实变化时才写凭据文件通知宿主重新注册（目录不变则不写，因此稳定期零写入）；" +
+				"无论是否变化都可用状态页的「刷新目录」按钮手动刷新并强制通知宿主"},
 		{Name: "tool_cache_breakpoint", Type: "boolean",
 			Description: "是否在最后一个工具上打 Anthropic prompt caching 断点（前缀式缓存，一个断点即覆盖 system + 全部工具）"},
 		{Name: "max_tokens", Type: "integer", Description: "请求未指定 max_tokens 时的默认值，0 表示不发送"},

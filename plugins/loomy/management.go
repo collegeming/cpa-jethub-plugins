@@ -58,6 +58,13 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	}
 	switch managementRoute(request.Path) {
 	case "/status":
+		switch strings.ToLower(strings.TrimSpace(request.Query.Get("action"))) {
+		case "refresh-catalog":
+			if wantsJSON(request) {
+				return catalogueRefreshJSON(h, request), nil
+			}
+			return catalogueRefreshPage(h, request), nil
+		}
 		if wantsJSON(request) {
 			return statusJSON(h, request), nil
 		}

@@ -163,14 +163,21 @@ func (p *plugin) Configure(configYAML []byte) error {
 	// sessions survive: they were authorised under the previous settings and
 	// cancelling them would strand a user mid-flow.
 	resetDiscoveredModels()
+	// The background catalogue refresh is restarted on every Configure, so a
+	// changed interval takes effect on a config reload instead of at the next
+	// process start.
+	startCatalogueScheduler(cfg)
 	return nil
 }
 
-// Quiesce is a no-op: the adapter holds no background workers.
-func (p *plugin) Quiesce() {}
+// Quiesce stops the background refresh: the host calls it before unloading the
+// plugin, and a tick firing against a closed instance would only log failures.
+func (p *plugin) Quiesce() { stopCatalogueScheduler() }
 
-// Shutdown releases the in-flight login sessions and the catalogue cache.
+// Shutdown stops the background refresh, then releases the in-flight login
+// sessions and the catalogue cache.
 func (p *plugin) Shutdown() {
+	stopCatalogueScheduler()
 	shutdownLoginSessions()
 	resetDiscoveredModels()
 }

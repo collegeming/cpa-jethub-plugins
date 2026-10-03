@@ -25,9 +25,13 @@ import (
 //     browser-reachable — the hub's channel overview and this plugin's status
 //     page link to them — without adding a nav item.
 //   - any other route is registered under `/v0/management/<path>`, a GLOBAL
-//     namespace shared with every other plugin. This plugin deliberately
-//     declares none: everything a script needs is `?format=json` on the resource
-//     routes.
+//     namespace shared with every other plugin. This plugin declared none for a
+//     long time — everything a script needed was `?format=json` on the resource
+//     routes — and it now declares exactly one: `/<id>/catalog`. The catalogue
+//     refresh is the one action that writes an auth file (that write is what
+//     makes the host re-register the provider's models), so it gets an
+//     authenticated, explicitly named entry point instead of being reachable
+//     only as a side effect of a status-page query string.
 //
 // The resource mount is dispatched as GET ONLY, which is why every action on
 // every page is a link carrying a query string and never a form.
@@ -35,7 +39,10 @@ import (
 // handleManagementRegister declares the entries management clients show.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
-		Routes: []pluginapi.ManagementRoute{},
+		Routes: []pluginapi.ManagementRoute{
+			{Method: http.MethodGet, Path: "/" + ProviderKey + "/catalog",
+				Description: "刷新模型目录并发布到宿主（JSON；等价于状态页的「刷新目录」按钮）"},
+		},
 		Resources: []pluginapi.ResourceRoute{
 			{Path: "/status", Description: "账号与积分余额、模型目录、登录/续期设置（由 hub 的渠道总览链接进入）"},
 			{Path: "/login", Description: "微信扫码登录 Raccoon 账号（auth.login.start 直接打开二维码页）；" +
@@ -57,6 +64,17 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	}
 	switch managementRoute(request.Path) {
 	case "/status":
+		// The manual refresh is an explicit action on the status route: the
+		// resource mount is dispatched as GET only, so the button is a link and
+		// `?format=json` selects the machine-readable form. It is the only path
+		// that publishes (rewrites an auth file), and it runs only because the
+		// operator asked for it.
+		if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "refresh-catalog") {
+			if wantsJSON(request) {
+				return catalogueRefreshJSON(h, request), nil
+			}
+			return catalogueRefreshPage(h, request), nil
+		}
 		if wantsJSON(request) {
 			return statusJSON(h, request), nil
 		}
@@ -79,6 +97,9 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 			return checkinJSON(h, request), nil
 		}
 		return renderCheckinPage(h, request), nil
+
+	case "/catalog":
+		return catalogueRefreshJSON(h, request), nil
 	}
 	return jsonManagementResponse(http.StatusNotFound, map[string]any{
 		"error": "unknown Raccoon management route",

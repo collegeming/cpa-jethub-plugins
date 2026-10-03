@@ -365,6 +365,18 @@ func putCachedModels(models []catalogueEntry) {
 	discoveredCatalogue.mu.Unlock()
 }
 
+// peekCachedModels returns the cached catalogue and its fetch time regardless of
+// the TTL, so a refresh can compare the listing it is about to replace with the
+// one it is replacing — and so the management page can report what was actually
+// fetched. `cachedModels` cannot serve this: it answers "is it still fresh?",
+// not "what is in there?".
+func peekCachedModels() ([]catalogueEntry, time.Time) {
+	discoveredCatalogue.mu.Lock()
+	defer discoveredCatalogue.mu.Unlock()
+	out := append([]catalogueEntry(nil), discoveredCatalogue.models...)
+	return out, discoveredCatalogue.fetchedAt
+}
+
 // resetDiscoveredModels drops the cache; used by tests and by reconfiguration.
 func resetDiscoveredModels() {
 	discoveredCatalogue.mu.Lock()

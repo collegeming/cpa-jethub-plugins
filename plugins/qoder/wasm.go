@@ -29,6 +29,26 @@ package main
 //     (`qoder-wasm.ts:36`, `:599-602`);
 //   - `machineId` is mandatory (`qoder-wasm.ts:414-416`).
 //
+// ⚠️ THE ARTIFACT ALSO EXPORTS `qodercontext_prepareRequest`, AND IT DOES NOT
+// SIGN. This is worth recording, because "Qoder has a WASM signer, so a signed
+// request to any Qoder endpoint is possible" is the natural next assumption and
+// it is wrong.
+//
+// `qodercontext_prepareRequest` takes six string pairs (host, path, …) and
+// builds `{host}/algo{path}`. Probed with wazero against every argument layout
+// that a signature could plausibly live in, it returns the common Cosy-* identity
+// headers and NEVER `Authorization: Bearer COSY.<payload>.<signature>`,
+// `Cosy-Key` or `Cosy-Date` — the three headers that make a request signed. A
+// caller-supplied Authorization placed in its "extra headers" JSON is echoed
+// back verbatim, which is not a signature. Only `prepareInferRequest` signs, and
+// the module hardwires the path it signs to
+// `…/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result`,
+// with no parameter that redirects it.
+//
+// Consequence: this signer cannot sign the vendor's model-listing endpoint
+// (`/api/v2/model/list`), so the model catalogue stays the built-in table. See
+// catalogrefresh.go for what that means for the refresh feature.
+//
 // ⚠️ ONE DELIBERATE DEVIATION FROM THE TYPESCRIPT GLUE
 //
 // `__wbg_set_08463b1df38a7e29` is shared by `Map.prototype.set` and

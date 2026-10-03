@@ -114,17 +114,26 @@ func (p *plugin) Registration() abiboot.Registration {
 
 // Configure applies the instance settings delivered by the host.
 func (p *plugin) Configure(configYAML []byte) error {
-	setSettings(ConfigFromYAML(configYAML))
+	cfg := ConfigFromYAML(configYAML)
+	setSettings(cfg)
+	// The background catalogue refresh is restarted on every Configure, so a
+	// changed interval takes effect on a config reload instead of at the next
+	// process start.
+	startCatalogueScheduler(cfg)
 	return nil
 }
 
-// Quiesce is a no-op: the only background worker is the callback dispatcher, and
-// stopping it early would close the published callback port while a browser
-// redirect may still be on its way. Shutdown is the only place it is released.
-func (p *plugin) Quiesce() {}
+// Quiesce stops the background catalogue refresh. The loopback callback
+// dispatcher deliberately keeps running: stopping it would close the published
+// callback port while a browser redirect may still be on its way, so Shutdown is
+// the only place it is released.
+func (p *plugin) Quiesce() { stopCatalogueScheduler() }
 
 // Shutdown releases the plugin's long-lived loopback callback listener.
-func (p *plugin) Shutdown() { shutdownLoginSessions() }
+func (p *plugin) Shutdown() {
+	stopCatalogueScheduler()
+	shutdownLoginSessions()
+}
 
 // configFieldsForHost converts the settings description into the host type.
 func configFieldsForHost() []pluginapi.ConfigField {
@@ -203,6 +212,7 @@ func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用，返回 JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/login/start", Description: "发起登录并返回授权 URL（JSON）"},
 			{Method: http.MethodPost, Path: "/" + ProviderKey + "/login/poll", Description: "轮询登录结果并保存凭据（JSON）"},
+			{Method: http.MethodGet, Path: "/" + ProviderKey + "/catalog", Description: "刷新模型目录并发布到宿主（JSON；等价于状态页的「刷新目录」按钮）"},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{Path: "/status", Description: "账号、凭据有效期、模型参数与积分余额（由 hub 的渠道总览链接进入）"},
@@ -226,10 +236,16 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 
 	switch managementRoute(request.Path) {
 	case "/status":
+		if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "refresh-catalog") {
+			return catalogueRefreshPage(h, request), nil
+		}
 		if wantsJSON(request) {
 			return statusJSON(h, request), nil
 		}
 		return renderStatusPage(h, request), nil
+
+	case "/catalog":
+		return catalogueRefreshJSON(h, request), nil
 
 	case "/login":
 		if wantsJSON(request) {

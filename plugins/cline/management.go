@@ -7,6 +7,7 @@ import (
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/authrefresh"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/catalog"
 	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/plugui"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -63,8 +64,11 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 
 	switch managementRoute(request.Path) {
 	case "/status":
-		if strings.EqualFold(strings.TrimSpace(request.Query.Get("action")), "refresh") {
+		switch strings.ToLower(strings.TrimSpace(request.Query.Get("action"))) {
+		case "refresh":
 			return refreshPage(h, request), nil
+		case "refresh-catalog":
+			return catalogueRefreshPage(h, request), nil
 		}
 		if wantsJSON(request) {
 			return statusJSON(h, request), nil
@@ -79,6 +83,9 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 
 	case "/refresh":
 		return refreshJSON(h, request), nil
+
+	case "/catalog":
+		return catalogueRefreshJSON(h, request), nil
 	}
 
 	return jsonManagementResponse(http.StatusNotFound, map[string]any{
@@ -297,6 +304,86 @@ func refreshJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi
 		"expires_at":  jsonTime(refreshed.ExpiresAt()),
 		"refreshable": refreshed.Refreshable(),
 	})
+}
+
+// catalogueRefreshPage refreshes the model catalogue and publishes it.
+//
+// This is the manual counterpart to the background scheduler. It is the only
+// path that rewrites an auth file: the write is what makes the host re-register
+// this provider's models, and it happens only because an operator asked for it,
+// never on a timer.
+func catalogueRefreshPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	cfg := settings()
+	entry, found := selectAccount(h, request)
+	authName := ""
+	if found {
+		authName = entry.Name
+	}
+	result := catalog.Run(catalog.Request{
+		Host:     h,
+		Provider: ProviderKey,
+		AuthName: authName,
+		Refresh:  func() (catalog.Outcome, error) { return catalogueRefresh(h, cfg) },
+	})
+	kind := "success"
+	if result.Err != nil {
+		kind = "danger"
+	} else if result.PublishErr != nil {
+		kind = "warning"
+	}
+	return pluguiPage("Cline", plugui.Card("刷新模型目录",
+		plugui.Group(
+			plugui.Notice(kind, result.Describe()),
+			plugui.Fields(
+				plugui.Field{Label: "线上目录缓存", Value: catalogueCacheText()},
+				plugui.Field{Label: "发布到宿主", Value: publishText(result)},
+			),
+		),
+		plugui.Action{Label: "返回状态", Path: "status", Kind: "primary"},
+	))
+}
+
+// catalogueRefreshJSON is the machine-readable form of the manual refresh.
+func catalogueRefreshJSON(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	entry, found := selectAccount(h, request)
+	authName := ""
+	if found {
+		authName = entry.Name
+	}
+	result := catalog.Run(catalog.Request{
+		Host:     h,
+		Provider: ProviderKey,
+		AuthName: authName,
+		Refresh:  func() (catalog.Outcome, error) { return catalogueRefresh(h, settings()) },
+	})
+	body := map[string]any{
+		"status":      "ok",
+		"models":      result.Models,
+		"changed":     result.Changed,
+		"published":   result.Published,
+		"duration_ms": result.Duration.Milliseconds(),
+	}
+	switch {
+	case result.Err != nil:
+		body["status"] = "error"
+		body["error"] = result.Err.Error()
+	case result.PublishErr != nil:
+		body["status"] = "warning"
+		body["publish_error"] = result.PublishErr.Error()
+	}
+	return jsonManagementResponse(http.StatusOK, body)
+}
+
+// publishText describes whether the catalogue reached the host registry.
+func publishText(result catalog.Result) string {
+	switch {
+	case result.Published:
+		return "已通知宿主重新注册，/v1/models 约 1 秒后生效"
+	case result.PublishErr != nil:
+		return "未发布（" + result.PublishErr.Error() + "）：插件缓存已刷新，/v1/models 要等宿主下次重新注册"
+	default:
+		return "未发布：没有可用的账号文件；插件缓存已刷新"
+	}
 }
 
 // refreshPage performs a page-driven refresh and renders the outcome.

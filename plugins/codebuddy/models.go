@@ -1084,6 +1084,19 @@ func (c *modelCache) reset() {
 	c.entries = map[string]cachedCatalog{}
 }
 
+// peek returns one product's cached catalog and its fetch time regardless of the
+// TTL. A refresh uses it to report whether the catalog actually moved; the
+// management page uses it to report what was actually fetched.
+func (c *modelCache) peek(key string) ([]remoteModel, time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || len(entry.models) == 0 {
+		return nil, time.Time{}, false
+	}
+	return entry.models, entry.fetchedAt, true
+}
+
 // cachedCatalogKey scopes the cache to one product so switching products never
 // serves the wrong model pool.
 func cachedCatalogKey(product productConfig) string { return product.ConfigValue }

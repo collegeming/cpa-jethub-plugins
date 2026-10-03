@@ -82,6 +82,24 @@ func (c *modelCache) put(models []pluginapi.ModelInfo) {
 	c.fetchedAt = time.Now()
 }
 
+// peek returns the cached listing and its fetch time regardless of the TTL, so a
+// refresh can compare the catalogue it is about to replace and the management
+// page can report what was actually fetched.
+func (c *modelCache) peek() ([]pluginapi.ModelInfo, time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.models, c.fetchedAt
+}
+
+// reset drops the cached listing, which is what makes a refresh follow the same
+// path a client request would: only the cache is removed.
+func (c *modelCache) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.models = nil
+	c.fetchedAt = time.Time{}
+}
+
 // staticModelInfos renders the fallback list.
 func staticModelInfos() []pluginapi.ModelInfo {
 	out := make([]pluginapi.ModelInfo, 0, len(defaultModelIDs))
