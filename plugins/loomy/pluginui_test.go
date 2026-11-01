@@ -51,28 +51,28 @@ func TestNoPageContainsAForm(t *testing.T) {
 	}
 }
 
-// The login route IS the WeChat QR page — no action parameter needed — and it
-// offers the SMS alternative up front, clearly secondary. Neither path ever asks
-// the user to edit plugin settings.
+// The login route IS the auto SMS confirm page — no action parameter needed —
+// and WeChat QR must not appear. Manual SMS remains a secondary path.
 func TestLoginPageOffersBothPaths(t *testing.T) {
-	transport := &wechatTransport{uuid: "001ZDsw64Vu7ll2E"}
 	fake := newFakeHost()
-	fake.do = transport.do
 	fake.install(t)
 	h := testHost()
 
 	page := renderPage(t, h, "/login", nil)
-	if !strings.Contains(page, "微信扫码登录") {
-		t.Fatalf("page = %s, want the QR path named", truncate(page, 400))
+	if !strings.Contains(page, "自动接码") {
+		t.Fatalf("page = %s, want auto SMS as the default entry", truncate(page, 400))
 	}
-	if !strings.Contains(page, "data:image/jpeg;base64,") {
-		t.Fatalf("page = %s, want a QR image rendered inline", truncate(page, 400))
-	}
-	if !strings.Contains(page, "手机验证码登录") || !strings.Contains(page, "action=sms") {
-		t.Fatalf("page = %s, want the SMS alternative offered up front", truncate(page, 600))
+	if strings.Contains(page, "微信扫码") || strings.Contains(page, "data:image/jpeg;base64,") {
+		t.Fatalf("page = %s, WeChat QR must not appear on the default login page", truncate(page, 600))
 	}
 	if strings.Contains(page, "在插件设置里") {
 		t.Fatal("the page must not send the user into the plugin settings to log in")
+	}
+
+	// Old WeChat bookmarks (?action=qr) also land on auto SMS.
+	qr := renderPage(t, h, "/login", url.Values{"action": {"qr"}})
+	if !strings.Contains(qr, "自动接码") || strings.Contains(qr, "data:image/jpeg;base64,") {
+		t.Fatalf("qr bookmark page = %s, want auto SMS without QR", truncate(qr, 600))
 	}
 
 	// The SMS page collects the number itself: without a known number it offers
@@ -84,21 +84,21 @@ func TestLoginPageOffersBothPaths(t *testing.T) {
 	if !strings.Contains(sms, "action=phone") || !strings.Contains(sms, "digit=1") {
 		t.Fatalf("page = %s, want the phone keypad of the SMS path", truncate(sms, 600))
 	}
+	if strings.Contains(sms, "微信扫码") {
+		t.Fatalf("SMS page must not offer WeChat: %s", truncate(sms, 400))
+	}
 
-	// A configured number becomes a send link, on the QR page as well.
+	// A configured number becomes a send link on the manual SMS page.
 	withSettings(t, Config{Enabled: true, Phone: "13800138000"})
-	configured := renderPage(t, h, "/login", nil)
+	configured := renderPage(t, h, "/login", url.Values{"action": {"sms"}})
 	if !strings.Contains(configured, "action=send") || !strings.Contains(configured, "phone=13800138000") {
 		t.Fatalf("page = %s, want a send link carrying the configured phone", truncate(configured, 400))
 	}
-	if !strings.Contains(configured, "data:image/jpeg;base64,") {
-		t.Fatalf("page = %s, want the QR path to stay primary", truncate(configured, 400))
-	}
 
-	// ?phone= overrides the configured default.
-	override := renderPage(t, h, "/login", url.Values{"phone": {"13900139000"}})
-	if !strings.Contains(override, "phone=13900139000") {
-		t.Fatalf("page = %s, want the override phone in the link", truncate(override, 400))
+	// Default login stays auto SMS even with a configured phone.
+	defaultPage := renderPage(t, h, "/login", nil)
+	if !strings.Contains(defaultPage, "自动接码") || strings.Contains(defaultPage, "data:image/jpeg;base64,") {
+		t.Fatalf("default page = %s, want auto SMS without QR", truncate(defaultPage, 400))
 	}
 }
 
@@ -148,8 +148,8 @@ func TestLoginPagePhoneKeypadFeedsTheSmsPath(t *testing.T) {
 	}
 }
 
-// `?action=start` mints the session, so every link on the page carries the same
-// state from the very first step.
+// `?action=start` mints the session and lands on the auto SMS confirm page, so
+// every link on the page carries the same state from the very first step.
 func TestLoginStartActionMintsASession(t *testing.T) {
 	fake := newFakeHost()
 	fake.install(t)
@@ -158,11 +158,14 @@ func TestLoginStartActionMintsASession(t *testing.T) {
 	if state == "" {
 		t.Fatal("?action=start must create a login session")
 	}
-	if !strings.Contains(body, "action=send") || !strings.Contains(body, "state="+state) {
-		t.Fatalf("page = %s, want a send link carrying state=%s", truncate(body, 400), state)
+	if !strings.Contains(body, "自动接码") {
+		t.Fatalf("page = %s, want the auto SMS confirm page", truncate(body, 400))
 	}
-	if !strings.Contains(body, "phone=13800138000") {
-		t.Fatalf("page = %s, want the phone in the link", truncate(body, 400))
+	if !strings.Contains(body, "action=autorun") || !strings.Contains(body, "state="+state) {
+		t.Fatalf("page = %s, want an autorun link carrying state=%s", truncate(body, 400), state)
+	}
+	if strings.Contains(body, "微信扫码") {
+		t.Fatalf("start page must not offer WeChat: %s", truncate(body, 400))
 	}
 }
 
@@ -213,11 +216,11 @@ func TestStatusPageOffersAddAccount(t *testing.T) {
 	withAccount(t, fake)
 
 	body := renderPage(t, testHost(), "/status", nil)
-	if !strings.Contains(body, "新建账号") {
+	if !strings.Contains(body, "自动接码登录（新建）") {
 		t.Fatalf("the status page offers no way to add a second account:\n%s", truncate(body, 600))
 	}
 	if !strings.Contains(body, `href="login?add=1"`) {
-		t.Fatalf("新建账号 must be a GET link into the login route:\n%s", truncate(body, 600))
+		t.Fatalf("自动接码登录（新建） must be a GET link into the login route:\n%s", truncate(body, 600))
 	}
 }
 
@@ -237,7 +240,7 @@ func TestLoginPageExplainsAddingAnAccount(t *testing.T) {
 	if !strings.Contains(adding, "已有账号的凭据不受影响") {
 		t.Fatalf("the add-account login page must state that the existing account survives:\n%s", truncate(adding, 600))
 	}
-	if !strings.Contains(adding, "另一个微信号") || !strings.Contains(adding, "另一个手机号") {
+	if !strings.Contains(adding, "自动接码") || !strings.Contains(adding, "另一个手机号") {
 		t.Fatalf("the add-account login page must say what a second identity means:\n%s", truncate(adding, 600))
 	}
 	if strings.Contains(adding, "在插件设置里") {

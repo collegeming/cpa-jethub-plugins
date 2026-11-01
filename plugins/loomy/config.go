@@ -1,10 +1,11 @@
 package main
 
 import (
-	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
 	"strconv"
 	"strings"
 
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
+	"github.com/collegeming/cpa-jethub-plugins/plugins/loomy/pool"
 	"gopkg.in/yaml.v3"
 )
 
@@ -14,11 +15,16 @@ const (
 	// and matched by the account pool (`loomy-adapter.ts:45`,
 	// `loomy-product.ts:89`).
 	ProviderKey = "loomy"
+	// legacyProviderKey is the `type` value found in existing auth files that
+	// were stamped with the plugin file name instead of ProviderKey. Such
+	// files are still ours: they are accepted on parse and list, and
+	// ParseCredential rewrites the field so the next save converges.
+	legacyProviderKey = "loomy-provider"
 	// DisplayName is the human-readable name shown by management clients
 	// (`loomy-product.ts:90`).
 	DisplayName = "Loomy (讯飞)"
 	// Version is the plugin release version.
-	Version = "0.1.0"
+	Version = "0.1.18"
 	// Author identifies the plugin author organization.
 	Author = "cpa-jethub"
 	// Repository is the public source location of this plugin.
@@ -124,9 +130,9 @@ type Config struct {
 	Enabled  bool
 	Priority int
 
-	// Phone is the default mobile number the SMS login page offers. It is only a
-	// convenience: the primary login path is the WeChat QR code, which needs no
-	// number at all, and the SMS page can collect one itself with its digit links
+	// Phone is the default mobile number the manual SMS login page offers. It is
+	// only a convenience: the primary login path is auto SMS (接码), which draws
+	// a number itself, and the manual SMS page can collect one with digit links
 	// (the resource mount is GET-only, so there is no input field to type into).
 	Phone string
 
@@ -157,6 +163,22 @@ type Config struct {
 	// the background refresh, which is the default: it costs one vendor round
 	// trip per interval, and the page's 刷新目录 button covers the manual case.
 	ModelRefreshMS int
+	// PointsCacheTTLMS bounds how long one account's point snapshot is reused.
+	// A status-page load or a quota.fetch inside the TTL costs zero upstream
+	// calls; the daily-grant claim invalidates the account's entry on success.
+	// 0 disables the cache and every read hits upstream.
+	PointsCacheTTLMS int
+
+	// Pool holds the account-pool scanner settings, decoded from the `pool_*`
+	// keys of the same YAML block.
+	Pool pool.Config
+
+	// SMSToken / SMSKeyword / SMSAPIBase / SMSWaitMS configure d1jiema auto
+	// SMS login (接码). Same platform as autoclaw / codeartsreg.
+	SMSToken    string
+	SMSKeyword  string
+	SMSAPIBase  string
+	SMSWaitMS   int
 }
 
 // DefaultConfig returns the settings used when the user provides nothing.
@@ -170,6 +192,8 @@ func DefaultConfig() Config {
 		RequestTimeoutMS:  RequestTimeoutMS,
 		ModelCacheTTLMS:   ModelCacheTTLMS,
 		ModelRefreshMS:    0,
+		PointsCacheTTLMS:  30_000,
+		Pool:              pool.DefaultConfig(),
 	}
 }
 
@@ -210,6 +234,16 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.ModelPrefix = coerceBool(raw["model_prefix"], cfg.ModelPrefix)
 	cfg.ModelCacheTTLMS = coerceInt(raw["model_cache_ttl_ms"], cfg.ModelCacheTTLMS)
 	cfg.ModelRefreshMS = coerceInt(raw["model_refresh_ms"], cfg.ModelRefreshMS)
+	cfg.PointsCacheTTLMS = coerceInt(raw["points_cache_ttl_ms"], cfg.PointsCacheTTLMS)
+	cfg.SMSToken = coerceString(raw["sms_token"], cfg.SMSToken)
+	cfg.SMSKeyword = coerceString(raw["sms_keyword"], cfg.SMSKeyword)
+	cfg.SMSAPIBase = coerceString(raw["sms_api_base"], cfg.SMSAPIBase)
+	cfg.SMSWaitMS = coerceInt(raw["sms_wait_ms"], cfg.SMSWaitMS)
+	if cfg.SMSWaitMS == 0 {
+		// also accept seconds form used by older aPipixia configs
+		cfg.SMSWaitMS = coerceInt(raw["sms_wait_seconds"], 0) * 1000
+	}
+	cfg.Pool = pool.ConfigFromMap(raw, "pool_")
 	return cfg
 }
 
@@ -294,12 +328,13 @@ func coerceString(value any, fallback string) string {
 func ConfigFields() []configField {
 	return []configField{
 		{Name: "phone", Type: "string",
-			Description: "短信登录页的默认手机号（11 位，如 13800138000），可留空。登录以微信扫码为主，不需要手机号；" +
-				"走短信备用路径时号码也可以直接在登录页用数字链接输入，或用链接参数 ?phone= 覆盖，因此这一项只是省事的默认值"},
+			Description: "短信登录页的默认手机号（11 位，如 13800138000），可留空。主路径是自动接码，一般不需要填；" +
+				"手动短信备用路径可在登录页用数字链接输入，或用 ?phone= 覆盖"},
 		{Name: "discover_models", Type: "boolean",
 			Description: "是否用账号会话实时拉取 GET /models 目录（默认关闭）。关闭时只使用内置的 8 个兜底模型"},
 		{Name: "model_prefix", Type: "boolean", Description: "是否把账号 ID 作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "实时模型目录的缓存时长，毫秒（默认 2 小时）"},
+		{Name: "points_cache_ttl_ms", Type: "integer", Description: "单账号积分快照缓存时长，毫秒（默认 30000，0=关闭缓存每次实时查询；签到成功后自动失效）"},
 		{Name: "model_refresh_ms", Type: "integer",
 			Description: "后台自动刷新目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重拉一次 GET /models；" +
 				"只有在目录确实变化时才写凭据文件通知宿主重新注册（目录不变则不写，因此稳定期零写入）；" +
@@ -313,6 +348,14 @@ func ConfigFields() []configField {
 			Description: "讯飞账号服务签名用的 accessKeyId。留空使用内置值（来自 Loomy 桌面客户端）；上游轮换后可在不改插件的情况下覆盖"},
 		{Name: "account_sk", Type: "string",
 			Description: "讯飞账号服务签名用的 accessKeySecret。留空使用内置值；仅在 account_ak 同时填写时有意义"},
+		{Name: "sms_token", Type: "string",
+			Description: "d1jiema 接码 token（与 autoclaw/codearts 可共用）。也可用环境变量 LOOMY_SMS_TOKEN / SMS_TOKEN"},
+		{Name: "sms_keyword", Type: "string",
+			Description: "接码短信抬头关键词（默认 讯飞）"},
+		{Name: "sms_api_base", Type: "string",
+			Description: "接码平台 API 地址（默认 https://api.d1jiema.com/zc/data.php）"},
+		{Name: "sms_wait_ms", Type: "integer",
+			Description: "自动接码等待短信的最长时间，毫秒（默认 90000）。也兼容 sms_wait_seconds"},
 	}
 }
 

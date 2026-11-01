@@ -81,17 +81,16 @@ func TestLoginStartReturnsURLWithoutNetwork(t *testing.T) {
 			t.Fatalf("state %q contains %q, which the host's ValidateOAuthState rejects", response.State, character)
 		}
 	}
-	// The entry point leads straight to the QR page: parsing the URL must yield
-	// action=qr, so the very first page load shows a scannable code.
-	wantURL := "http://127.0.0.1:8317" + loginResourcePath + "?action=" + loginQRAction + "&state=" + response.State
+	// The entry point leads straight to the auto SMS confirm page.
+	wantURL := "http://127.0.0.1:8317" + loginResourcePath + "?action=" + loginAutoAction + "&state=" + response.State
 	if response.URL != wantURL {
 		t.Fatalf("url = %q, want %q", response.URL, wantURL)
 	}
 	if response.ExpiresAt.IsZero() {
 		t.Fatal("a login session must carry an expiry")
 	}
-	if response.Metadata["flow"] != "wechat" {
-		t.Fatalf("metadata = %#v, want flow=wechat", response.Metadata)
+	if response.Metadata["flow"] != "sms_auto" {
+		t.Fatalf("metadata = %#v, want flow=sms_auto", response.Metadata)
 	}
 	if len(fake.requests) != 0 {
 		t.Fatalf("issued %d requests, want 0", len(fake.requests))
@@ -107,8 +106,8 @@ func TestLoginStartWithoutBaseURLStaysRelative(t *testing.T) {
 	if !strings.HasPrefix(response.URL, loginResourcePath+"?") {
 		t.Fatalf("url = %q, want the relative resource path", response.URL)
 	}
-	if !strings.Contains(response.URL, "action="+loginQRAction) || !strings.Contains(response.URL, "state="+response.State) {
-		t.Fatalf("url = %q, want the QR action and the state", response.URL)
+	if !strings.Contains(response.URL, "action="+loginAutoAction) || !strings.Contains(response.URL, "state="+response.State) {
+		t.Fatalf("url = %q, want the auto SMS action and the state", response.URL)
 	}
 }
 

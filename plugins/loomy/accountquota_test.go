@@ -241,9 +241,73 @@ func TestStatusPageRendersOneQuotaCardPerAccount(t *testing.T) {
 		t.Error("the second account's re-login link does not name the second account")
 	}
 	if !strings.Contains(page, "login?add=1") {
-		t.Error("新建账号 is not reachable from the status page")
+		t.Error("自动接码登录 is not reachable from the status page")
 	}
 	if strings.Contains(strings.ToLower(page), "<form") {
 		t.Error("resource routes are dispatched as GET only, so no form may be rendered")
+	}
+}
+
+// TestPointsCacheReusesOneReadWithinTheTTL pins the snapshot cache: a second
+// status load inside the TTL costs zero upstream calls, TTL=0 disables the
+// reuse, and a successful grant claim invalidates the remembered figure.
+func TestPointsCacheReusesOneReadWithinTheTTL(t *testing.T) {
+	fake := twoLoomyAccounts(t)
+	withSettings(t, DefaultConfig())
+
+	callManagement(t, testHost(), jsonManagementRequest(http.MethodGet, "/status", nil))
+	callManagement(t, testHost(), jsonManagementRequest(http.MethodGet, "/status", nil))
+	if calls := fake.callsFor(PointsRecordsPath); len(calls) != 2 {
+		t.Fatalf("records calls = %d, want 2 (one per account; the reload is cached)", len(calls))
+	}
+}
+
+func TestPointsCacheDisabledReadsEveryLoad(t *testing.T) {
+	fake := twoLoomyAccounts(t)
+	cfg := DefaultConfig()
+	cfg.PointsCacheTTLMS = 0
+	withSettings(t, cfg)
+
+	callManagement(t, testHost(), jsonManagementRequest(http.MethodGet, "/status", nil))
+	callManagement(t, testHost(), jsonManagementRequest(http.MethodGet, "/status", nil))
+	if calls := fake.callsFor(PointsRecordsPath); len(calls) != 4 {
+		t.Fatalf("records calls = %d, want 4 (two accounts x two loads with the cache off)", len(calls))
+	}
+}
+
+func TestPointsCacheDropsTheEntryAfterAClaim(t *testing.T) {
+	fake := newFakeHost()
+	credential := buildCredential("session-a", "user-a", "13800138000", "", DefaultConfig(), time.Now())
+	storage, errEncode := credential.Encode()
+	if errEncode != nil {
+		t.Fatalf("encode credential: %v", errEncode)
+	}
+	fake.files = []pluginapi.HostAuthFileEntry{{
+		Provider: ProviderKey, AuthIndex: "idx-a", Name: "loomy-13800138000.json", Status: "active",
+	}}
+	fake.auths["idx-a"] = storage
+	fake.do = func(request abiboot.HTTPDoRequest) (*pluginapi.HTTPResponse, error) {
+		if strings.Contains(request.URL, PointsFirstLoginPath) {
+			return httpResponse(http.StatusOK,
+				`{"code":"000000","data":{"permanentBalance":5,"dailyBalance":5000,"dailyQuota":5000,"alreadyProcessed":false}}`), nil
+		}
+		return httpResponse(http.StatusOK, loomyPointsBody(15000, 4992)), nil
+	}
+	fake.install(t)
+
+	// First read warms the cache.
+	snapshot, err := cachedFetchPoints(testHost(), credential, settings())
+	if err != nil || snapshot == nil {
+		t.Fatalf("warm-up read: snapshot=%v err=%v", snapshot, err)
+	}
+	before := len(fake.callsFor(PointsRecordsPath))
+	if outcome := claimDailyGrant(testHost(), credential, settings()); outcome.Status != "claimed" {
+		t.Fatalf("claim outcome = %q, want claimed", outcome.Status)
+	}
+	if _, err := cachedFetchPoints(testHost(), credential, settings()); err != nil {
+		t.Fatalf("post-claim read: %v", err)
+	}
+	if calls := fake.callsFor(PointsRecordsPath); len(calls) != before+1 {
+		t.Fatalf("records calls = %d, want %d (the claim invalidated the snapshot)", len(calls), before+1)
 	}
 }

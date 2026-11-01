@@ -21,14 +21,28 @@ func registerResponse(t *testing.T) pluginapi.ManagementRegistrationResponse {
 	return decodeResult[pluginapi.ManagementRegistrationResponse](t, value)
 }
 
-// NO route carries a Menu. The manager renders one sidebar entry per menu route
-// and does not group them by plugin, and the repository spends that single entry
-// on the hub plugin, so every page here is a Menu-less resource route (README
-// "挂载规则").
+// Exactly ONE route carries a Menu: the status page is this plugin's sidebar
+// entry. The account pool page is a Menu-less resource linked from status, so
+// CPAMP shows a single Loomy nav row. Hosts without the hub plugin still reach
+// every page from that row (README "挂载规则").
 func TestManagementRegistrationHasNoMenuAndNoLooseRoutes(t *testing.T) {
 	registration := registerResponse(t)
-	if len(registration.Routes) != 0 {
-		t.Fatalf("routes = %d, want none: every page is a resource route", len(registration.Routes))
+	menus := map[string]string{}
+	for _, route := range registration.Routes {
+		if route.Menu != "" {
+			menus[route.Method+" "+route.Path] = route.Menu
+		} else if route.Method+" "+route.Path != "POST /loomy/scan" && route.Method+" "+route.Path != "POST /loomy/sms/auto" {
+			t.Errorf("route %s %s has no Menu and is not a provider-prefixed script path", route.Method, route.Path)
+		}
+	}
+	if _, ok := menus["GET /status"]; !ok {
+		t.Errorf("expected menu route GET /status, menus = %v", menus)
+	}
+	if _, ok := menus["GET /pool"]; ok {
+		t.Errorf("GET /pool must not carry a Menu (merged into status sidebar); menus = %v", menus)
+	}
+	if len(menus) != 1 {
+		t.Errorf("menu count = %d, want 1; menus = %v", len(menus), menus)
 	}
 	if len(registration.Resources) == 0 {
 		t.Fatal("the pages must be declared as resources")
@@ -46,7 +60,7 @@ func TestManagementRegistrationHasNoMenuAndNoLooseRoutes(t *testing.T) {
 		}
 		seen[resource.Path] = true
 	}
-	for _, want := range []string{"/status", "/login", "/checkin", "/onboarding"} {
+	for _, want := range []string{"/login", "/checkin", "/onboarding", "/pool"} {
 		if !seen[want] {
 			t.Errorf("resource %s is missing", want)
 		}

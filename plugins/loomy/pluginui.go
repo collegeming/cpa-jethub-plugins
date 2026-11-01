@@ -45,15 +45,16 @@ func renderStatusPage(h *abiboot.Host, request pluginapi.ManagementRequest) plug
 			"auth.refresh 只对 " + PointsRecordsPath + " 做一次有效性探测"},
 	)),
 		plugui.Action{Label: "刷新目录", Query: "action=refresh-catalog", Kind: "primary"},
+		plugui.Action{Label: "账号池", Path: "pool"},
 	)}
 
 	accounts := loomyAccounts(h)
 	if len(accounts) == 0 {
 		body = append(body, plugui.Card("尚未添加账号",
-			plugui.Notice("warning", "当前实例还没有 Loomy 账号。登录以微信扫码为主："+
-				"点下面的按钮直接打开二维码页，用微信扫码确认即可，不需要手机号；"+
-				"同一页也提供手机验证码登录作为备用路径。"),
-			plugui.Action{Label: "去登录", Path: "login", Kind: "primary"},
+			plugui.Notice("warning", "当前实例还没有 Loomy 账号。点下面的按钮进入自动接码登录："+
+				"确认后从接码平台取号 → 发短信 → 收码 → 保存凭据。微信扫码已关闭。"),
+			plugui.Action{Label: "自动接码登录", Path: "login", Kind: "primary"},
+			plugui.Action{Label: "账号池", Path: "pool"},
 		))
 		// The catalogue renders here too: it is the bundled table until a
 		// credential exists, and it answers "which models does this channel
@@ -195,7 +196,7 @@ func renderAccountList(accounts []pluginapi.HostAuthFileEntry, current string) t
 		title += "（在地址后追加 ?auth_index=<索引> 可切换）"
 	}
 	return plugui.Card(title, plugui.Fields(fields...),
-		plugui.Action{Label: "新建账号", Path: "login", Query: plugui.AddAccountQuery},
+		plugui.Action{Label: "自动接码登录（新建）", Path: "login", Query: plugui.AddAccountQuery, Kind: "primary"},
 	)
 }
 
@@ -259,15 +260,11 @@ func keypadActions(state, action, extra string) []plugui.Action {
 	return actions
 }
 
-// renderLoginPage drives both login paths.
+// renderLoginPage drives the login paths.
 //
 // The page's own route IS the primary path: `/login` with no action is the
-// WeChat QR page, and `action=qr` spells that out. It shows a live QR code and
-// walks the scan → confirm → (bind a phone) → credential state machine with one
-// long-poll iteration per page load. The SMS flow stays available on the same
-// page as the clearly secondary alternative and needs no configuration: its
-// number is typed with the same digit links, and every control is a query-string
-// link, never a form.
+// auto SMS (接码) confirm page. WeChat QR is disabled. Manual SMS remains as a
+// secondary alternative (`action=sms`) with digit-link keypad entry.
 func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	cfg := settings()
 	action := strings.ToLower(strings.TrimSpace(request.Query.Get("action")))
@@ -286,11 +283,23 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 	phone := cfg.defaultPhone(request.Query.Get("phone"))
 
 	switch action {
-	case "", "qr":
-		return renderWechatQRPage(h, cfg, request, session, created)
+	case "", "start", autoActionConfirm:
+		return loginAutoConfirmPage(cfg, request, session)
+
+	case autoActionRun:
+		return loginAutoRunPage(h, cfg, session)
 
 	case "sms":
 		return loginSMSPage(cfg, request, session, created)
+
+	case "qr":
+		// WeChat login removed from UI; old bookmarks land on auto SMS.
+		return loginAutoConfirmPage(cfg, request, session)
+
+	case "wechat":
+		// Internal-only residual renderer (no UI links). Kept so unit tests can
+		// still exercise the QR state machine without exposing it in the panel.
+		return renderWechatQRPage(h, cfg, request, session, created)
 
 	case bindActionSend:
 		resolved := phone
@@ -364,9 +373,8 @@ func renderLoginPage(h *abiboot.Host, request pluginapi.ManagementRequest) plugi
 		session.clearPhoneDraft()
 		return loginSMSPage(cfg, request, session, created)
 	}
-	// An unknown action is not an error page: the primary path is the QR page, so
-	// that is where a stray link lands.
-	return renderWechatQRPage(h, cfg, request, session, created)
+	// An unknown action is not an error page: the primary path is auto SMS.
+	return loginAutoConfirmPage(cfg, request, session)
 }
 
 // Page actions. They are query-string values on the one /login resource route;
@@ -398,7 +406,7 @@ func addAccountNotice(request pluginapi.ManagementRequest) template.HTML {
 	}
 	return plugui.Group(
 		plugui.Notice("", plugui.AddAccountNotice),
-		plugui.Notice("", "新增账号要有另一个身份：用另一个微信号扫码即可；走短信路径时才需要另一个手机号，"+
+		plugui.Notice("", "新增账号走自动接码会取一个新号；若改用手动短信，需要另一个手机号，"+
 			"号码可以直接在本页用数字链接输入，不需要改插件设置。"),
 	)
 }
@@ -427,6 +435,7 @@ func loginAlternativeCard(cfg Config, request pluginapi.ManagementRequest, sessi
 		entry = "改用手机验证码登录"
 	}
 	actions = append(actions, plugui.Action{Label: entry, Query: "action=sms&state=" + state})
+	actions = append(actions, plugui.Action{Label: "自动接码登录", Query: "action=" + autoActionConfirm + "&state=" + state})
 	return plugui.Card("手机验证码登录（备用）", plugui.Group(
 		addAccountNotice(request),
 		plugui.Fields(fields...),
@@ -484,14 +493,16 @@ func loginSMSCard(cfg Config, request pluginapi.ManagementRequest, session *logi
 				Query: "action=send&state=" + state + "&phone=" + normalizePhone(draft),
 			}}, actions...)
 		}
-		actions = append(actions, plugui.Action{Label: "微信扫码登录", Query: "action=qr&state=" + state, Kind: "primary"})
+		actions = append(actions,
+			plugui.Action{Label: "自动接码登录", Query: "action=" + autoActionConfirm + "&state=" + state, Kind: "primary"},
+		)
 		return plugui.Card("手机验证码登录", plugui.Group(plugui.Fields(fields...), noticeForDraft(draft)), actions...)
 	}
 	fields = append(fields, plugui.Field{Label: "将发送到", Value: phone})
 	actions = append(actions,
 		plugui.Action{Label: "发送验证码", Query: "action=send&state=" + state + "&phone=" + phone, Kind: "primary"},
+		plugui.Action{Label: "自动接码登录", Query: "action=" + autoActionConfirm + "&state=" + state},
 		plugui.Action{Label: "换一个号码", Query: "action=" + phoneActionClear + "&state=" + state},
-		plugui.Action{Label: "微信扫码登录", Query: "action=qr&state=" + state},
 	)
 	return plugui.Card("手机验证码登录", plugui.Group(plugui.Fields(fields...)), actions...)
 }
@@ -805,13 +816,13 @@ func renderCheckinPage(h *abiboot.Host, request pluginapi.ManagementRequest) plu
 	if !found {
 		return pluguiPage("Loomy 每日额度",
 			plugui.Card("没有可用账号", plugui.Notice("warning", "请先登录一个 Loomy 账号。"),
-				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"}))
+				plugui.Action{Label: "自动接码登录", Path: "login", Kind: "primary"}))
 	}
 	credential, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		return pluguiPage("Loomy 每日额度",
 			plugui.Card("无法读取凭据", plugui.Notice("danger", errCredential.Error()),
-				plugui.Action{Label: "重新登录", Path: "login", Kind: "primary"}))
+				plugui.Action{Label: "自动接码登录", Path: "login", Kind: "primary"}))
 	}
 	selector := ""
 	if entry.AuthIndex != "" {
@@ -875,13 +886,13 @@ func renderOnboardingPage(h *abiboot.Host, request pluginapi.ManagementRequest) 
 	if !found {
 		return pluguiPage("Loomy 一次性任务",
 			plugui.Card("没有可用账号", plugui.Notice("warning", "请先登录一个 Loomy 账号。"),
-				plugui.Action{Label: "去登录", Path: "login", Kind: "primary"}))
+				plugui.Action{Label: "自动接码登录", Path: "login", Kind: "primary"}))
 	}
 	credential, errCredential := credentialOf(h, entry)
 	if errCredential != nil {
 		return pluguiPage("Loomy 一次性任务",
 			plugui.Card("无法读取凭据", plugui.Notice("danger", errCredential.Error()),
-				plugui.Action{Label: "重新登录", Path: "login", Kind: "primary"}))
+				plugui.Action{Label: "自动接码登录", Path: "login", Kind: "primary"}))
 	}
 	cfg := settings()
 	selector := ""

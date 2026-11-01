@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/collegeming/cpa-jethub-plugins/plugins/loomy/pool"
 )
 
 // The YAML decoder accepts block style, flow style, YAML-1.2-hostile booleans
@@ -104,6 +106,7 @@ func TestConfigFieldsAreDeclared(t *testing.T) {
 		"discover_models":      "boolean",
 		"model_prefix":         "boolean",
 		"model_cache_ttl_ms":   "integer",
+		"points_cache_ttl_ms":  "integer",
 		"model_refresh_ms":     "integer",
 		"sms_code_ttl_seconds": "integer",
 		"session_ttl_seconds":  "integer",
@@ -111,6 +114,10 @@ func TestConfigFieldsAreDeclared(t *testing.T) {
 		"request_timeout_ms":   "integer",
 		"account_ak":           "string",
 		"account_sk":           "string",
+		"sms_token":            "string",
+		"sms_keyword":          "string",
+		"sms_api_base":         "string",
+		"sms_wait_ms":          "integer",
 	}
 	seen := map[string]bool{}
 	for _, field := range fields {
@@ -132,14 +139,22 @@ func TestConfigFieldsAreDeclared(t *testing.T) {
 			t.Errorf("config field %q is not declared", name)
 		}
 	}
-	// The host type conversion keeps names, types and descriptions.
+	// The host type conversion keeps names, types and descriptions, then
+	// appends the pool scanner's fields under the pool_ prefix.
 	hostFields := configFieldsForHost()
-	if len(hostFields) != len(fields) {
-		t.Fatalf("host fields = %d, want %d", len(hostFields), len(fields))
+	poolFields := pool.HostConfigFields()
+	if len(hostFields) != len(fields)+len(poolFields) {
+		t.Fatalf("host fields = %d, want %d provider + %d pool_*", len(hostFields), len(fields), len(poolFields))
 	}
-	for index, field := range hostFields {
+	for index, field := range hostFields[:len(fields)] {
 		if field.Name != fields[index].Name || field.Description != fields[index].Description {
 			t.Fatalf("host field %d = %#v, want it to mirror %#v", index, field, fields[index])
+		}
+	}
+	for index, field := range poolFields {
+		host := hostFields[len(fields)+index]
+		if host.Name != "pool_"+field.Name || host.Description != field.Description {
+			t.Fatalf("pool field %d = %#v, want pool_-prefixed %#v", index, host, field)
 		}
 	}
 }

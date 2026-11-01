@@ -129,6 +129,7 @@ func (f *fakeHost) install(t *testing.T) {
 func resetTestState() {
 	shutdownLoginSessions()
 	resetDiscoveredModels()
+	resetPointsCache()
 }
 
 // callsFor returns every recorded request whose URL contains match.
