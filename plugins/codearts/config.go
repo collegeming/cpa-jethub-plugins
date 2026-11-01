@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/collegeming/cpa-jethub-plugins/plugins/codearts/pool"
+	"github.com/collegeming/cpa-jethub-plugins/plugins/codearts/reg"
 	"gopkg.in/yaml.v3"
 )
 
@@ -57,6 +59,9 @@ const (
 	LoginFlowTicket = "ticket"
 )
 
+// DefaultClientUserAgent mirrors the official AIIDE plugin identity upstream.
+const DefaultClientUserAgent = LoginPluginName + "/" + LoginPluginVersion
+
 // Config is the per-instance plugin configuration, decoded from the
 // `config_yaml` subtree the host passes in plugin.register / plugin.reconfigure.
 type Config struct {
@@ -70,6 +75,15 @@ type Config struct {
 	DiscoverModels bool
 	// ModelPrefix 是否把账号 ID 作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字。
 	ModelPrefix bool
+	// ModelPrefixValue overrides the per-account prefix with a fixed name so
+	// published model IDs stay stable when access_key_id rotates on token
+	// refresh (e.g. "codearts" -> "codearts/<model>"). Empty keeps the
+	// ModelPrefix behaviour.
+	ModelPrefixValue string
+	// ClientUserAgent overrides the unsigned User-Agent header sent upstream;
+	// empty keeps DefaultClientUserAgent, which mirrors the official AIIDE
+	// plugin identity.
+	ClientUserAgent string
 	// DefaultMaxTokens is applied when a request omits max_tokens.
 	DefaultMaxTokens int
 	// BenefitModels routes the known benefit model through maas_type=benefit.
@@ -111,6 +125,19 @@ type Config struct {
 	// for a published container port.
 	CallbackPublicHost string
 	CallbackPublicPort int
+
+	// CreditCacheTTLMS bounds how long one account's balance + daily-activity
+	// snapshot is reused. A status-page load or a quota.fetch inside the TTL
+	// costs zero upstream calls; a successful check-in invalidates the entry.
+	// 0 disables the cache.
+	CreditCacheTTLMS int
+
+	// Pool holds the account-pool scanner settings, decoded from the
+	// `pool_*` keys of this plugin's config block.
+	Pool pool.Config
+	// Reg holds the auto-registration settings, decoded from the `reg_*`
+	// keys of this plugin's config block.
+	Reg reg.Config
 }
 
 // DefaultConfig returns the settings used when the user provides nothing.
@@ -130,6 +157,9 @@ func DefaultConfig() Config {
 		ChunkTimeoutMS:      600000,
 		ModelCacheTTLMS:     2 * 60 * 60 * 1000,
 		ModelRefreshMS:      0,
+		CreditCacheTTLMS:    30_000,
+		Pool:                pool.DefaultConfig(),
+		Reg:                 reg.DefaultConfig(),
 	}
 }
 
@@ -160,6 +190,8 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.Flow = coerceFlow(raw["flow"], cfg.Flow)
 	cfg.DiscoverModels = coerceBool(raw["discover_models"], cfg.DiscoverModels)
 	cfg.ModelPrefix = coerceBool(raw["model_prefix"], cfg.ModelPrefix)
+	cfg.ModelPrefixValue = coerceString(raw["model_prefix_value"], cfg.ModelPrefixValue)
+	cfg.ClientUserAgent = coerceString(raw["client_user_agent"], cfg.ClientUserAgent)
 	cfg.BenefitModels = coerceBool(raw["benefit_models"], cfg.BenefitModels)
 	cfg.ToolStream = coerceBool(raw["tool_stream"], cfg.ToolStream)
 	cfg.PromptCacheKey = coerceBool(raw["prompt_cache_key"], cfg.PromptCacheKey)
@@ -173,6 +205,9 @@ func ConfigFromYAML(document []byte) Config {
 	cfg.CallbackBindHost = coerceString(raw["callback_bind_host"], cfg.CallbackBindHost)
 	cfg.CallbackPublicHost = coerceString(raw["callback_public_host"], cfg.CallbackPublicHost)
 	cfg.CallbackPublicPort = coerceInt(raw["callback_public_port"], cfg.CallbackPublicPort)
+	cfg.CreditCacheTTLMS = coerceInt(raw["credit_cache_ttl_ms"], cfg.CreditCacheTTLMS)
+	cfg.Pool = pool.ConfigFromMap(raw, "pool_")
+	cfg.Reg = reg.ConfigFromMap(raw, "reg_")
 	return cfg
 }
 
@@ -254,6 +289,8 @@ func ConfigFields() []configField {
 		{Name: "flow", Type: "enum", EnumValues: []string{LoginFlowOAuth, LoginFlowTicket}, Description: "登录方式：oauth=浏览器 PKCE 授权（默认），ticket=旧版票据轮询"},
 		{Name: "discover_models", Type: "boolean", Description: "是否调用远端接口动态发现模型列表，关闭则使用内置列表"},
 		{Name: "model_prefix", Type: "boolean", Description: "是否把账号 ID 作为模型前缀暴露（<账号>/<模型>）。关闭后模型列表只显示模型本身的名字"},
+		{Name: "model_prefix_value", Type: "string", Description: "固定模型前缀（如 codearts），设置后所有账号统一发布为 <前缀>/<模型>，不随 access_key_id 轮换而变化；留空则按 model_prefix 使用账号 ID 前 8 位"},
+		{Name: "client_user_agent", Type: "string", Description: "发往上游的 User-Agent 覆盖值；留空默认镜像官方 AIIDE 插件标识（snap_AIIDE/5.2.0）"},
 		{Name: "benefit_models", Type: "boolean", Description: "对 glm-5.3-flash 使用 maas_type=benefit 签名头（权益模型）"},
 		{Name: "tool_stream", Type: "boolean", Description: "启用 deepseek 系列的工具调用流式模式（DSML）"},
 		{Name: "prompt_cache_key", Type: "boolean", Description: "为请求附加稳定的 prompt_cache_key 以命中提示缓存"},
@@ -261,6 +298,7 @@ func ConfigFields() []configField {
 		{Name: "first_token_timeout_ms", Type: "integer", Description: "等待上游首个 SSE 分片的超时，毫秒"},
 		{Name: "chunk_timeout_ms", Type: "integer", Description: "两个上游 SSE 分片之间的超时，毫秒"},
 		{Name: "model_cache_ttl_ms", Type: "integer", Description: "动态模型列表缓存时长，毫秒"},
+		{Name: "credit_cache_ttl_ms", Type: "integer", Description: "单账号额度/签到快照缓存时长，毫秒（默认 30000，0=关闭缓存每次实时查询；签到成功后自动失效）"},
 		{Name: "model_refresh_ms", Type: "integer",
 			Description: "后台自动刷新模型目录的间隔，毫秒（默认 0 = 关闭）。开启后每隔该时长重新调用两个签名模型接口，只更新插件缓存、不改任何凭据文件；手动刷新请用状态页的「刷新目录」按钮"},
 		{Name: "callback_port", Type: "integer", Description: "登录回调固定端口（容器部署必填，并需在 compose 中发布同名端口；0=随机端口，仅本机部署可用）"},

@@ -44,6 +44,7 @@ func newRefreshHost(files ...pluginapi.HostAuthFileEntry) *refreshHost {
 
 func (f *refreshHost) install(t *testing.T) *abiboot.Host {
 	t.Helper()
+	resetCreditCache()
 	credentialRefresher = newCredentialRefresher()
 	t.Cleanup(func() {
 		credentialRefresher = newCredentialRefresher()

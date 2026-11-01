@@ -59,6 +59,7 @@ type savedAuthFile struct {
 // install registers the fake transport.
 func (f *freshnessHost) install(t *testing.T) *abiboot.Host {
 	t.Helper()
+	resetCreditCache()
 	abiboot.SetHostCaller(func(method string, request []byte) ([]byte, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -467,4 +468,47 @@ func mustMarshal(t *testing.T, value any) json.RawMessage {
 		t.Fatalf("marshal: %v", errMarshal)
 	}
 	return raw
+}
+
+// TestCreditCacheReusesOneReadWithinTheTTL pins the snapshot cache: a second
+// status read inside the TTL costs zero upstream calls, TTL=0 disables the
+// reuse, and invalidation makes the next read live again.
+func TestCreditCacheReusesOneReadWithinTheTTL(t *testing.T) {
+	host, handle := newFreshnessFixture(t, "HSTAVALIDKEY", time.Now().Add(6*time.Hour))
+
+	decodeDocument(t, statusJSON(handle, freshnessStatusRequest()))
+	decodeDocument(t, statusJSON(handle, freshnessStatusRequest()))
+	if _, balanceCalls := host.counts(); balanceCalls != 1 {
+		t.Fatalf("balance reads = %d, want 1 (the second load is cached)", balanceCalls)
+	}
+}
+
+func TestCreditCacheDisabledReadsEveryLoad(t *testing.T) {
+	previous := settings()
+	t.Cleanup(func() { setSettings(previous) })
+	cfg := previous
+	cfg.CreditCacheTTLMS = 0
+	setSettings(cfg)
+
+	host, handle := newFreshnessFixture(t, "HSTAVALIDKEY", time.Now().Add(6*time.Hour))
+	decodeDocument(t, statusJSON(handle, freshnessStatusRequest()))
+	decodeDocument(t, statusJSON(handle, freshnessStatusRequest()))
+	if _, balanceCalls := host.counts(); balanceCalls != 2 {
+		t.Fatalf("balance reads = %d, want 2 (the cache is off)", balanceCalls)
+	}
+}
+
+func TestCreditCacheInvalidationRefreshes(t *testing.T) {
+	host, handle := newFreshnessFixture(t, "HSTAVALIDKEY", time.Now().Add(6*time.Hour))
+
+	decodeDocument(t, statusJSON(handle, freshnessStatusRequest()))
+	credential, errParse := ParseCredential(host.credential)
+	if errParse != nil {
+		t.Fatalf("parse fixture credential: %v", errParse)
+	}
+	invalidateCredit(credential)
+	decodeDocument(t, statusJSON(handle, freshnessStatusRequest()))
+	if _, balanceCalls := host.counts(); balanceCalls != 2 {
+		t.Fatalf("balance reads = %d, want 2 (invalidation forces a live read)", balanceCalls)
+	}
 }

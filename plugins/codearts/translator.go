@@ -121,6 +121,20 @@ func prepareRequestBody(payload []byte, model string, cfg Config, sessionID stri
 	// 理由与取舍见 vision.go。
 	imagesStripped = stripImagesForTextModel(request)
 
+	// InferHub 只接受数组形态的 `stop`（对齐 Anthropic `stop_sequences`）：
+	// OpenAI 规范允许的字符串形态 `"stop":"</assistant>"` 会在任务入队后被
+	// GLM-5.2 以 `InferHub.001001005.400`（请求参数无效）拒掉——2026-11-01
+	// 生产抓包中 239/239 字符串 stop 全部 005，数组形态与不传全部准入。
+	// `openai.Request.Stop` 是 any 原样透传，非空标量一律包成单元素数组；
+	// 空串没有意义，直接丢弃而不是让上游判参数错。
+	if value, isString := request.Stop.(string); isString {
+		if value == "" {
+			request.Stop = nil
+		} else {
+			request.Stop = []string{value}
+		}
+	}
+
 	request.Stream = true
 	if request.MaxTokens == nil || *request.MaxTokens <= 0 {
 		maxTokens := cfg.DefaultMaxTokens
@@ -271,6 +285,27 @@ func isCredentialErrorText(text string) bool {
 		strings.Contains(text, "security token")
 }
 
+// isCreditExhaustedText reports whether an upstream error body signals that the
+// account's credits are spent. CodeArts reports this as HTTP 400 with
+// error_code TM.00001050.
+func isCreditExhaustedText(text string) bool {
+	return strings.Contains(text, "TM.00001050") || strings.Contains(text, "积分已耗尽")
+}
+
+// creditExhaustedError renders the spent-credit rejection as HTTP 402. A bare
+// 400 must never reach the host: CPA classifies 400 as a caller request fault
+// and returns it to the client without trying another credential. 402 is the
+// status the host reserves for an account that can no longer serve requests —
+// it cools the credential and rotates to the next one.
+func creditExhaustedError(text string) error {
+	detail := truncate(text, 400)
+	probe := streamErrorProbe{}
+	if errUnmarshal := json.Unmarshal([]byte(text), &probe); errUnmarshal == nil && probe.ErrorMsg != "" {
+		detail = probe.ErrorMsg
+	}
+	return abiboot.HTTPError("quota_exceeded", http.StatusPaymentRequired, "CodeArts 积分已耗尽：%s", detail)
+}
+
 // classifyUpstreamFailure maps an upstream HTTP failure onto a sentinel or a
 // status-carrying plugin error.
 func classifyUpstreamFailure(status int, body []byte) error {
@@ -278,6 +313,8 @@ func classifyUpstreamFailure(status int, body []byte) error {
 	switch {
 	case isQueueErrorText(text):
 		return ErrQueueFull
+	case isCreditExhaustedText(text):
+		return creditExhaustedError(text)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden || isCredentialErrorText(text):
 		return ErrCredentialRejected
 	default:
@@ -330,6 +367,8 @@ func inspectStreamPayload(payload string) error {
 	switch {
 	case isQueueErrorText(combined):
 		return ErrQueueFull
+	case isCreditExhaustedText(combined):
+		return creditExhaustedError(combined)
 	case isCredentialErrorText(combined):
 		return ErrCredentialRejected
 	default:
