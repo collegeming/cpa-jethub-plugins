@@ -212,6 +212,9 @@ func claimDailyGrant(h *abiboot.Host, credential *Credential, cfg Config) grantO
 	snapshot.Available = snapshot.Balance + snapshot.DailyBalance
 
 	alreadyProcessed, _ := data["alreadyProcessed"].(bool)
+	// The grant is an upstream write: the next balance read must not serve the
+	// pre-claim snapshot.
+	invalidatePoints(credential)
 	if alreadyProcessed {
 		message := "今日额度已初始化"
 		if snapshot.DailyQuota != nil {
@@ -315,7 +318,7 @@ func handleQuotaFetch(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errCredential != nil {
 		return nil, errCredential
 	}
-	snapshot, errPoints := fetchPoints(h, credential, settings())
+	snapshot, errPoints := cachedFetchPoints(h, credential, settings())
 	if errPoints != nil {
 		return nil, errPoints
 	}
@@ -387,7 +390,7 @@ func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntr
 			continue
 		}
 		quota.Credential = credential
-		snapshot, errPoints := fetchPoints(h, credential, cfg)
+		snapshot, errPoints := cachedFetchPoints(h, credential, cfg)
 		switch {
 		case errPoints != nil:
 			quota.PointsErr = errPoints

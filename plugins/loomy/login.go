@@ -24,7 +24,7 @@ import (
 // both paths are driven from THIS plugin's own management page, which the `start`
 // URL points at:
 //
-//	auth.login.start   -> { url: <host>/v0/resource/plugins/loomy/login?state=…&action=qr, state }
+//	auth.login.start   -> { url: <host>/v0/resource/plugins/loomy-provider/login?state=…&action=qr, state }
 //	WeChat QR (primary, `wechatlogin.go`):
 //	  page ?action=qr          fetch uuid+QR, then ONE long poll per page load
 //	  page ?action=bindsend    bind a phone to a WeChat account that has none
@@ -49,7 +49,9 @@ import (
 // loginResourcePath is the browser route that drives the flow. It is registered
 // in `management.register` as a Resource (empty Menu: reachable, no sidebar
 // entry) and is mounted under /v0/resource/plugins/<pluginID>/.
-const loginResourcePath = "/v0/resource/plugins/" + ProviderKey + "/login"
+// The mount is keyed by the plugin ID, which the host derives from the .so
+// file name (loomy-provider-vX.Y.Z.so -> loomy-provider), NOT by ProviderKey.
+const loginResourcePath = "/v0/resource/plugins/loomy-provider/login"
 
 // wechatState is what the QR half of a login session remembers between page
 // loads. Every field is written under the session mutex.
@@ -397,18 +399,17 @@ func loginPageURL(baseURL, state, action string) string {
 	return parsed.Scheme + "://" + parsed.Host + loginResourcePath + "?" + query.Encode()
 }
 
-// loginQRAction is the page action that shows a live WeChat QR code. It is what
-// `auth.login.start` returns, so the host's sign-in flow leads with the scan
-// instead of asking the user anything first.
+// loginQRAction is retained for old bookmarks; WeChat login is disabled in the UI.
 const loginQRAction = "qr"
+
+// loginAutoAction is the default page action: auto SMS (d1jiema) confirm page.
+const loginAutoAction = "auto"
 
 // handleAuthLoginStart begins a login and returns immediately.
 //
-// Nothing here talks to WeChat or to the account host: the returned URL opens
-// this plugin's own page with `action=qr`, and THAT page load fetches a live QR
-// code from WeChat and renders it. Doing the fetch here would still not be able
-// to show anything (the host expects a URL back), and it would block the host's
-// own request for as long as WeChat takes.
+// Nothing here talks to the account host or the SMS pool: the returned URL opens
+// this plugin's own page with `action=auto` (自动接码确认页). The confirm /
+// autorun steps run on subsequent page loads so the host request stays cheap.
 func handleAuthLoginStart(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 	cfg := settings()
 	request, _ := abiboot.Decode[pluginapi.AuthLoginStartRequest](raw)
@@ -421,15 +422,14 @@ func handleAuthLoginStart(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 	session := startLoginSession(cfg, phone)
 	return pluginapi.AuthLoginStartResponse{
 		Provider:  ProviderKey,
-		URL:       loginPageURL(request.BaseURL, session.stateValue(), loginQRAction),
+		URL:       loginPageURL(request.BaseURL, session.stateValue(), loginAutoAction),
 		State:     session.stateValue(),
 		ExpiresAt: session.ExpiresAt,
 		Metadata: map[string]any{
-			"flow":  "wechat",
+			"flow":  "sms_auto",
 			"phone": session.phoneValue(),
-			"hint": "打开的页面会立刻显示微信扫码二维码；扫码确认后自动保存凭据。" +
-				"页面用 meta refresh 自刷新，每次加载做一次长轮询，全程没有表单也没有脚本。" +
-				"需要手机验证码登录时，同一页面提供备用入口（不需要改插件设置）",
+			"hint": "打开的页面是自动接码登录确认页；确认后从接码平台取号 → 发码 → 收码 → 保存凭据。" +
+				"需要时同一页可改用手动短信验证码（不需要改插件设置）。微信扫码入口已移除。",
 		},
 	}, nil
 }
@@ -455,7 +455,7 @@ func handleAuthLoginPoll(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 	if !done {
 		return pluginapi.AuthLoginPollResponse{
 			Status:  pluginapi.AuthLoginStatusPending,
-			Message: "等待在 Loomy 登录页完成微信扫码（或改用手机验证码）",
+			Message: "等待在 Loomy 登录页完成自动接码（或改用手动短信验证码）",
 		}, nil
 	}
 	defer forgetLoginSession(request.State)

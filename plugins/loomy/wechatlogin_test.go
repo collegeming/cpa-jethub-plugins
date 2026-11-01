@@ -89,7 +89,7 @@ func onlyAccountCall(t *testing.T, fake *fakeHost, path string) abiboot.HTTPDoRe
 // qrPage drives one page load of the QR page.
 func qrPage(t *testing.T, h *abiboot.Host, state string, extra url.Values) string {
 	t.Helper()
-	query := url.Values{"action": {"qr"}}
+	query := url.Values{"action": {"wechat"}}
 	if state != "" {
 		query.Set("state", state)
 	}
@@ -133,9 +133,10 @@ func TestWechatQRLoginFlowThroughManagementPage(t *testing.T) {
 	if errParse != nil {
 		t.Fatalf("start url does not parse: %v", errParse)
 	}
-	if parsed.Query().Get("action") != loginQRAction {
-		t.Fatalf("start url = %q, want it to open the QR page directly", started.URL)
+	if parsed.Query().Get("action") != loginAutoAction {
+		t.Fatalf("start url = %q, want it to open the auto SMS confirm page", started.URL)
 	}
+	// The QR flow itself is exercised via the internal action=wechat renderer below.
 	state := started.State
 
 	// Load 1: the QR is fetched and rendered, and NOT polled yet — polling here

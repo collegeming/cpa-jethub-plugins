@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/plugins/loomy/pool"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -109,17 +110,23 @@ func (p *plugin) Configure(configYAML []byte) error {
 	// changed interval takes effect on a config reload instead of at the next
 	// process start.
 	startCatalogueScheduler(cfg)
+	// The account-pool sweep is restarted on the same boundary.
+	pool.ApplyConfig(cfg.Pool)
 	return nil
 }
 
-// Quiesce stops the background refresh: the host calls it before unloading the
+// Quiesce stops the background jobs: the host calls it before unloading the
 // plugin, and a tick firing against a closed instance would only log failures.
-func (p *plugin) Quiesce() { stopCatalogueScheduler() }
+func (p *plugin) Quiesce() {
+	stopCatalogueScheduler()
+	pool.Shutdown()
+}
 
-// Shutdown stops the background refresh, then releases the in-flight login
+// Shutdown stops the background jobs, then releases the in-flight login
 // sessions and the catalogue cache.
 func (p *plugin) Shutdown() {
 	stopCatalogueScheduler()
+	pool.Shutdown()
 	shutdownLoginSessions()
 	resetDiscoveredModels()
 }
@@ -135,6 +142,10 @@ func configFieldsForHost() []pluginapi.ConfigField {
 			EnumValues:  field.EnumValues,
 			Description: field.Description,
 		})
+	}
+	for _, field := range pool.HostConfigFields() {
+		field.Name = "pool_" + field.Name
+		out = append(out, field)
 	}
 	return out
 }

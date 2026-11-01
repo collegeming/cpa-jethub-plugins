@@ -823,13 +823,17 @@ curl -s -N -X POST http://localhost:8317/v1/chat/completions \
 
 ## 6. 更新插件
 
+**默认不要重启 CPA。** 改配置与换插件都走热加载（见运维手册「CPA 热加载」）。
+
+推荐：管理 API 插件商店安装/升级（成功时 `restart_required` 应为 `false`）：
+
 ```bash
-# 下载新版本 zip，解压覆盖，重启
-unzip -o <插件>_<版本>_linux_amd64.zip -d <插件目录>/linux/amd64/
-podman restart cli-proxy-api
+curl -X POST -H "Authorization: Bearer <管理密钥>" -H "Content-Type: application/json" \
+  -d '{"version":"<版本>"}' \
+  http://localhost:8317/v0/management/plugin-store/<插件ID>/install
 ```
 
-**注意**：替换 `.so` 文件必须重启 CPA；改 `config.yaml` 无需重启（热加载）。
+手工落盘时用**版本化文件名**（如 `codearts-v0.2.2.so`），让宿主路径变化触发 `plugin hot reloaded`；不要覆盖同名 `.so` 后指望自动换库，也不要用 `podman/docker restart` 当常规手段。仅当接口返回 `restart_required: true` 且确认无法热卸载时再考虑重启。
 
 ---
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/plugins/loomy/pool"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -80,8 +81,9 @@ func TestRegistrationCapabilities(t *testing.T) {
 	if decoded.Metadata.Name != DisplayName || decoded.Metadata.Version != Version {
 		t.Fatalf("metadata = %#v, want the Loomy identity", decoded.Metadata)
 	}
-	if len(decoded.Metadata.ConfigFields) != len(ConfigFields()) {
-		t.Fatalf("config fields = %d, want %d", len(decoded.Metadata.ConfigFields), len(ConfigFields()))
+	wantFields := len(ConfigFields()) + len(pool.HostConfigFields())
+	if len(decoded.Metadata.ConfigFields) != wantFields {
+		t.Fatalf("config fields = %d, want %d (provider + pool_*)", len(decoded.Metadata.ConfigFields), wantFields)
 	}
 	capabilities := decoded.Capabilities
 	if !capabilities.AuthProvider || !capabilities.ModelProvider || !capabilities.ModelRegistrar ||

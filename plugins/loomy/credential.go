@@ -167,6 +167,11 @@ func ParseCredential(raw []byte) (*Credential, error) {
 	if credential.Session() == "" {
 		return nil, credentialError("invalid_credential", "Loomy 凭据缺少 access_token")
 	}
+	// Files stamped with the plugin file name converge on ProviderKey so the
+	// next save writes the canonical type.
+	if credential.Type == legacyProviderKey {
+		credential.Type = ProviderKey
+	}
 	return &credential, nil
 }
 

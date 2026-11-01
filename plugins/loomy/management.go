@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/plugins/loomy/pool"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -17,14 +18,14 @@ import (
 //
 //   - a GET route carrying a Menu is registered ONLY under
 //     `/v0/resource/plugins/<id>/<path>` AND becomes its own sidebar entry in
-//     CPA-Manager-Plus. The manager renders one nav item per menu route and does
-//     not group them by plugin, so EVERY EXTRA MENU ROUTE LOOKS LIKE A DUPLICATE
-//     ENTRY. The repository's single entry belongs to the hub plugin, which is
-//     why NO route below carries a Menu.
+//     CPA-Manager-Plus. The current manager groups menu routes by plugin, so
+//     the single entry below renders as this plugin's own nav row — needed
+//     because hosts that never deploy the hub plugin would otherwise leave
+//     every page here reachable only by typing the URL.
 //   - a ResourceRoute is mounted under the same prefix but is listed in the
 //     sidebar only when it carries a Menu. Leaving Menu empty keeps the page
-//     browser-reachable — the hub's channel overview and the status page link to
-//     it — without adding a nav item.
+//     browser-reachable — the status page links to it — without adding a nav
+//     item.
 //   - any other route is registered under `/v0/management/<path>`, a GLOBAL
 //     namespace shared with every other plugin. A collision is skipped with a
 //     warning, so such paths would need the provider prefix. This plugin
@@ -37,12 +38,17 @@ import (
 // handleManagementRegister declares the entries management clients show.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
 	return pluginapi.ManagementRegistrationResponse{
-		Routes: []pluginapi.ManagementRoute{},
+		Routes: append([]pluginapi.ManagementRoute{
+			{Method: http.MethodGet, Path: "/status", Menu: DisplayName,
+				Description: "账号、模型目录与积分余额（侧边栏入口）"},
+			{Method: http.MethodPost, Path: "/loomy/sms/auto",
+				Description: "自动接码登录（d1jiema；body/query: state；返回 JSON）"},
+		}, pool.ManagementRegister()...),
 		Resources: []pluginapi.ResourceRoute{
-			{Path: "/status", Description: "账号、模型目录与积分余额（由 hub 的渠道总览链接进入）"},
-			{Path: "/login", Description: "微信扫码登录 Loomy 账号（auth.login.start 直接打开二维码页）；手机验证码登录作为备用路径在同一页提供"},
+			{Path: "/login", Description: "自动接码登录 Loomy 账号（auth.login.start / 默认打开确认页）；手动短信验证码作为备用路径"},
 			{Path: "/checkin", Description: "初始化 Loomy 每日赠送额度（由状态页进入）"},
 			{Path: "/onboarding", Description: "领取 Loomy 一次性新手任务积分（由状态页进入）"},
+			{Path: "/pool", Description: "Loomy 账号池：积分巡检、自动签到、自动停用与恢复（由状态页进入，不单独占侧边栏）"},
 		},
 	}, nil
 }
@@ -57,6 +63,11 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		return nil, errDecode
 	}
 	switch managementRoute(request.Path) {
+	case "/pool", "/scan":
+		return pool.ManagementHandle(h, raw)
+	case "/auto":
+		// /loomy/sms/auto — last segment is "auto"
+		return handleSMSAutoJSON(h, request), nil
 	case "/status":
 		switch strings.ToLower(strings.TrimSpace(request.Query.Get("action"))) {
 		case "refresh-catalog":
@@ -125,7 +136,8 @@ func loomyAccounts(h *abiboot.Host) []pluginapi.HostAuthFileEntry {
 	}
 	out := make([]pluginapi.HostAuthFileEntry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Provider == ProviderKey || entry.Type == ProviderKey {
+		if entry.Provider == ProviderKey || entry.Type == ProviderKey ||
+			entry.Provider == legacyProviderKey || entry.Type == legacyProviderKey {
 			out = append(out, entry)
 		}
 	}
@@ -258,13 +270,13 @@ func loginJSON(request pluginapi.ManagementRequest) pluginapi.ManagementResponse
 	return jsonManagementResponse(http.StatusOK, map[string]any{
 		"action": strings.TrimSpace(request.Query.Get("action")),
 		"state":  state,
-		"primary": "微信扫码：GET ?action=qr&state=… 返回二维码页（data: URL 图片 + meta refresh），" +
-			"每次加载做一次长轮询（408 待扫码 / 404 已扫码 / 405 已确认并携带授权码 / 403 取消 / 402 过期）；" +
-			"405 之后自动 bind/auth → bind===1 走 bind/skip，否则用 ?action=bindsend&phone=… 与 " +
-			"?action=bindverify&code=… 绑定手机号。凭据存好后 auth.login.poll 由 pending 变为 success",
-		"backup": "手机验证码：GET ?action=send&state=…&phone=13800138000 发送验证码；" +
+		"primary": "自动接码：GET /login 或 ?action=auto&state=… 确认页；?action=autorun&state=… 取号 → 发码 → 收码 → 登录。" +
+			"也可用 POST /v0/management/loomy/sms/auto（body: {state}）。需配置 sms_token / sms_keyword。" +
+			"凭据存好后 auth.login.poll 由 pending 变为 success。微信扫码已关闭。",
+		"backup": "手动短信：GET ?action=sms&state=…；?action=send&state=…&phone=13800138000 发送验证码；" +
 			"?action=code&state=…&digit=5 用数字链接输入；?action=verify&state=…&phone=…&code=123456 提交并保存凭据。" +
 			"号码也可以在本页用 ?action=phone&digit=… 输入，不需要改插件设置",
+		"auto_sms": "同 primary",
 		"phone_gate":  "^1[3-9]\\d{9}$",
 		"wechat_app":  WechatAppID,
 		"redirect":    WechatRedirectURI,

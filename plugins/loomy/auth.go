@@ -29,7 +29,7 @@ func handleAuthParse(_ *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errDecode != nil {
 		return nil, errDecode
 	}
-	if request.Provider != "" && request.Provider != ProviderKey {
+	if request.Provider != "" && request.Provider != ProviderKey && request.Provider != legacyProviderKey {
 		return pluginapi.AuthParseResponse{Handled: false}, nil
 	}
 	credential, errParse := ParseCredential(request.RawJSON)
@@ -188,5 +188,5 @@ func defaultAuthFileName(credential *Credential) string {
 // credentialAdvice is appended to every dead-session answer: there is no refresh
 // token to rotate, so the only remedy is a fresh login (WeChat scan, or SMS).
 func credentialAdvice() string {
-	return "（Loomy 没有 refresh_token，只能用微信扫码或手机验证码重新登录）"
+	return "（Loomy 没有 refresh_token，只能用自动接码或手动短信重新登录）"
 }
