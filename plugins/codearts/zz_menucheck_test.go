@@ -7,12 +7,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
-// TestMenuCount guards the repository-wide rule documented in the README: the
-// manager's sidebar is flat and does not group entries by plugin, and the ONE
-// entry this repository spends is the hub's "Jet Hub" page. A Menu here would add
-// a second nav item for this provider, so this plugin must declare NONE — its
-// status page stays reachable as a Menu-less resource route, which is what the
-// hub links to.
+// TestMenuCount guards the ops-page merge: this plugin contributes exactly ONE
+// sidebar Menu (/pool, "CodeArts 运维"). Status/login/reg stay Menu-less
+// resources; /reg keeps a direct URL for the registrar actions.
 
 func TestMenuCount(t *testing.T) {
 	value, err := handleManagementRegister(nil, nil)
@@ -26,13 +23,24 @@ func TestMenuCount(t *testing.T) {
 			menus++
 		}
 	}
-	if menus != 0 {
-		t.Fatalf("menu routes = %d, want zero: the hub plugin owns the repository's only sidebar entry", menus)
+	// The merged ops page spends exactly ONE sidebar entry (/pool). /reg is a
+	// Menu-less resource showing the same combined surface. The hub still owns
+	// its own overview entry separately.
+	if menus != 1 {
+		t.Fatalf("menu routes = %d, want 1 (/pool combined ops)", menus)
 	}
-	// Every page is a Menu-less resource route, and the set is pinned: the
-	// 新建账号 affordance is a LINK to /login, so adding a second account must
-	// not have added a route. The repository-wide sidebar count therefore stays
-	// at the hub's single entry — this plugin contributes none of it.
+	var menuPath, menuName string
+	for _, r := range resp.Routes {
+		if r.Menu != "" {
+			menuPath, menuName = r.Path, r.Menu
+		}
+	}
+	if menuPath != "/pool" {
+		t.Fatalf("menu path = %q, want /pool", menuPath)
+	}
+	if menuName != "CodeArts 运维" {
+		t.Fatalf("menu name = %q, want CodeArts 运维", menuName)
+	}
 	pages := make([]string, 0, len(resp.Resources))
 	for _, resource := range resp.Resources {
 		if resource.Menu != "" {
@@ -40,7 +48,7 @@ func TestMenuCount(t *testing.T) {
 		}
 		pages = append(pages, resource.Path)
 	}
-	if want := []string{"/status", "/login"}; !slices.Equal(pages, want) {
-		t.Fatalf("resource routes = %v, want %v: /status is what the hub links to, /login is what it and 新建账号 open", pages, want)
+	if want := []string{"/status", "/login", "/reg"}; !slices.Equal(pages, want) {
+		t.Fatalf("resource routes = %v, want %v", pages, want)
 	}
 }

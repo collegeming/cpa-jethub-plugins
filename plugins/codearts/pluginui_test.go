@@ -17,6 +17,7 @@ import (
 // state the page already renders.
 func stubAuthList(t *testing.T, entries ...pluginapi.HostAuthFileEntry) *abiboot.Host {
 	t.Helper()
+	resetCreditCache()
 	abiboot.SetHostCaller(func(method string, _ []byte) ([]byte, error) {
 		if method != pluginabi.MethodHostAuthList {
 			return nil, fmt.Errorf("unexpected host method %s", method)
@@ -202,7 +203,11 @@ func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 			t.Errorf("route %q must be an absolute path", route.Path)
 		}
 		if route.Menu != "" {
-			t.Errorf("route %s carries menu %q: the sidebar belongs to the hub plugin", route.Path, route.Menu)
+			// Combined ops page: only /pool owns a sidebar entry.
+			if route.Path != "/pool" {
+				t.Errorf("route %s carries unexpected menu %q: only /pool owns the sidebar entry", route.Path, route.Menu)
+			}
+			continue
 		}
 		plain++
 		// Without a menu the route lives in the global management namespace, so
@@ -215,9 +220,9 @@ func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 		t.Fatal("expected at least one plain script route")
 	}
 
-	// The manager turns every menu-carrying route into its own sidebar item and
-	// does not group them by plugin. This repository gives that one item to the
-	// hub, so every page below must be a Menu-less resource route.
+	// Menu-less resource routes must stay free of Menu labels. /status and
+	// /login are hub/login entry points; /reg keeps a direct URL for registrar
+	// actions while the sidebar only lists /pool.
 	pages := map[string]bool{}
 	for _, resource := range registration.Resources {
 		if resource.Path == "" || !strings.HasPrefix(resource.Path, "/") {
@@ -228,9 +233,7 @@ func TestManagementRegisteredRoutesFollowHostMountRules(t *testing.T) {
 		}
 		pages[resource.Path] = true
 	}
-	// /status is what the hub's channel overview links to; /login is reached from
-	// the status page.
-	for _, want := range []string{"/status", "/login"} {
+	for _, want := range []string{"/status", "/login", "/reg"} {
 		if !pages[want] {
 			t.Errorf("resource %s is not registered, so the page would 404", want)
 		}

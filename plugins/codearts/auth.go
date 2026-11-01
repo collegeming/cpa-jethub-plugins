@@ -32,12 +32,12 @@ func authDataFor(credential *Credential, fileName string) (pluginapi.AuthData, e
 	if label == "" {
 		label = credential.AccessKeyID
 	}
-	prefix := credential.AccessKeyID
-	if len(prefix) > 8 {
-		prefix = prefix[:8]
-	}
-	if !settings().ModelPrefix {
-		prefix = ""
+	prefix := settings().ModelPrefixValue
+	if prefix == "" && settings().ModelPrefix {
+		prefix = credential.AccessKeyID
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
 	}
 	return pluginapi.AuthData{
 		Provider:    ProviderKey,

@@ -43,6 +43,7 @@ type quotaAccount struct {
 // codeartsQuotaHost installs a host transport holding the given accounts.
 func codeartsQuotaHost(t *testing.T, accounts ...quotaAccount) *abiboot.Host {
 	t.Helper()
+	resetCreditCache()
 	byAccessKey := map[string]quotaAccount{}
 	for _, account := range accounts {
 		byAccessKey[account.accessKey] = account

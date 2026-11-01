@@ -17,7 +17,7 @@ import (
 )
 
 // PluginVersion is the adapter version reported in the user agent.
-const PluginVersion = "0.1.0"
+const PluginVersion = "0.2.3"
 
 const (
 	queueStatusPath = "/api/v1/queue/status"
@@ -29,9 +29,14 @@ const (
 )
 
 // attributionUserAgent identifies this adapter to the gateway. It is an
-// unsigned header, so it never participates in the signature.
+// unsigned header, so it never participates in the signature. The value
+// mirrors the official AIIDE plugin identity and can be overridden with the
+// client_user_agent config key.
 func attributionUserAgent() string {
-	return "cpa-jethub-codearts/" + PluginVersion + " (+https://github.com/collegeming/cpa-jethub-plugins)"
+	if ua := strings.TrimSpace(settings().ClientUserAgent); ua != "" {
+		return ua
+	}
+	return DefaultClientUserAgent
 }
 
 // executorStreamResponse is the wire shape of executor.execute_stream.

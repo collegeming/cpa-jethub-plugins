@@ -170,3 +170,35 @@ func TestAuthDataForModelPrefixToggle(t *testing.T) {
 		t.Fatalf("Prefix = %q, want empty when model_prefix is false", off.Prefix)
 	}
 }
+
+// TestAuthDataForModelPrefixValue pins the fixed-prefix override: a configured
+// model_prefix_value must win over the access-key-derived prefix so published
+// model names survive STS access_key_id rotation.
+func TestAuthDataForModelPrefixValue(t *testing.T) {
+	previous := settings()
+	setSettings(DefaultConfig())
+	t.Cleanup(func() { setSettings(previous) })
+
+	cfg := settings()
+	cfg.ModelPrefixValue = "codearts"
+	setSettings(cfg)
+
+	auth, errAuth := authDataFor(providerTypeCredential(), "")
+	if errAuth != nil {
+		t.Fatalf("authDataFor: %v", errAuth)
+	}
+	if auth.Prefix != "codearts" {
+		t.Fatalf("Prefix = %q, want fixed model_prefix_value", auth.Prefix)
+	}
+
+	cfg.ModelPrefix = false
+	setSettings(cfg)
+
+	overridden, errOverridden := authDataFor(providerTypeCredential(), "")
+	if errOverridden != nil {
+		t.Fatalf("authDataFor: %v", errOverridden)
+	}
+	if overridden.Prefix != "codearts" {
+		t.Fatalf("Prefix = %q, want model_prefix_value to win over model_prefix=false", overridden.Prefix)
+	}
+}

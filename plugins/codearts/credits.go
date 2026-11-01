@@ -120,14 +120,13 @@ func collectAccountQuotas(h *abiboot.Host, accounts []pluginapi.HostAuthFileEntr
 		}
 		quota.Credential = credential
 		quota.Refresh = freshness
-		balance, errBalance := fetchCreditBalance(h, credential)
+		balance, errBalance, activity, errActivity := cachedCreditSnapshot(h, credential)
 		if errBalance != nil {
 			quota.BalanceErr = errBalance
 			out = append(out, quota)
 			continue
 		}
 		quota.Balance = balance
-		activity, errActivity := fetchDailyActivity(h, credential)
 		if errActivity != nil {
 			quota.ActivityErr = errActivity
 		} else {
@@ -360,6 +359,10 @@ func claimDaily(h *abiboot.Host, credential *Credential) (*checkinOutcome, error
 		return nil, abiboot.Errorf("claim_rejected", "claim rejected (code %d): %s", claim.Code, claim.Message)
 	}
 
+	// The grant is an upstream write: the next status read must not serve the
+	// pre-claim snapshot.
+	invalidateCredit(credential)
+
 	// Confirm only when the claim produced an identifier.
 	if claim.Data.ID != nil {
 		confirmBody, errConfirmMarshal := json.Marshal(map[string]string{
@@ -417,7 +420,7 @@ func handleQuotaFetch(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	if errCredential != nil {
 		return nil, errCredential
 	}
-	balance, errBalance := fetchCreditBalance(h, credential)
+	balance, errBalance, activity, errActivity := cachedCreditSnapshot(h, credential)
 	if errBalance != nil {
 		return nil, errBalance
 	}
@@ -426,7 +429,7 @@ func handleQuotaFetch(h *abiboot.Host, raw json.RawMessage) (any, error) {
 		{Key: "credit_remaining", Label: "剩余额度", Value: balance.Remaining, Unit: "credit", Format: "number"},
 		{Key: "credit_used", Label: "已用额度", Value: balance.Used, Unit: "credit", Format: "number"},
 	}
-	if activity, errActivity := fetchDailyActivity(h, credential); errActivity == nil && activity != nil {
+	if errActivity == nil && activity != nil {
 		claimable := 0.0
 		if activity.Claimable {
 			claimable = 1

@@ -44,6 +44,7 @@ func (f *wireHost) bodies() []map[string]any {
 // install registers the fake transport and returns a host handle.
 func (f *wireHost) install(t *testing.T) *abiboot.Host {
 	t.Helper()
+	resetCreditCache()
 	// The freshness state is process-wide, so every test starts clean.
 	credentialRefresher = newCredentialRefresher()
 	t.Cleanup(func() { credentialRefresher = newCredentialRefresher() })

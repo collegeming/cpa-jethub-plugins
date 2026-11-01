@@ -2,13 +2,16 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
+	htmltemplate "html/template"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/collegeming/cpa-jethub-plugins/internal/abiboot"
+	"github.com/collegeming/cpa-jethub-plugins/internal/jethub/brandicons"
+	"github.com/collegeming/cpa-jethub-plugins/plugins/codearts/pool"
+	"github.com/collegeming/cpa-jethub-plugins/plugins/codearts/reg"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -25,6 +28,20 @@ var (
 
 func init() {
 	settingsSlot.Store(DefaultConfig())
+	// One sidebar entry (/pool) shows both pool and registrar. /reg stays a
+	// Menu-less resource that renders the same combined surface.
+	pool.ExtraPageCards = func(h *abiboot.Host) []htmltemplate.HTML {
+		return reg.PageCards()
+	}
+	pool.RefreshSeconds = func() int {
+		if reg.IsJobRunning() {
+			return 4
+		}
+		return 0
+	}
+	reg.ExtraPageCards = func(h *abiboot.Host) []htmltemplate.HTML {
+		return pool.PageCards(h)
+	}
 }
 
 // settings returns the live instance configuration.
@@ -111,21 +128,30 @@ func (p *plugin) Configure(configYAML []byte) error {
 	// changed interval takes effect on a config reload instead of at the next
 	// process start.
 	startCatalogueScheduler(cfg)
+	// The pool scanner and the registrar share this plugin's one lifecycle.
+	pool.ApplyConfig(cfg.Pool)
+	reg.SetConfig(cfg.Reg)
 	return nil
 }
 
 // Quiesce stops the background refresh: the host calls it before unloading the
 // plugin, and a tick firing against a closed instance would only log failures.
-func (p *plugin) Quiesce() { stopCatalogueScheduler() }
+func (p *plugin) Quiesce() {
+	stopCatalogueScheduler()
+	pool.Shutdown()
+}
 
 // Shutdown releases the loopback callback listeners and the catalogue cache.
 func (p *plugin) Shutdown() {
 	stopCatalogueScheduler()
+	pool.Shutdown()
 	shutdownLoginSessions()
 	discoveredModels.reset()
 }
 
-// configFieldsForHost converts the settings description into the host type.
+// configFieldsForHost converts the settings description into the host type:
+// the provider's own fields plus the pool's ("pool_*") and the registrar's
+// ("reg_*") settings, all editable inside this plugin's single config block.
 func configFieldsForHost() []pluginapi.ConfigField {
 	fields := ConfigFields()
 	out := make([]pluginapi.ConfigField, 0, len(fields))
@@ -136,6 +162,14 @@ func configFieldsForHost() []pluginapi.ConfigField {
 			EnumValues:  field.EnumValues,
 			Description: field.Description,
 		})
+	}
+	for _, field := range pool.HostConfigFields() {
+		field.Name = "pool_" + field.Name
+		out = append(out, field)
+	}
+	for _, field := range reg.HostConfigFields() {
+		field.Name = "reg_" + field.Name
+		out = append(out, field)
 	}
 	return out
 }
@@ -218,8 +252,8 @@ func managementRoute(path string) string {
 	return "/" + trimmed
 }
 
-// handleManagementRegister declares the status page as a Menu-less resource and
-// the script endpoint behind it. This plugin contributes NO sidebar entry.
+// handleManagementRegister declares the status/login pages as Menu-less
+// resources, the script endpoints, and exactly ONE sidebar ops entry (/pool).
 //
 // Three mounts, all decided by the host:
 //   - a GET route carrying a Menu is registered ONLY under
@@ -242,14 +276,21 @@ func managementRoute(path string) string {
 // drives `auth.login.start` / `auth.login.poll` itself, then saves the
 // credential.
 func handleManagementRegister(_ *abiboot.Host, _ json.RawMessage) (any, error) {
+	routes := []pluginapi.ManagementRoute{
+		{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用，返回 JSON）"},
+		{Method: http.MethodGet, Path: "/" + ProviderKey + "/catalog", Description: "刷新模型目录并发布到宿主（JSON；等价于状态页的「刷新目录」按钮）"},
+	}
+	// Pool owns the single sidebar ops page (/pool). Registrar contributes
+	// only its POST /codearts/register action; /reg is a Menu-less resource
+	// that shows the same combined page.
+	routes = append(routes, pool.ManagementRegister()...)
+	routes = append(routes, reg.ManagementRegister()...)
 	return pluginapi.ManagementRegistrationResponse{
-		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodPost, Path: "/" + ProviderKey + "/checkin", Description: "执行每日签到（脚本与 API 用，返回 JSON）"},
-			{Method: http.MethodGet, Path: "/" + ProviderKey + "/catalog", Description: "刷新模型目录并发布到宿主（JSON；等价于状态页的「刷新目录」按钮）"},
-		},
+		Routes: routes,
 		Resources: []pluginapi.ResourceRoute{
 			{Path: "/status", Description: "账号、额度与签到状态（由 hub 的渠道总览链接进入）"},
 			{Path: "/login", Description: "浏览器登录 CodeArts 账号（由状态页或 OAuth 登录页进入）"},
+			{Path: "/reg", Description: "自动注册（已并入运维页；直达仍可用）"},
 		},
 	}, nil
 }
@@ -266,6 +307,11 @@ func handleManagementHandle(h *abiboot.Host, raw json.RawMessage) (any, error) {
 	}
 
 	switch managementRoute(request.Path) {
+	case "/pool", "/scan":
+		return pool.ManagementHandle(h, raw)
+	case "/reg", "/register":
+		return reg.ManagementHandle(h, raw)
+
 	case "/status":
 		switch strings.ToLower(strings.TrimSpace(request.Query.Get("action"))) {
 		case "refresh-catalog":
